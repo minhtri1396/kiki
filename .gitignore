@@ -1,0 +1,17 @@
+# Local workspace & agent model config (machine-specific paths)
+kiki.yaml
+models.yaml
+
+# Built binary
+/kiki
+
+# SQLite state
+kiki.db
+kiki.db-shm
+kiki.db-wal
+
+# Cloned app repos (local workspace)
+/backend/
+/docs/
+/mobile/
+/website/

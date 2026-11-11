@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KIKI</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="top">
+    <div class="title-row">
+        <h1>KIKI</h1>
+        <button type="button" id="open-settings" class="icon-button" aria-label="Settings">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.77 1.05 1.51 1.16H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
+    </div>
+    <p class="root" id="root-path"></p>
+  </header>
+  <div class="section-bar">
+    <nav class="tabs" aria-label="Sections">
+      <button type="button" data-tab="agents" aria-selected="true">Agents</button>
+      <button type="button" data-tab="repos" aria-selected="false">Repos</button>
+      <button type="button" data-tab="indexes" aria-selected="false">Indexes</button>
+    </nav>
+    <button type="button" id="start-feature" class="primary">Start Feature</button>
+  </div>
+  <p id="banner" class="banner" role="status" hidden>
+    <span id="banner-text"></span>
+    <svg class="timer" viewBox="0 0 20 20" aria-hidden="true">
+      <circle class="timer-track" cx="10" cy="10" r="8"></circle>
+      <circle class="timer-value" cx="10" cy="10" r="8"></circle>
+    </svg>
+  </p>
+  <main>
+    <section id="panel-agents">
+      <p class="loading" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        Loading agents…
+      </p>
+    </section>
+    <section id="panel-repos" hidden></section>
+    <section id="panel-indexes" hidden></section>
+  </main>
+  <dialog id="launch-dialog">
+    <form method="dialog" id="launch-form">
+      <h2 id="launch-title"></h2>
+      <p id="launch-meta" class="hint"></p>
+      <div id="launch-repos"></div>
+      <label class="field" id="launch-repo-field">
+        <span>Repo</span>
+        <select id="launch-repo"></select>
+      </label>
+      <p id="launch-worktree" class="hint"></p>
+      <label class="field">
+        <span>Message</span>
+        <textarea id="launch-note" rows="4" placeholder="Parent ticket, requirement folder, or leave empty"></textarea>
+      </label>
+      <p class="hint">Leave this empty and the agent only reads the setup, then waits, as its Startup section says.</p>
+      <div class="prompt-wrap">
+        <div class="prompt-bar">
+          <button type="button" id="prompt-toggle" aria-expanded="false">Show the prompt</button>
+          <button type="button" id="prompt-open">Open larger</button>
+        </div>
+        <div id="launch-prompt" class="markdown" hidden>Open this to load the prompt.</div>
+      </div>
+      <p id="launch-result" class="result" hidden></p>
+      <div class="actions">
+        <button type="submit" value="cancel">Close</button>
+        <button type="button" id="launch-go">Start on Orca</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="feature-dialog">
+    <form method="dialog" id="feature-form">
+      <h2>Start Feature</h2>
+      <label class="field">
+        <span>Feature name</span>
+        <input id="feature-name" type="text" autocomplete="off" placeholder="Manage products">
+      </label>
+      <p id="feature-folder" class="hint">The folder name is the snake_case form of the feature name.</p>
+      <label class="field">
+        <span>What this feature does</span>
+        <textarea id="feature-description" rows="4" placeholder="Describe the feature"></textarea>
+      </label>
+      <p class="hint">Turn on the agents to start. AI Tool and model start from the choices on each agent card.</p>
+      <div id="feature-agents"></div>
+      <p id="feature-error" class="result error" hidden></p>
+      <p id="feature-result" class="result" hidden></p>
+      <div class="actions">
+        <button type="button" id="feature-cancel">Cancel</button>
+        <button type="submit" id="feature-go" class="primary" value="start">Start</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="clone-dialog">
+    <form method="dialog" id="clone-form">
+      <h2 id="clone-title">Clone repository</h2>
+      <p id="clone-path" class="hint"></p>
+      <label class="field">
+        <span>Git URL</span>
+        <input id="clone-url" type="text" placeholder="https://github.com/org/repo.git" autocomplete="off" spellcheck="false">
+      </label>
+      <p id="clone-error" class="result error" hidden></p>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" id="clone-go" class="primary" value="clone">Clone</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="settings-dialog">
+    <div class="reader-bar">
+      <h2>Settings</h2>
+      <button type="button" id="settings-close">Close</button>
+    </div>
+    <p id="settings-hint" class="hint"></p>
+    <div id="settings-fields"></div>
+    <div class="actions">
+      <button type="button" id="settings-save" class="primary" data-save="1" hidden>Save</button>
+    </div>
+  </dialog>
+  <dialog id="run-dialog">
+    <div class="reader-bar">
+      <h2>Run detail</h2>
+      <button type="button" id="run-close">Close</button>
+    </div>
+    <p id="run-meta" class="hint"></p>
+    <p class="prompt-label">Message</p>
+    <pre id="run-note" class="run-text"></pre>
+    <p class="prompt-label">Detail</p>
+    <pre id="run-detail" class="run-text"></pre>
+    <div class="actions">
+      <button type="button" id="run-delete" class="danger">Delete</button>
+    </div>
+  </dialog>
+  <dialog id="prompt-reader">
+    <div class="reader-bar">
+      <h2 id="prompt-reader-title">Prompt</h2>
+      <button type="button" id="prompt-reader-close">Close</button>
+    </div>
+    <div id="prompt-reader-body" class="markdown"></div>
+  </dialog>
+  <script src="/app.js"></script>
+</body>
+</html>
