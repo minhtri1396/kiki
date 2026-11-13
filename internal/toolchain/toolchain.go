@@ -1,23 +1,30 @@
-// Package toolchain builds the GitNexus and CodeGraph commands the agent
-// documents tell the user to run.
+// Package toolchain builds the Obsidian and CodeGraph commands the console runs
+// and the paths of the app repositories.
 package toolchain
 
-import "path/filepath"
+import (
+	"path/filepath"
+	"regexp"
+)
 
 // Kinds are the repositories the console stores.
 var Kinds = []string{"backend", "website", "mobile", "document"}
 
-// CodeKinds are the repositories that get a CodeGraph index.
-var CodeKinds = []string{"backend", "website", "mobile"}
+var repoIDPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
 
-// GitNexusAnalyze is `gitnexus analyze --index-only --name <workspace id>` at the repository root.
-func GitNexusAnalyze(name string) []string {
-	return []string{"gitnexus", "analyze", "--index-only", "--name", name}
+// Known reports whether kind is one of the built-in app repositories.
+func Known(kind string) bool {
+	for _, item := range Kinds {
+		if item == kind {
+			return true
+		}
+	}
+	return false
 }
 
-// GitNexusStatus is `gitnexus status` at the repository root.
-func GitNexusStatus() []string {
-	return []string{"gitnexus", "status"}
+// RepoID reports whether kind can be stored as a repository id.
+func RepoID(kind string) bool {
+	return repoIDPattern.MatchString(kind)
 }
 
 // CodegraphInit is `codegraph init <folder>`.

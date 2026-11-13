@@ -12,6 +12,7 @@ import (
 
 	"github.com/webview/webview_go"
 
+	"kiki/internal/gitignore"
 	"kiki/internal/jobs"
 	"kiki/internal/orca"
 	"kiki/internal/server"
@@ -27,6 +28,9 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	if err := store.Migrate(root); err != nil {
+		log.Fatal(err)
+	}
 	setupPath := store.Path(root)
 	db, err := store.Open(setupPath)
 	if err != nil {
@@ -35,6 +39,14 @@ func main() {
 	defer db.Close()
 
 	if err := db.EnsureLayout(root); err != nil {
+		log.Fatal(err)
+	}
+	agentPath, err := server.EnsureAgentFiles(root, db)
+	if err != nil {
+		log.Fatal(err)
+	}
+	ignorePath, err := gitignore.Ensure(root, gitignore.AppEntries(root, agentPath, setupPath, db.LogFile()))
+	if err != nil {
 		log.Fatal(err)
 	}
 
@@ -50,7 +62,10 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	url := "http://" + *addr + "/"
-	fmt.Printf("KIKI: %s\nRepository: %s\nSetup: %s\nModels: %s\nLogs: %s\n", url, root, setupPath, db.ModelsFile(), db.LogFile())
+	fmt.Printf("KIKI: %s\nRepository: %s\nSetup: %s\nAgents: %s\nLogs: %s\n", url, root, setupPath, agentPath, db.LogFile())
+	if ignorePath != "" {
+		fmt.Printf("Git ignore: %s\n", ignorePath)
+	}
 	if *noOpen {
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatal(err)

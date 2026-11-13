@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -17,19 +19,10 @@ import (
 
 // Store is the console setup file and the run log.
 type Store struct {
-	path       string
-	modelsPath string
-	logPath    string
-	db         *sql.DB
-	mu         sync.Mutex
-}
-
-// AgentModel is the AI Tool and model chosen for one agent.
-// The file that stores these has no machine paths, so it can be copied to another computer.
-type AgentModel struct {
-	ID    string `json:"id" yaml:"id"`
-	Tool  string `json:"tool" yaml:"tool"`
-	Model string `json:"model" yaml:"model"`
+	path    string
+	logPath string
+	db      *sql.DB
+	mu      sync.Mutex
 }
 
 // Launch is one recorded agent start.
@@ -43,10 +36,23 @@ type Launch struct {
 	CreatedAt string `json:"createdAt" yaml:"created_at"`
 }
 
+// TeamFolder is a local folder the user syncs between computers.
+// Path is the team folder. User is this person's folder inside it.
+// Member is the member folder last copied into the local agents folder.
+type TeamFolder struct {
+	Path   string `yaml:"path,omitempty"`
+	User   string `yaml:"user,omitempty"`
+	Member string `yaml:"member,omitempty"`
+}
+
 type fileDoc struct {
-	WorkspaceID string    `yaml:"workspace_id"`
-	OrcaAgent   string    `yaml:"orca_agent"`
-	Repos       []repoDoc `yaml:"repos"`
+	WorkspaceID   string     `yaml:"workspace_id"`
+	OrcaAgent     string     `yaml:"orca_agent"`
+	AgentPath     string     `yaml:"agent_path,omitempty"`
+	GenerateTool  string     `yaml:"generate_tool,omitempty"`
+	GenerateModel string     `yaml:"generate_model,omitempty"`
+	Repos         []repoDoc  `yaml:"repos"`
+	TeamFolder    TeamFolder `yaml:"team_folder,omitempty"`
 }
 
 type repoDoc struct {
@@ -61,9 +67,8 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{
-		path:       path,
-		modelsPath: filepath.Join(filepath.Dir(path), "models.yaml"),
-		logPath:    filepath.Join(filepath.Dir(path), "kiki.db"),
+		path:    path,
+		logPath: filepath.Join(filepath.Dir(path), "kiki.db"),
 	}
 	if _, err := os.Stat(path); err != nil {
 		if !os.IsNotExist(err) {
@@ -109,19 +114,19 @@ func (s *Store) Close() error {
 	return err
 }
 
-// Path is kiki.yaml in the app folder.
+// DataDir is the .kiki folder next to the app. KIKI stores the files it creates there.
+func DataDir(dir string) string {
+	return filepath.Join(dir, ".kiki")
+}
+
+// Path is kiki.yaml inside the .kiki folder.
 func Path(dir string) string {
-	return filepath.Join(dir, "kiki.yaml")
+	return filepath.Join(DataDir(dir), "kiki.yaml")
 }
 
 // File returns the setup file path.
 func (s *Store) File() string {
 	return s.path
-}
-
-// ModelsFile returns the agent model file path, next to the setup file.
-func (s *Store) ModelsFile() string {
-	return s.modelsPath
 }
 
 // LogFile returns the SQLite file that stores recent runs, next to the setup file.
@@ -142,6 +147,13 @@ func (s *Store) EnsureLayout(root string) error {
 	if err != nil {
 		return err
 	}
+	snap, err = mergeRepoFiles(s.path, snap)
+	if err != nil {
+		return err
+	}
+	if err := writeRepoFiles(s.path, reposForFiles(snap)); err != nil {
+		return err
+	}
 	next := reposFrom(snap)
 	if reposEqual(doc.Repos, next) {
 		return nil
@@ -158,7 +170,37 @@ func (s *Store) Load() (console.Snapshot, error) {
 	if err != nil {
 		return console.Snapshot{}, err
 	}
-	return doc.snapshot(), nil
+	return mergeRepoFiles(s.path, doc.snapshot())
+}
+
+// TeamFolder returns the saved local team folder.
+func (s *Store) TeamFolder() (TeamFolder, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc, err := s.read()
+	if err != nil {
+		return TeamFolder{}, err
+	}
+	return doc.TeamFolder, nil
+}
+
+// SaveTeamFolder stores the team folder without changing the rest of the setup.
+func (s *Store) SaveTeamFolder(cfg TeamFolder) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	doc, err := s.read()
+	if err != nil {
+		return err
+	}
+	doc.TeamFolder = trimTeamFolder(cfg)
+	return s.write(doc)
+}
+
+func trimTeamFolder(cfg TeamFolder) TeamFolder {
+	cfg.Path = strings.TrimSpace(cfg.Path)
+	cfg.User = strings.TrimSpace(cfg.User)
+	cfg.Member = strings.TrimSpace(cfg.Member)
+	return cfg
 }
 
 // Save replaces the setup. Run history stays in the SQLite file.
@@ -171,53 +213,14 @@ func (s *Store) Save(snap console.Snapshot) error {
 	}
 	doc.WorkspaceID = snap.WorkspaceID
 	doc.OrcaAgent = snap.OrcaAgent
+	doc.AgentPath = snap.AgentPath
+	doc.GenerateTool = strings.TrimSpace(snap.GenerateTool)
+	doc.GenerateModel = strings.TrimSpace(snap.GenerateModel)
 	doc.Repos = reposFrom(snap)
-	return s.write(doc)
-}
-
-// LoadModels reads models.yaml. A missing file means no saved choices.
-func (s *Store) LoadModels() ([]AgentModel, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	raw, err := os.ReadFile(s.modelsPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	var doc struct {
-		Agents []AgentModel `yaml:"agents"`
-	}
-	if err := yaml.Unmarshal(raw, &doc); err != nil {
-		return nil, fmt.Errorf("read models file: %w", err)
-	}
-	return doc.Agents, nil
-}
-
-// SaveModels writes models.yaml. The file only stores agent id, AI Tool, and model.
-func (s *Store) SaveModels(agents []AgentModel) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if agents == nil {
-		agents = []AgentModel{}
-	}
-	doc := struct {
-		Agents []AgentModel `yaml:"agents"`
-	}{Agents: agents}
-	raw, err := yaml.Marshal(doc)
-	if err != nil {
+	if err := s.write(doc); err != nil {
 		return err
 	}
-	text := "# KIKI agent models. This file has no machine paths. Copy it beside KIKI on another computer to reuse these choices.\n" + string(raw)
-	if err := os.MkdirAll(filepath.Dir(s.modelsPath), 0o755); err != nil {
-		return err
-	}
-	tmp := s.modelsPath + ".tmp"
-	if err := os.WriteFile(tmp, []byte(text), 0o644); err != nil {
-		return err
-	}
-	return os.Rename(tmp, s.modelsPath)
+	return writeRepoFiles(s.path, reposForFiles(snap))
 }
 
 func (s *Store) read() (fileDoc, error) {
@@ -245,7 +248,7 @@ func (s *Store) write(doc fileDoc) error {
 	if err != nil {
 		return err
 	}
-	text := "# KIKI setup. This file is saved in the app folder. Agents read it.\n" + string(raw)
+	text := "# KIKI setup. This file is saved in the .kiki folder next to the app. Agents read it.\n" + string(raw)
 	tmp := s.path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(text), 0o644); err != nil {
 		return err
@@ -275,7 +278,22 @@ func normalizeRepos(repos []repoDoc) []repoDoc {
 		}
 		out = append(out, repo)
 	}
-	return out
+	seen := map[string]bool{}
+	extras := make([]repoDoc, 0)
+	for _, repo := range repos {
+		kind := strings.TrimSpace(repo.Kind)
+		if toolchain.Known(kind) || !toolchain.RepoID(kind) || seen[kind] {
+			continue
+		}
+		seen[kind] = true
+		repo.Kind = kind
+		if repo.Services == nil {
+			repo.Services = []string{}
+		}
+		extras = append(extras, repo)
+	}
+	sort.Slice(extras, func(i, j int) bool { return extras[i].Kind < extras[j].Kind })
+	return append(out, extras...)
 }
 
 func reposEqual(a, b []repoDoc) bool {
@@ -320,9 +338,12 @@ func now() string {
 
 func (d fileDoc) snapshot() console.Snapshot {
 	snap := console.Snapshot{
-		WorkspaceID: d.WorkspaceID,
-		OrcaAgent:   d.OrcaAgent,
-		Repos:       make([]console.Repo, 0, len(d.Repos)),
+		WorkspaceID:   d.WorkspaceID,
+		OrcaAgent:     d.OrcaAgent,
+		AgentPath:     d.AgentPath,
+		GenerateTool:  strings.TrimSpace(d.GenerateTool),
+		GenerateModel: strings.TrimSpace(d.GenerateModel),
+		Repos:         make([]console.Repo, 0, len(d.Repos)),
 	}
 	for _, repo := range d.Repos {
 		services := repo.Services

@@ -306,8 +306,9 @@ func (c *Client) renameSetup(ctx context.Context, id, name string) error {
 }
 
 type orcaProject struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"displayName"`
+	ID            string   `json:"id"`
+	DisplayName   string   `json:"displayName"`
+	SourceRepoIDs []string `json:"sourceRepoIds"`
 }
 
 type hostSetup struct {

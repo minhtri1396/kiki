@@ -1,5 +1,10 @@
-# Local workspace & agent model config (machine-specific paths)
+# Files KIKI creates, next to the app
+/.kiki/
+
+# Local workspace (machine-specific paths)
 kiki.yaml
+
+# Older versions wrote a separate model list. Tool and model now live in each agent file.
 models.yaml
 
 # Built binary
@@ -10,8 +15,16 @@ kiki.db
 kiki.db-shm
 kiki.db-wal
 
+# Agent files written next to the app by older versions
+/agents/
+
 # Cloned app repos (local workspace)
 /backend/
 /docs/
 /mobile/
 /website/
+
+# KIKI generated files
+/kiki.yaml.tmp
+/models.yaml.tmp
+/kiki.db-journal

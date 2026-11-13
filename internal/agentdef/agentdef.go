@@ -1,13 +1,27 @@
 // Package agentdef is the catalog of KIKI agents embedded in the binary.
-// The documents live in app/agents and are compiled in by go build.
+// The documents live in internal/agents and are compiled in by go build.
 package agentdef
 
 import (
 	"fmt"
 	"strings"
 
-	"kiki/agents"
+	"kiki/internal/agents"
 )
+
+// Repo is one repository this agent uses.
+// Description is the note written into the agent file when KIKI creates it.
+type Repo struct {
+	Kind        string
+	Description string
+}
+
+// Peer is one agent this agent coordinates with.
+// Collaboration is the note written into the agent file when KIKI creates it.
+type Peer struct {
+	ID            string
+	Collaboration string
+}
 
 // Agent is one embedded instruction document the console can start.
 type Agent struct {
@@ -15,8 +29,8 @@ type Agent struct {
 	Title   string
 	Group   string
 	File    string
-	Repos   []string
-	Peer    string
+	Repos   []Repo
+	Peers   []Peer
 	Summary string
 }
 
@@ -27,8 +41,8 @@ var Catalog = []Agent{
 		Title:   "Document Writer",
 		Group:   "Requirement",
 		File:    "requirement/document.md",
-		Repos:   []string{"document"},
-		Peer:    "requirement_designer",
+		Repos:   []Repo{{Kind: "document", Description: documentWriterRepo}},
+		Peers:   []Peer{{ID: "requirement_designer", Collaboration: documentToDesigner}},
 		Summary: "Writes business_requirement.md and product_requirement.md.",
 	},
 	{
@@ -36,15 +50,28 @@ var Catalog = []Agent{
 		Title:   "UI Designer",
 		Group:   "Requirement",
 		File:    "requirement/designer.md",
-		Repos:   []string{"document"},
+		Repos:   []Repo{{Kind: "document", Description: designerRepo}},
+		Peers:   []Peer{{ID: "requirement_document", Collaboration: designerToDocument}},
 		Summary: "Draws design.html from the product requirement.",
 	},
 	{
-		ID:      "requirement_planner",
-		Title:   "Planner",
-		Group:   "Requirement",
-		File:    "requirement/planner.md",
-		Repos:   []string{"document", "backend", "website", "mobile"},
+		ID:    "requirement_planner",
+		Title: "Planner",
+		Group: "Requirement",
+		File:  "requirement/planner.md",
+		Repos: []Repo{
+			{Kind: "document", Description: plannerDocumentRepo},
+			{Kind: "backend", Description: plannerCodeRepo("backend")},
+			{Kind: "website", Description: plannerCodeRepo("website")},
+			{Kind: "mobile", Description: plannerCodeRepo("mobile")},
+		},
+		Peers: []Peer{
+			{ID: "requirement_document", Collaboration: plannerToDocument},
+			{ID: "requirement_designer", Collaboration: plannerToDesigner},
+			{ID: "backend_runner", Collaboration: plannerToRunner("backend_runner", "backend")},
+			{ID: "website_runner", Collaboration: plannerToRunner("website_runner", "website")},
+			{ID: "mobile_runner", Collaboration: plannerToRunner("mobile_runner", "mobile")},
+		},
 		Summary: "Creates Jira tickets from a requirement folder.",
 	},
 	{
@@ -52,8 +79,8 @@ var Catalog = []Agent{
 		Title:   "Senior Backend Developer",
 		Group:   "Backend",
 		File:    "development/backend/runner.md",
-		Repos:   []string{"backend"},
-		Peer:    "backend_reviewer",
+		Repos:   []Repo{{Kind: "backend", Description: runnerRepo("backend", "website, mobile, or document")}},
+		Peers:   []Peer{{ID: "backend_reviewer", Collaboration: runnerToReviewer("backend_runner", "backend_reviewer")}},
 		Summary: "Implements a backend ticket and opens a pull request.",
 	},
 	{
@@ -61,8 +88,8 @@ var Catalog = []Agent{
 		Title:   "Backend Reviewer",
 		Group:   "Backend",
 		File:    "development/backend/reviewer.md",
-		Repos:   []string{"backend"},
-		Peer:    "backend_runner",
+		Repos:   []Repo{{Kind: "backend", Description: reviewerRepo("backend", "website, mobile, or document")}},
+		Peers:   []Peer{{ID: "backend_runner", Collaboration: reviewerToRunner("backend_reviewer", "backend_runner")}},
 		Summary: "Reviews pull requests from backend_runner.",
 	},
 	{
@@ -70,8 +97,8 @@ var Catalog = []Agent{
 		Title:   "Senior Website Developer",
 		Group:   "Website",
 		File:    "development/website/runner.md",
-		Repos:   []string{"website"},
-		Peer:    "website_reviewer",
+		Repos:   []Repo{{Kind: "website", Description: runnerRepo("website", "backend, mobile, or document")}},
+		Peers:   []Peer{{ID: "website_reviewer", Collaboration: runnerToReviewer("website_runner", "website_reviewer")}},
 		Summary: "Implements a website ticket and opens a pull request.",
 	},
 	{
@@ -79,8 +106,8 @@ var Catalog = []Agent{
 		Title:   "Website Reviewer",
 		Group:   "Website",
 		File:    "development/website/reviewer.md",
-		Repos:   []string{"website"},
-		Peer:    "website_runner",
+		Repos:   []Repo{{Kind: "website", Description: reviewerRepo("website", "backend, mobile, or document")}},
+		Peers:   []Peer{{ID: "website_runner", Collaboration: reviewerToRunner("website_reviewer", "website_runner")}},
 		Summary: "Reviews pull requests from website_runner.",
 	},
 	{
@@ -88,8 +115,8 @@ var Catalog = []Agent{
 		Title:   "Senior Mobile Developer",
 		Group:   "Mobile",
 		File:    "development/mobile/runner.md",
-		Repos:   []string{"mobile"},
-		Peer:    "mobile_reviewer",
+		Repos:   []Repo{{Kind: "mobile", Description: runnerRepo("mobile", "backend, website, or document")}},
+		Peers:   []Peer{{ID: "mobile_reviewer", Collaboration: runnerToReviewer("mobile_runner", "mobile_reviewer")}},
 		Summary: "Implements a mobile ticket and opens a pull request.",
 	},
 	{
@@ -97,8 +124,8 @@ var Catalog = []Agent{
 		Title:   "Mobile Reviewer",
 		Group:   "Mobile",
 		File:    "development/mobile/reviewer.md",
-		Repos:   []string{"mobile"},
-		Peer:    "mobile_runner",
+		Repos:   []Repo{{Kind: "mobile", Description: reviewerRepo("mobile", "backend, website, or document")}},
+		Peers:   []Peer{{ID: "mobile_runner", Collaboration: reviewerToRunner("mobile_reviewer", "mobile_runner")}},
 		Summary: "Reviews pull requests from mobile_runner.",
 	},
 }
@@ -120,8 +147,14 @@ func (a Agent) Body() (string, error) {
 		return "", fmt.Errorf("read embedded agent %s: %w", a.ID, err)
 	}
 	text := string(raw)
-	if !strings.Contains(text, "**Agent ID:** `"+a.ID+"`") {
-		return "", fmt.Errorf("embedded agent %s does not contain its agent id", a.ID)
+	if !strings.Contains(text, "# Agent:") {
+		return "", fmt.Errorf("embedded agent %s has no document heading", a.ID)
+	}
+	if strings.Contains(text, "## Works with agents") || strings.Contains(text, "**Agent ID:**") {
+		return "", fmt.Errorf("embedded agent %s repeats fields the launch prompt already includes", a.ID)
+	}
+	if strings.Contains(text, "obsidian vault=") || strings.Contains(text, "codegraph explore") || strings.Contains(text, "codegraph_explore") {
+		return "", fmt.Errorf("embedded agent %s contains index instructions the launch prompt adds", a.ID)
 	}
 	return text, nil
 }

@@ -41,19 +41,28 @@ func (c *Client) addFolderProject(ctx context.Context, root, name string) error 
 }
 
 // groupProject puts the named project in one Orca sidebar folder. The folder is created when missing.
+// projectGroup.moveProject addresses the registered repo. A durable project id
+// (github:owner/repo or repo:<id>) is not a repo selector and comes back as repo_not_found.
 func (c *Client) groupProject(ctx context.Context, name, displayName string) error {
 	projects, err := c.projects(ctx)
 	if err != nil {
 		return err
 	}
-	projectID := ""
+	repoID := ""
+	found := false
 	for _, project := range projects {
-		if project.DisplayName == displayName {
-			projectID = project.ID
-			break
+		if project.DisplayName != displayName {
+			continue
 		}
+		found = true
+		if len(project.SourceRepoIDs) > 0 {
+			repoID = project.SourceRepoIDs[0]
+		} else {
+			repoID = displayName
+		}
+		break
 	}
-	if projectID == "" {
+	if !found {
 		return fmt.Errorf("Orca project %s was not found", displayName)
 	}
 	raw, err := c.call(ctx, "projectGroup.list", nil)
@@ -102,7 +111,7 @@ func (c *Client) groupProject(ctx context.Context, name, displayName string) err
 		}
 	}
 	if _, err := c.call(ctx, "projectGroup.moveProject", map[string]any{
-		"repo":    projectID,
+		"repo":    repoID,
 		"groupId": groupID,
 	}); err != nil {
 		return fmt.Errorf("group Orca projects in %s: %w", name, err)

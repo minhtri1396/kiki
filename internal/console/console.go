@@ -7,6 +7,7 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -24,21 +25,27 @@ var (
 	serviceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 )
 
-// Repo is one of backend, website, or mobile.
+// Repo is one app repository. Index is obsidian, codegraph, or empty when none is set.
+// Sparse is a folder inside the git repository. Empty means the whole repository is checked out.
 type Repo struct {
 	Kind     string
 	Folder   string
 	Services []string
+	Index    string
+	Sparse   string
 }
 
 // Snapshot is the setup passed to one agent launch.
 type Snapshot struct {
-	Root        string
-	SetupFile   string
-	Worktree    string
-	WorkspaceID string
-	OrcaAgent   string
-	Repos       []Repo
+	Root          string
+	SetupFile     string
+	Worktree      string
+	WorkspaceID   string
+	OrcaAgent     string
+	AgentPath     string
+	GenerateTool  string
+	GenerateModel string
+	Repos         []Repo
 }
 
 // Repo returns the setup for a folder kind.
@@ -59,32 +66,79 @@ func Validate(snap Snapshot) error {
 	if !contains(OrcaAgents, snap.OrcaAgent) {
 		return fmt.Errorf("Default AI Tool is not supported")
 	}
-	if len(snap.Repos) != len(toolchain.Kinds) {
+	if snap.GenerateTool != "" && !contains(OrcaAgents, snap.GenerateTool) {
+		return fmt.Errorf("Generate AI Tool is not supported")
+	}
+	if snap.GenerateModel != "" && !modelID.MatchString(snap.GenerateModel) {
+		return fmt.Errorf("Generate model is not supported")
+	}
+	if len(snap.Repos) < len(toolchain.Kinds) {
 		return fmt.Errorf("need backend, website, mobile, and document")
 	}
+	seenKind := map[string]bool{}
 	for i, kind := range toolchain.Kinds {
 		repo := snap.Repos[i]
 		if repo.Kind != kind {
 			return fmt.Errorf("repo order must be backend, website, mobile, document")
 		}
-		if err := validateFolder(repo.Folder); err != nil {
-			return fmt.Errorf("%s: %w", kind, err)
+		if err := validateRepo(repo, kind == "document"); err != nil {
+			return err
 		}
-		if kind == "document" && len(repo.Services) > 0 {
-			return fmt.Errorf("document does not use service names")
+		seenKind[kind] = true
+	}
+	for _, repo := range snap.Repos[len(toolchain.Kinds):] {
+		if !toolchain.RepoID(repo.Kind) || seenKind[repo.Kind] {
+			return fmt.Errorf("repository %s is not valid", repo.Kind)
 		}
-		seen := map[string]bool{}
-		for _, name := range repo.Services {
-			if !serviceName.MatchString(name) {
-				return fmt.Errorf("service name %q for %s may contain only letters, digits, dots, hyphens, or underscores", name, kind)
-			}
-			if seen[name] {
-				return fmt.Errorf("service %q for %s is duplicated", name, kind)
-			}
-			seen[name] = true
+		seenKind[repo.Kind] = true
+		if err := validateRepo(repo, false); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func validateRepo(repo Repo, document bool) error {
+	if err := validateFolder(repo.Folder); err != nil {
+		return fmt.Errorf("%s: %w", repo.Kind, err)
+	}
+	if document && len(repo.Services) > 0 {
+		return fmt.Errorf("document does not use service names")
+	}
+	seen := map[string]bool{}
+	for _, name := range repo.Services {
+		if !serviceName.MatchString(name) {
+			return fmt.Errorf("service name %q for %s may contain only letters, digits, dots, hyphens, or underscores", name, repo.Kind)
+		}
+		if seen[name] {
+			return fmt.Errorf("service %q for %s is duplicated", name, repo.Kind)
+		}
+		seen[name] = true
+	}
+	return nil
+}
+
+// SparsePath checks a folder path for a sparse checkout.
+// An empty path means the whole repository. The result uses forward slashes.
+func SparsePath(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	raw = strings.Trim(raw, "/")
+	if raw == "" {
+		return "", nil
+	}
+	if strings.ContainsAny(raw, "\\\r\n") || strings.Contains(raw, ":") {
+		return "", fmt.Errorf("folder path must be inside the repository, such as product/requirements")
+	}
+	cleaned := path.Clean(raw)
+	if cleaned == "." || cleaned == ".." || strings.HasPrefix(cleaned, "../") {
+		return "", fmt.Errorf("folder path must be inside the repository, such as product/requirements")
+	}
+	for _, part := range strings.Split(cleaned, "/") {
+		if part == "" || part == "." || part == ".." || part == ".git" {
+			return "", fmt.Errorf("folder path must be inside the repository, such as product/requirements")
+		}
+	}
+	return cleaned, nil
 }
 
 func validateFolder(raw string) error {
@@ -126,6 +180,23 @@ func ApplyRoot(root string, snap Snapshot) (Snapshot, error) {
 		if kind == "document" {
 			repo.Services = nil
 		}
+		if err := os.MkdirAll(repo.Folder, 0o755); err != nil {
+			return Snapshot{}, err
+		}
+		snap.Repos = append(snap.Repos, repo)
+	}
+	extras := make([]string, 0)
+	for kind := range byKind {
+		if toolchain.Known(kind) || !toolchain.RepoID(kind) {
+			continue
+		}
+		extras = append(extras, kind)
+	}
+	sort.Strings(extras)
+	for _, kind := range extras {
+		repo := byKind[kind]
+		repo.Kind = kind
+		repo.Folder = filepath.Join(root, kind)
 		if err := os.MkdirAll(repo.Folder, 0o755); err != nil {
 			return Snapshot{}, err
 		}
@@ -217,8 +288,14 @@ func readProjectName(path string) (string, bool) {
 	return strings.TrimSpace(doc.Name), true
 }
 
+// Peer is one agent this launch can hand work to.
+type Peer struct {
+	ID   string
+	Note string
+}
+
 // Prompt is the text passed to `orca agent launch --prompt`.
-func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string) string {
+func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string, peers []Peer) string {
 	snap = Fill(snap)
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are %s (%s).\n\n", agent.ID, agent.Title)
@@ -227,12 +304,15 @@ func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string) strin
 	fmt.Fprintf(&b, "Orca worktree: %s\n", snap.Worktree)
 	fmt.Fprintf(&b, "Setup file: %s\n", snap.SetupFile)
 	fmt.Fprintf(&b, "Workspace id: %s\n", snap.WorkspaceID)
-	fmt.Fprintf(&b, "GitNexus index name: %s\n\n", snap.WorkspaceID)
-	b.WriteString("The setup file is kiki.yaml in the app folder. That folder is the repository root. Its absolute path is the Setup file line above. Read that file in Step 0. It is the only setup file. Do not read agents/config.local.yaml. The workspace id is workspace_id in that file. The GitNexus index uses the same id. Do not invent values that are missing, and do not assume the workspace id is kiki. Folder paths and service names below are the saved setup.\n\n")
+	b.WriteString("\nThe setup file is .kiki/kiki.yaml next to the app. The app folder is the repository root. Its absolute path is the Setup file line above. Read that file in Step 0. It is the only setup file. Do not read .kiki/agents/config.local.yaml. The workspace id is workspace_id in that file. Do not invent values that are missing, and do not assume the workspace id is kiki. Folder paths and service names below are the saved setup.\n\n")
 	b.WriteString("You were started in the Orca worktree. That folder is the repository for this launch. Run git, gh, and project commands in the repository folder from the setup file. Do not create, edit, commit, or run project commands in a repository that is not listed. A repository with no folder is not set up.\n\n")
 	b.WriteString("Service names are the Nx project names in a code repository. Use them when you choose a project and its AGENTS.md. The document repository has a folder and no service names.\n\n")
 	b.WriteString("Repositories for this agent:\n")
-	for _, kind := range agent.Repos {
+	for _, item := range agent.Repos {
+		kind := strings.TrimSpace(item.Kind)
+		if kind == "" {
+			continue
+		}
 		repo := snap.Repo(kind)
 		fmt.Fprintf(&b, "- %s\n", kind)
 		if repo.Folder == "" {
@@ -240,23 +320,36 @@ func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string) strin
 		} else {
 			fmt.Fprintf(&b, "  folder: %s\n", repo.Folder)
 		}
-		if kind == "document" {
+		if repo.Sparse != "" {
+			fmt.Fprintf(&b, "  checkout: %s\n", repo.Sparse)
+			fmt.Fprintf(&b, "  This repository is a sparse checkout of %s. The working tree contains that folder and files at the repository root. Other folders are not checked out. Do not disable sparse checkout or add another path. Read and change files only inside %s. Run git commit, git push, and git pull in the repository folder. Pull updates this checkout. A commit keeps every other path on the remote as it already is.\n", repo.Sparse, repo.Sparse)
+		}
+		if kind != "document" {
+			if len(repo.Services) == 0 {
+				b.WriteString("  services: (none)\n")
+			} else {
+				fmt.Fprintf(&b, "  services: %s\n", strings.Join(repo.Services, ", "))
+			}
+		}
+		note := strings.TrimSpace(item.Description)
+		if note == "" {
 			continue
 		}
-		if len(repo.Services) == 0 {
-			b.WriteString("  services: (none)\n")
-		} else {
-			fmt.Fprintf(&b, "  services: %s\n", strings.Join(repo.Services, ", "))
+		b.WriteString("  Work in this repository:\n")
+		for _, line := range strings.Split(note, "\n") {
+			fmt.Fprintf(&b, "  %s\n", line)
 		}
 	}
 	b.WriteString("\n")
+	writeIndexes(&b, agent.Repos, snap)
+	writePeers(&b, agent.ID, peers)
 	note = strings.TrimSpace(note)
 	if note == "" {
 		b.WriteString("The user did not send a ticket, a requirement folder, or any other instruction. Follow the Startup behavior in the agent document and wait.\n\n")
 	} else {
 		b.WriteString("The user sent a message with this launch. It is repeated after the agent document. Treat that message as the user message in your terminal.\n\n")
 	}
-	fmt.Fprintf(&b, "===== AGENT DOCUMENT (app/agents/%s) =====\n", agent.File)
+	fmt.Fprintf(&b, "===== AGENT DOCUMENT (%s) =====\n", agent.File)
 	b.WriteString(body)
 	if !strings.HasSuffix(body, "\n") {
 		b.WriteString("\n")
@@ -268,6 +361,40 @@ func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string) strin
 		b.WriteString("\n===== END USER MESSAGE =====\n")
 	}
 	return b.String()
+}
+
+func writePeers(b *strings.Builder, self string, peers []Peer) {
+	self = strings.TrimSpace(self)
+	list := make([]Peer, 0, len(peers))
+	for _, peer := range peers {
+		id := strings.TrimSpace(peer.ID)
+		if id == "" || id == self {
+			continue
+		}
+		list = append(list, Peer{ID: id, Note: strings.TrimSpace(peer.Note)})
+	}
+	if self == "" && len(list) == 0 {
+		return
+	}
+	if self != "" {
+		fmt.Fprintf(b, "Your agent id is %s. Other agents reach you by this id.\n", self)
+	}
+	if len(list) == 0 {
+		b.WriteString("\n")
+		return
+	}
+	b.WriteString("Teamwork with these agents. When you communicate or hand work to one of them, use that agent id.\n")
+	for _, peer := range list {
+		fmt.Fprintf(b, "- agent id: %s\n", peer.ID)
+		if peer.Note == "" {
+			continue
+		}
+		b.WriteString("  Coordination:\n")
+		for _, line := range strings.Split(peer.Note, "\n") {
+			fmt.Fprintf(b, "  %s\n", line)
+		}
+	}
+	b.WriteString("\n")
 }
 
 func contains(list []string, value string) bool {

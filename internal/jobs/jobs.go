@@ -1,4 +1,4 @@
-// Package jobs runs GitNexus and CodeGraph setup, and checks whether they are ready.
+// Package jobs runs Obsidian and CodeGraph setup, and checks whether they are ready.
 package jobs
 
 import (
@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"kiki/internal/gitignore"
 	"kiki/internal/toolchain"
 )
 
@@ -37,10 +38,17 @@ type Check struct {
 	CheckedAt string `json:"checkedAt,omitempty"`
 }
 
-// Report is the last status check.
+// Target is one repository and the index saved for it.
+// Index is obsidian, codegraph, or empty.
+type Target struct {
+	Kind   string
+	Folder string
+	Index  string
+}
+
+// Report is the last status check, keyed by repository kind.
 type Report struct {
-	GitNexus  Check            `json:"gitnexus"`
-	Codegraph map[string]Check `json:"codegraph"`
+	Repos map[string]Check `json:"repos"`
 }
 
 // Manager runs setup commands.
@@ -60,7 +68,7 @@ func New() *Manager {
 		running:  map[string]string{},
 		lookPath: lookPath,
 		last: Report{
-			Codegraph: map[string]Check{},
+			Repos: map[string]Check{},
 		},
 	}
 }
@@ -107,19 +115,50 @@ func (m *Manager) Cancel(id string) bool {
 	return true
 }
 
-// StartGitNexus runs gitnexus analyze at the repository root.
-// name is the workspace id from the setup YAML.
-func (m *Manager) StartGitNexus(root, name string) (Job, error) {
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return Job{}, fmt.Errorf("workspace id is not set")
+// StartObsidian makes one repository folder an Obsidian vault, then checks the CLI.
+func (m *Manager) StartObsidian(kind, folder string) (Job, error) {
+	if !toolchain.Known(kind) {
+		return Job{}, fmt.Errorf("invalid repo")
 	}
-	return m.start("gitnexus", "root", root, toolchain.GitNexusAnalyze(name))
+	folder = strings.TrimSpace(folder)
+	if folder == "" {
+		return Job{}, fmt.Errorf("folder is not set")
+	}
+	cli, err := toolchain.InstallObsidianCommand()
+	if err != nil {
+		return Job{}, err
+	}
+	info, err := os.Stat(folder)
+	if err != nil || !info.IsDir() {
+		return Job{}, fmt.Errorf("folder %s does not exist", folder)
+	}
+	ignorePath, err := gitignore.Index(folder, ".codegraph", ".obsidian")
+	if err != nil {
+		return Job{}, err
+	}
+	note, err := toolchain.EnsureVault(folder)
+	if err != nil {
+		return Job{}, err
+	}
+	if cli != "" {
+		note = note + "\nObsidian CLI: " + cli
+	}
+	if ignorePath != "" {
+		note = note + "\nGit ignore: " + ignorePath
+	}
+	if err := toolchain.OpenVault(cli, folder); err != nil {
+		return Job{}, fmt.Errorf("%s (%w)", note, err)
+	}
+	job, err := m.start("obsidian", kind, folder, toolchain.ObsidianStatus(folder), note)
+	if err != nil {
+		return Job{}, fmt.Errorf("%s (%w)", note, err)
+	}
+	return job, nil
 }
 
 // StartCodegraph runs codegraph init for one repository folder.
 func (m *Manager) StartCodegraph(root, kind, folder string) (Job, error) {
-	if !knownKind(kind) {
+	if !toolchain.Known(kind) {
 		return Job{}, fmt.Errorf("invalid repo")
 	}
 	if strings.TrimSpace(folder) == "" {
@@ -129,40 +168,31 @@ func (m *Manager) StartCodegraph(root, kind, folder string) (Job, error) {
 	if err != nil || !info.IsDir() {
 		return Job{}, fmt.Errorf("folder %s does not exist", folder)
 	}
-	return m.start("codegraph", kind, root, toolchain.CodegraphInit(folder))
+	ignorePath, err := gitignore.Index(folder, ".codegraph", ".obsidian")
+	if err != nil {
+		return Job{}, err
+	}
+	note := ""
+	if ignorePath != "" {
+		note = "Git ignore: " + ignorePath
+	}
+	return m.start("codegraph", kind, root, toolchain.CodegraphInit(folder), note)
 }
 
-// Check runs the status commands the agent documents use.
-// folders maps backend, website, and mobile to the chosen repository path.
-func (m *Manager) Check(ctx context.Context, root string, folders map[string]string) (Report, error) {
-	report := Report{Codegraph: map[string]Check{}}
+// Check runs the status command for the index saved on each repository.
+func (m *Manager) Check(ctx context.Context, root string, targets []Target) (Report, error) {
+	report := Report{Repos: map[string]Check{}}
 	var mu sync.Mutex
 	var wg sync.WaitGroup
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		dir := filepath.Join(root, ".gitnexus")
-		check := m.runCheck(ctx, root, dir, toolchain.GitNexusStatus(), "not indexed")
-		mu.Lock()
-		report.GitNexus = check
-		mu.Unlock()
-	}()
-	for _, kind := range toolchain.CodeKinds {
+	for _, target := range targets {
 		wg.Add(1)
-		go func(kind string) {
+		go func(target Target) {
 			defer wg.Done()
-			folder := strings.TrimSpace(folders[kind])
-			var check Check
-			if folder == "" {
-				check = Check{Summary: "folder is not set", CheckedAt: now()}
-			} else {
-				check = m.runCheck(ctx, root, filepath.Join(folder, ".codegraph"), toolchain.CodegraphStatus(folder), "not initialized")
-			}
+			check := m.checkTarget(ctx, root, target)
 			mu.Lock()
-			report.Codegraph[kind] = check
+			report.Repos[target.Kind] = check
 			mu.Unlock()
-		}(kind)
+		}(target)
 	}
 	wg.Wait()
 
@@ -170,6 +200,165 @@ func (m *Manager) Check(ctx context.Context, root string, folders map[string]str
 	m.last = copyReport(report)
 	m.mu.Unlock()
 	return report, nil
+}
+
+// RefreshFolders reports whether each repository using index still has its
+// .obsidian or .codegraph folder. Other results stay as they were.
+func (m *Manager) RefreshFolders(targets []Target, index string) (Report, error) {
+	name, err := indexFolderName(index)
+	if err != nil {
+		return Report{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.last.Repos == nil {
+		m.last.Repos = map[string]Check{}
+	}
+	for _, target := range targets {
+		if target.Index != index {
+			continue
+		}
+		folder := strings.TrimSpace(target.Folder)
+		exists := false
+		summary := name + " is missing"
+		if folder == "" {
+			summary = "folder is not set"
+		} else if isDir(filepath.Join(folder, name)) {
+			exists = true
+			summary = name + " exists"
+		}
+		m.last.Repos[target.Kind] = Check{
+			Ready:     exists,
+			DirExists: exists,
+			Summary:   summary,
+			CheckedAt: now(),
+		}
+	}
+	return copyReport(m.last), nil
+}
+
+func indexFolderName(index string) (string, error) {
+	switch index {
+	case "obsidian":
+		return ".obsidian", nil
+	case "codegraph":
+		return ".codegraph", nil
+	default:
+		return "", fmt.Errorf("unknown index")
+	}
+}
+
+// CheckOne runs the status command for one repository and keeps the other results.
+func (m *Manager) CheckOne(ctx context.Context, root string, targets []Target, kind string) (Report, error) {
+	var found bool
+	var target Target
+	for _, item := range targets {
+		if item.Kind == kind {
+			target = item
+			found = true
+			break
+		}
+	}
+	if !found || !toolchain.Known(kind) {
+		return Report{}, fmt.Errorf("unknown repository")
+	}
+	check := m.checkTarget(ctx, root, target)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.last.Repos == nil {
+		m.last.Repos = map[string]Check{}
+	}
+	m.last.Repos[kind] = check
+	return copyReport(m.last), nil
+}
+
+func (m *Manager) checkTarget(ctx context.Context, root string, target Target) Check {
+	folder := strings.TrimSpace(target.Folder)
+	switch target.Index {
+	case "":
+		return Check{Summary: "No index is set for this repository", CheckedAt: now()}
+	case "obsidian":
+		return m.runObsidianCheck(ctx, folder)
+	case "codegraph":
+		if folder == "" {
+			return Check{Summary: "folder is not set", CheckedAt: now()}
+		}
+		return m.runCheck(ctx, root, filepath.Join(folder, ".codegraph"), toolchain.CodegraphStatus(folder), "not initialized")
+	default:
+		return Check{Summary: "unknown index", CheckedAt: now()}
+	}
+}
+
+func (m *Manager) runObsidianCheck(ctx context.Context, folder string) Check {
+	if folder == "" {
+		return Check{Summary: "folder is not set", CheckedAt: now()}
+	}
+	abs, err := filepath.Abs(folder)
+	if err != nil {
+		abs = folder
+	}
+	indexDir := filepath.Join(abs, ".obsidian")
+	exists := isDir(indexDir)
+	args := toolchain.ObsidianStatus(abs)
+	bin, err := m.lookPath(args[0])
+	if err != nil {
+		return Check{
+			DirExists: exists,
+			Summary:   fmt.Sprintf("command %s was not found on PATH", args[0]),
+			CheckedAt: now(),
+		}
+	}
+	cctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(cctx, bin, args[1:]...)
+	cmd.Dir = abs
+	cmd.Env = commandEnv()
+	out, runErr := cmd.CombinedOutput()
+	text := cleanOutput(string(out))
+	ready := exists && runErr == nil && pathMentioned(text, abs)
+	if !ready && strings.Contains(text, "Vault not found") && cctx.Err() == nil {
+		if err := toolchain.OpenVault(bin, abs); err == nil {
+			again := exec.CommandContext(cctx, bin, args[1:]...)
+			again.Dir = abs
+			again.Env = commandEnv()
+			out, runErr = again.CombinedOutput()
+			text = cleanOutput(string(out))
+			ready = exists && runErr == nil && pathMentioned(text, abs)
+		}
+	}
+	summary := firstLine(text)
+	switch {
+	case runErr != nil && summary == "":
+		summary = runErr.Error()
+	case !exists && summary == "":
+		summary = "Vault folder is missing"
+	case !ready && summary == "":
+		summary = "Obsidian did not report this document folder"
+	case ready && summary == "":
+		summary = "Ready"
+	}
+	if len(summary) > 400 {
+		summary = summary[:400]
+	}
+	return Check{
+		Ready:     ready,
+		DirExists: exists,
+		Summary:   summary,
+		CheckedAt: now(),
+	}
+}
+
+func pathMentioned(text, folder string) bool {
+	folder = filepath.Clean(folder)
+	if strings.Contains(text, folder) {
+		return true
+	}
+	resolved, err := filepath.EvalSymlinks(folder)
+	if err != nil {
+		return false
+	}
+	resolved = filepath.Clean(resolved)
+	return resolved != folder && strings.Contains(text, resolved)
 }
 
 func (m *Manager) runCheck(ctx context.Context, dir, indexDir string, args []string, phrase string) Check {
@@ -217,7 +406,7 @@ func evaluate(dirExists bool, output string, runErr error, phrase string) Check 
 	}
 }
 
-func (m *Manager) start(kind, target, dir string, args []string) (Job, error) {
+func (m *Manager) start(kind, target, dir string, args []string, prefix string) (Job, error) {
 	bin, err := m.lookPath(args[0])
 	if err != nil {
 		return Job{}, fmt.Errorf("command %s was not found on PATH", args[0])
@@ -235,6 +424,7 @@ func (m *Manager) start(kind, target, dir string, args []string) (Job, error) {
 		Target:    target,
 		Status:    "running",
 		Command:   formatArgs(args),
+		Log:       prefixLog(prefix),
 		StartedAt: now(),
 		cancel:    cancel,
 	}
@@ -290,6 +480,10 @@ func (m *Manager) run(ctx context.Context, job *Job, key, dir string, args []str
 		}
 	default:
 		job.Status = "ok"
+		if job.Kind == "obsidian" && strings.Contains(job.Log, "Vault not found.") {
+			job.Status = "error"
+			job.Error = "Vault not found."
+		}
 	}
 }
 
@@ -308,6 +502,14 @@ func (w *lockedWriter) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
+func prefixLog(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" {
+		return ""
+	}
+	return prefix + "\n"
+}
+
 func snapshot(job *Job) Job {
 	if job == nil {
 		return Job{}
@@ -319,20 +521,11 @@ func snapshot(job *Job) Job {
 
 func copyReport(in Report) Report {
 	out := in
-	out.Codegraph = map[string]Check{}
-	for key, value := range in.Codegraph {
-		out.Codegraph[key] = value
+	out.Repos = map[string]Check{}
+	for key, value := range in.Repos {
+		out.Repos[key] = value
 	}
 	return out
-}
-
-func knownKind(kind string) bool {
-	for _, item := range toolchain.CodeKinds {
-		if item == kind {
-			return true
-		}
-	}
-	return false
 }
 
 func isDir(path string) bool {
@@ -376,13 +569,21 @@ func formatArgs(args []string) string {
 func lookPath(name string) (string, error) {
 	for _, dir := range filepath.SplitList(pathValue()) {
 		candidate := filepath.Join(dir, name)
-		info, err := os.Stat(candidate)
-		if err != nil || info.IsDir() || info.Mode()&0o111 == 0 {
-			continue
+		if executableFile(candidate) {
+			return candidate, nil
 		}
-		return candidate, nil
+	}
+	if name == "obsidian" {
+		if bundled := toolchain.BundledObsidianCLI(); bundled != "" {
+			return bundled, nil
+		}
 	}
 	return "", fmt.Errorf("%s not found", name)
+}
+
+func executableFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
 
 func pathValue() string {

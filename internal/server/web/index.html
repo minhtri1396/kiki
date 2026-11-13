@@ -10,7 +10,7 @@
   <header class="top">
     <div class="title-row">
         <h1>KIKI</h1>
-        <button type="button" id="open-settings" class="icon-button" aria-label="Settings">
+        <button type="button" id="open-settings" class="icon-button" aria-label="Settings" disabled>
           <svg viewBox="0 0 24 24" aria-hidden="true">
             <circle cx="12" cy="12" r="3"></circle>
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.77 1.05 1.51 1.16H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -22,18 +22,12 @@
   <div class="section-bar">
     <nav class="tabs" aria-label="Sections">
       <button type="button" data-tab="agents" aria-selected="true">Agents</button>
-      <button type="button" data-tab="repos" aria-selected="false">Repos</button>
-      <button type="button" data-tab="indexes" aria-selected="false">Indexes</button>
+      <button type="button" data-tab="repos" aria-selected="false" disabled>Repositories</button>
+      <button type="button" data-tab="indexes" aria-selected="false" disabled>Indexes</button>
     </nav>
-    <button type="button" id="start-feature" class="primary">Start Feature</button>
+    <button type="button" id="start-feature" class="primary" disabled>Start Feature</button>
   </div>
-  <p id="banner" class="banner" role="status" hidden>
-    <span id="banner-text"></span>
-    <svg class="timer" viewBox="0 0 20 20" aria-hidden="true">
-      <circle class="timer-track" cx="10" cy="10" r="8"></circle>
-      <circle class="timer-value" cx="10" cy="10" r="8"></circle>
-    </svg>
-  </p>
+  <div id="banners" class="banner-stack"></div>
   <main>
     <section id="panel-agents">
       <p class="loading" role="status">
@@ -46,25 +40,27 @@
   </main>
   <dialog id="launch-dialog">
     <form method="dialog" id="launch-form">
-      <h2 id="launch-title"></h2>
-      <p id="launch-meta" class="hint"></p>
-      <div id="launch-repos"></div>
-      <label class="field" id="launch-repo-field">
-        <span>Repo</span>
-        <select id="launch-repo"></select>
-      </label>
-      <p id="launch-worktree" class="hint"></p>
-      <label class="field">
-        <span>Message</span>
-        <textarea id="launch-note" rows="4" placeholder="Parent ticket, requirement folder, or leave empty"></textarea>
-      </label>
-      <p class="hint">Leave this empty and the agent only reads the setup, then waits, as its Startup section says.</p>
-      <div class="prompt-wrap">
-        <div class="prompt-bar">
-          <button type="button" id="prompt-toggle" aria-expanded="false">Show the prompt</button>
-          <button type="button" id="prompt-open">Open larger</button>
+      <div class="dialog-body">
+        <h2 id="launch-title"></h2>
+        <p id="launch-meta" class="hint"></p>
+        <div id="launch-repos"></div>
+        <label class="field" id="launch-repo-field">
+          <span>Repository</span>
+          <select id="launch-repo"></select>
+        </label>
+        <p id="launch-worktree" class="hint"></p>
+        <label class="field">
+          <span>Message</span>
+          <textarea id="launch-note" rows="4" placeholder="Parent ticket, requirement folder, or leave empty"></textarea>
+        </label>
+        <p class="hint">Leave this empty and the agent only reads the setup, then waits, as its Startup section says.</p>
+        <div class="prompt-wrap">
+          <div class="prompt-bar">
+            <button type="button" id="prompt-toggle" aria-expanded="false">Show the prompt</button>
+            <button type="button" id="prompt-open">Open larger</button>
+          </div>
+          <div id="launch-prompt" class="markdown" hidden>Open this to load the prompt.</div>
         </div>
-        <div id="launch-prompt" class="markdown" hidden>Open this to load the prompt.</div>
       </div>
       <p id="launch-result" class="result" hidden></p>
       <div class="actions">
@@ -75,18 +71,20 @@
   </dialog>
   <dialog id="feature-dialog">
     <form method="dialog" id="feature-form">
-      <h2>Start Feature</h2>
-      <label class="field">
-        <span>Feature name</span>
-        <input id="feature-name" type="text" autocomplete="off" placeholder="Manage products">
-      </label>
-      <p id="feature-folder" class="hint">The folder name is the snake_case form of the feature name.</p>
-      <label class="field">
-        <span>What this feature does</span>
-        <textarea id="feature-description" rows="4" placeholder="Describe the feature"></textarea>
-      </label>
-      <p class="hint">Turn on the agents to start. AI Tool and model start from the choices on each agent card.</p>
-      <div id="feature-agents"></div>
+      <div class="dialog-body">
+        <h2>Start Feature</h2>
+        <label class="field">
+          <span>Feature name</span>
+          <input id="feature-name" type="text" autocomplete="off" placeholder="Manage products">
+        </label>
+        <p id="feature-folder" class="hint">The folder name is the snake_case form of the feature name.</p>
+        <label class="field">
+          <span>What this feature does</span>
+          <textarea id="feature-description" rows="4" placeholder="Describe the feature"></textarea>
+        </label>
+        <p class="hint">Turn on the agents to start. AI Tool and model start from each agent. Agents that are turned off stay out of this list.</p>
+        <div id="feature-agents"></div>
+      </div>
       <p id="feature-error" class="result error" hidden></p>
       <p id="feature-result" class="result" hidden></p>
       <div class="actions">
@@ -95,14 +93,56 @@
       </div>
     </form>
   </dialog>
+  <dialog id="index-dialog">
+    <form method="dialog" id="index-form">
+      <div class="dialog-body">
+        <h2 id="index-title">Set up index</h2>
+        <p class="hint">Choose the repository to set up. KIKI saves the choice in .kiki/repos for that repository and uses it in the launch prompt. Setting a new index replaces the one already saved for that repository.</p>
+        <label class="field">
+          <span>Repository</span>
+          <select id="index-repo"></select>
+        </label>
+        <p id="index-repo-path" class="hint"></p>
+      </div>
+      <p id="index-error" class="result error" hidden></p>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" id="index-go" class="primary" value="setup">Set up</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="index-remove-dialog">
+    <form method="dialog" id="index-remove-form">
+      <div class="dialog-body">
+        <h2 id="index-remove-title">Remove index</h2>
+        <p id="index-remove-text" class="hint"></p>
+        <label class="check-line">
+          <input type="checkbox" id="index-remove-folder">
+          <span id="index-remove-folder-label"></span>
+        </label>
+      </div>
+      <p id="index-remove-error" class="result error" hidden></p>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" class="danger" value="confirm">Confirm</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="clone-dialog">
     <form method="dialog" id="clone-form">
-      <h2 id="clone-title">Clone repository</h2>
-      <p id="clone-path" class="hint"></p>
-      <label class="field">
-        <span>Git URL</span>
-        <input id="clone-url" type="text" placeholder="https://github.com/org/repo.git" autocomplete="off" spellcheck="false">
-      </label>
+      <div class="dialog-body">
+        <h2 id="clone-title">Clone repository</h2>
+        <p id="clone-path" class="hint"></p>
+        <label class="field">
+          <span>Git URL</span>
+          <input id="clone-url" type="text" placeholder="https://github.com/org/repo.git" autocomplete="off" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>Folder</span>
+          <input id="clone-sparse" type="text" placeholder="product/requirements" autocomplete="off" spellcheck="false">
+        </label>
+        <p class="hint">Leave Folder empty to clone the whole repository. A path checks out only that folder, plus files at the repository root. Other folders stay on the remote. Commit, push, and pull use this checkout.</p>
+      </div>
       <p id="clone-error" class="result error" hidden></p>
       <div class="actions">
         <button type="submit" value="cancel">Cancel</button>
@@ -110,37 +150,217 @@
       </div>
     </form>
   </dialog>
+  <dialog id="team-sync-dialog">
+    <form method="dialog">
+      <div class="dialog-body">
+        <h2>Agents already in the team folder</h2>
+        <p id="team-sync-text" class="hint"></p>
+      </div>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="button" id="team-sync-pull">Copy into this app</button>
+        <button type="button" id="team-sync-push" class="primary">Copy to the team folder</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="team-repo-dialog">
+    <form method="dialog">
+      <div class="dialog-body">
+        <h2>Repositories this app does not have</h2>
+        <p class="hint">These agents use repositories that are not in this app. Create each one, or use a repository that already exists. Using an existing repository replaces that id in the copied agents.</p>
+        <div id="team-repo-choices"></div>
+      </div>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="button" id="team-repo-continue" class="primary">Continue</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="team-member-dialog">
+    <form method="dialog">
+      <div class="dialog-body">
+        <h2>Replace local agents</h2>
+        <p id="team-member-text" class="hint"></p>
+      </div>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="button" id="team-member-replace" class="danger">Replace</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="settings-dialog">
     <div class="reader-bar">
       <h2>Settings</h2>
-      <button type="button" id="settings-close">Close</button>
     </div>
-    <p id="settings-hint" class="hint"></p>
-    <div id="settings-fields"></div>
+    <div class="dialog-body">
+      <p id="settings-hint" class="hint"></p>
+      <div id="settings-fields"></div>
+    </div>
     <div class="actions">
-      <button type="button" id="settings-save" class="primary" data-save="1" hidden>Save</button>
+      <button type="button" id="settings-close">Close</button>
+      <button type="button" id="settings-save" class="primary" disabled>Save</button>
     </div>
   </dialog>
   <dialog id="run-dialog">
     <div class="reader-bar">
       <h2>Run detail</h2>
-      <button type="button" id="run-close">Close</button>
     </div>
-    <p id="run-meta" class="hint"></p>
-    <p class="prompt-label">Message</p>
-    <pre id="run-note" class="run-text"></pre>
-    <p class="prompt-label">Detail</p>
-    <pre id="run-detail" class="run-text"></pre>
+    <div class="dialog-body">
+      <p id="run-meta" class="hint"></p>
+      <p class="prompt-label">Message</p>
+      <pre id="run-note" class="run-text"></pre>
+      <p class="prompt-label">Detail</p>
+      <pre id="run-detail" class="run-text"></pre>
+    </div>
     <div class="actions">
+      <button type="button" id="run-close">Close</button>
       <button type="button" id="run-delete" class="danger">Delete</button>
     </div>
+  </dialog>
+  <dialog id="agent-dialog">
+    <form method="dialog" id="agent-form">
+      <div class="dialog-body">
+        <h2 id="agent-dialog-title">Edit agent</h2>
+        <label class="field">
+          <span>ID</span>
+          <input id="agent-id" type="text" disabled>
+        </label>
+        <div class="agent-grid">
+          <label class="field">
+            <span>Name</span>
+            <input id="agent-name" type="text" autocomplete="off">
+          </label>
+          <label class="field">
+            <span>Category</span>
+            <select id="agent-category"></select>
+          </label>
+        </div>
+        <label class="field">
+          <span>Description</span>
+          <textarea id="agent-description" rows="4"></textarea>
+        </label>
+        <div class="agent-grid">
+          <label class="field">
+            <span>AI Tool</span>
+            <select id="agent-tool"></select>
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <select id="agent-model"></select>
+          </label>
+        </div>
+        <div class="field">
+          <div class="prompt-bar">
+            <span>Prompt</span>
+            <span class="preview-toggle">
+              <span>Preview</span>
+              <button type="button" id="agent-prompt-toggle" class="switch" aria-pressed="false" aria-label="Preview">
+                <span class="switch-knob"></span>
+              </button>
+            </span>
+          </div>
+          <div class="compose">
+            <textarea id="agent-prompt" rows="16" spellcheck="false"></textarea>
+            <button type="button" class="icon-button field-generate" data-generate="prompt" aria-label="Generate"></button>
+          </div>
+          <div id="agent-prompt-preview" class="markdown" hidden></div>
+        </div>
+        <div class="field section-gap">
+          <span>Repositories</span>
+          <div id="agent-repos" class="service-tags"></div>
+          <div id="agent-repo-notes" class="repo-notes"></div>
+        </div>
+        <div class="field section-gap">
+          <span>Teamwork</span>
+          <div id="agent-works-with" class="peer-groups"></div>
+          <div id="agent-collaborations" class="collaborations"></div>
+        </div>
+      </div>
+      <p id="agent-error" class="result error" hidden></p>
+      <div class="actions">
+        <span class="agent-switch">
+          <button type="button" id="agent-enabled" class="switch" aria-pressed="true" aria-label="On">
+            <span class="switch-knob"></span>
+          </button>
+          <span>On</span>
+        </span>
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" id="agent-save" class="primary" value="save">Save</button>
+      </div>
+    </form>
+    <div id="agent-generate" hidden>
+      <div class="reader-bar generate-bar">
+        <button type="button" id="generate-back" class="icon-button" aria-label="Back">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M14.5 5.5 8 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+          </svg>
+        </button>
+        <h2 id="generate-dialog-title">Generate</h2>
+      </div>
+      <div class="dialog-body generate-layout">
+        <section class="generate-output">
+          <div id="generate-command" class="generate-command" hidden>
+            <p class="think-label">Command</p>
+            <div class="generate-command-field">
+              <code id="generate-command-text"></code>
+              <div class="generate-command-actions">
+                <button type="button" id="generate-run" disabled>Run</button>
+              </div>
+            </div>
+          </div>
+          <div id="generate-log">
+            <div class="generate-log-head">
+              <p id="generate-thinking-label" class="think-label" hidden><span id="generate-spinner" class="spinner"></span><span>Thinking</span></p>
+              <p id="generate-choice" class="generate-choice"></p>
+            </div>
+            <pre id="generate-thinking" class="think"></pre>
+            <pre id="generate-answer" hidden></pre>
+          </div>
+        </section>
+        <section class="generate-compare" aria-label="Diff" hidden>
+          <div id="generate-compare" class="compare-grid"></div>
+        </section>
+        <p id="generate-error" class="result error" hidden></p>
+      </div>
+      <div class="actions">
+        <button type="button" id="generate-cancel">Cancel</button>
+        <button type="button" id="generate-use" class="primary" disabled>Use</button>
+      </div>
+    </div>
+  </dialog>
+  <dialog id="team-agent-dialog">
+    <div class="reader-bar">
+      <h2 id="team-agent-title">Compare agent</h2>
+    </div>
+    <div class="dialog-body">
+      <p id="team-agent-hint" class="hint"></p>
+      <div id="team-agent-diff" class="compare-grid"></div>
+      <p id="team-agent-error" class="result error" hidden></p>
+    </div>
+    <div class="actions">
+      <button type="button" id="team-agent-cancel">Cancel</button>
+    </div>
+  </dialog>
+  <dialog id="team-keep-dialog">
+    <form method="dialog">
+      <div class="dialog-body">
+        <h2 id="team-keep-title">Overwrite agent</h2>
+        <p id="team-keep-text" class="hint"></p>
+      </div>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="button" id="team-keep-go" class="danger">Overwrite</button>
+      </div>
+    </form>
   </dialog>
   <dialog id="prompt-reader">
     <div class="reader-bar">
       <h2 id="prompt-reader-title">Prompt</h2>
+    </div>
+    <div id="prompt-reader-body" class="markdown dialog-body"></div>
+    <div class="actions">
       <button type="button" id="prompt-reader-close">Close</button>
     </div>
-    <div id="prompt-reader-body" class="markdown"></div>
   </dialog>
   <script src="/app.js"></script>
 </body>
