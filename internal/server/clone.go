@@ -194,6 +194,26 @@ func execGit(ctx context.Context, args ...string) error {
 	return fmt.Errorf("git %s failed: %s", name, text)
 }
 
+// gitOrigin is the clone URL recorded as origin. An empty result means the folder was not cloned from Git.
+func gitOrigin(folder string) string {
+	folder = strings.TrimSpace(folder)
+	if folder == "" {
+		return ""
+	}
+	if _, err := os.Stat(filepath.Join(folder, ".git")); err != nil {
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "git", "-C", folder, "remote", "get-url", "origin")
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
 func gitCommandName(args []string) string {
 	for _, arg := range args {
 		if arg != "" && !strings.HasPrefix(arg, "-") {

@@ -47,6 +47,7 @@ type TeamFolder struct {
 
 type fileDoc struct {
 	WorkspaceID   string     `yaml:"workspace_id"`
+	Orchestrator  string     `yaml:"orchestrator,omitempty"`
 	OrcaAgent     string     `yaml:"orca_agent"`
 	AgentPath     string     `yaml:"agent_path,omitempty"`
 	GenerateTool  string     `yaml:"generate_tool,omitempty"`
@@ -212,6 +213,7 @@ func (s *Store) Save(snap console.Snapshot) error {
 		return err
 	}
 	doc.WorkspaceID = snap.WorkspaceID
+	doc.Orchestrator = console.NormalizeOrchestrator(snap.Orchestrator)
 	doc.OrcaAgent = snap.OrcaAgent
 	doc.AgentPath = snap.AgentPath
 	doc.GenerateTool = strings.TrimSpace(snap.GenerateTool)
@@ -235,6 +237,10 @@ func (s *Store) read() (fileDoc, error) {
 	if doc.WorkspaceID == "" {
 		doc.WorkspaceID = "kiki"
 	}
+	if strings.TrimSpace(doc.Orchestrator) == "" {
+		doc.Orchestrator = "orca"
+	}
+	doc.Orchestrator = strings.TrimSpace(doc.Orchestrator)
 	if doc.OrcaAgent == "" {
 		doc.OrcaAgent = "cursor"
 	}
@@ -258,9 +264,10 @@ func (s *Store) write(doc fileDoc) error {
 
 func defaultDoc() fileDoc {
 	return fileDoc{
-		WorkspaceID: "kiki",
-		OrcaAgent:   "cursor",
-		Repos:       normalizeRepos(nil),
+		WorkspaceID:  "kiki",
+		Orchestrator: "orca",
+		OrcaAgent:    "cursor",
+		Repos:        normalizeRepos(nil),
 	}
 }
 
@@ -339,6 +346,7 @@ func now() string {
 func (d fileDoc) snapshot() console.Snapshot {
 	snap := console.Snapshot{
 		WorkspaceID:   d.WorkspaceID,
+		Orchestrator:  d.Orchestrator,
 		OrcaAgent:     d.OrcaAgent,
 		AgentPath:     d.AgentPath,
 		GenerateTool:  strings.TrimSpace(d.GenerateTool),

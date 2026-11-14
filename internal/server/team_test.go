@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -14,6 +15,27 @@ import (
 	"kiki/internal/orca"
 	"kiki/internal/store"
 )
+
+func TestTeamSaveRequiresAName(t *testing.T) {
+	app := newTeamTestServer(t)
+	team := filepath.Join(t.TempDir(), "team")
+	if err := os.MkdirAll(team, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/team", strings.NewReader(`{"path":"`+team+`","user":"  "}`))
+	rec := httptest.NewRecorder()
+	app.handleTeamSave(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Enter your name.") {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, err := app.Store.TeamFolder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Path != "" || cfg.User != "" {
+		t.Fatalf("folder was saved: %+v", cfg)
+	}
+}
 
 func TestTeamSaveRejectsMissingFolder(t *testing.T) {
 	app := newTeamTestServer(t)
@@ -69,6 +91,28 @@ func TestTeamBrowseReturnsChosenPath(t *testing.T) {
 	}
 }
 
+func teamFlag(t *testing.T, app *Server, name string) bool {
+	t.Helper()
+	state, err := app.snapshot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	team, ok := state["teamFolder"].(map[string]any)
+	if !ok {
+		t.Fatalf("team folder = %#v", state["teamFolder"])
+	}
+	value, ok := team[name].(bool)
+	if !ok {
+		t.Fatalf("%s = %#v", name, team[name])
+	}
+	return value
+}
+
+func teamStale(t *testing.T, app *Server) bool {
+	t.Helper()
+	return teamFlag(t, app, "stale")
+}
+
 func TestTeamMemberReplacesAgents(t *testing.T) {
 	const shared = "---\nid: requirement_document\nname: From Team\ndescription: Shared copy.\nenabled: true\nai_tool: cursor\nmodel: auto\nrepos:\n  - document\n---\n\nHello from the team folder.\n"
 	const local = "---\nid: backend_runner\nname: Local Runner\ndescription: Local copy.\nenabled: true\nai_tool: cursor\nmodel: auto\nrepos:\n  - backend\n---\n\nLocal.\n"
@@ -81,7 +125,10 @@ func TestTeamMemberReplacesAgents(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(member, "requirement_document.md"), []byte(shared), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.MkdirAll(filepath.Join(team, "bob"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(team, "bob", "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(team, "bob", "agents", "old.md"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	outside := filepath.Join(filepath.Dir(team), "outside")
@@ -101,7 +148,7 @@ func TestTeamMemberReplacesAgents(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(app.Root, ".kiki", "agents", "notes.txt"), []byte("notes"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Store.SaveTeamFolder(store.TeamFolder{Path: team, Member: "bob"}); err != nil {
+	if err := app.Store.SaveTeamFolder(store.TeamFolder{Path: team, User: "bob", Member: "bob"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -134,14 +181,16 @@ func TestTeamMemberReplacesAgents(t *testing.T) {
 			Title string `json:"title"`
 		} `json:"agents"`
 		TeamFolder struct {
-			Path   string `json:"path"`
-			Member string `json:"member"`
+			Path      string `json:"path"`
+			Member    string `json:"member"`
+			Stale     bool   `json:"stale"`
+			UserStale bool   `json:"userStale"`
 		} `json:"teamFolder"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
 		t.Fatal(err)
 	}
-	if payload.TeamFolder.Member != "alice" || payload.TeamFolder.Path != team {
+	if payload.TeamFolder.Member != "alice" || payload.TeamFolder.Path != team || payload.TeamFolder.Stale || !payload.TeamFolder.UserStale {
 		t.Fatalf("team = %+v", payload.TeamFolder)
 	}
 	if len(payload.Agents) != 1 || payload.Agents[0].ID != "requirement_document" || payload.Agents[0].Title != "From Team" {
@@ -160,6 +209,75 @@ func TestTeamMemberReplacesAgents(t *testing.T) {
 	if string(got) != shared {
 		t.Fatalf("copied file = %q", got)
 	}
+	if _, err := os.Stat(filepath.Join(team, "bob", "agents", "old.md")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(team, "bob", "agents", "requirement", "requirement_document.md")); !os.IsNotExist(err) {
+		t.Fatal("user agents folder was overwritten")
+	}
+	source, err := os.ReadFile(filepath.Join(member, "requirement_document.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(source) != shared {
+		t.Fatalf("source member = %q", source)
+	}
+	copied := filepath.Join(app.Root, ".kiki", "agents", "requirement", "requirement_document.md")
+	if err := os.WriteFile(copied, []byte(shared+"\nlocal edit\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !teamStale(t, app) {
+		t.Fatal(".kiki/agents differing from the member did not show sync")
+	}
+	if err := os.WriteFile(copied, []byte(shared), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if teamStale(t, app) {
+		t.Fatal("matching agents were reported as different")
+	}
+	updated := shared + "\nUpdated by the member.\n"
+	if err := os.WriteFile(filepath.Join(member, "requirement_document.md"), []byte(updated), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !teamStale(t, app) {
+		t.Fatal("member update was not reported")
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/team/member", strings.NewReader(`{"name":"alice"}`))
+	rec = httptest.NewRecorder()
+	app.handleTeamMember(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pull status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if teamStale(t, app) || !teamFlag(t, app, "userStale") {
+		t.Fatal("pull changed the user folder or left the member different")
+	}
+	if _, err := os.Stat(filepath.Join(team, "bob", "agents", "old.md")); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/team/member", strings.NewReader(`{"name":"bob","direction":"push"}`))
+	rec = httptest.NewRecorder()
+	app.handleTeamMember(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("push status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if teamStale(t, app) || teamFlag(t, app, "userStale") {
+		t.Fatal("synced member is still different")
+	}
+	for _, path := range []string{
+		copied,
+		filepath.Join(team, "bob", "agents", "requirement", "requirement_document.md"),
+	} {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(body) != updated {
+			t.Fatalf("%s = %q", path, body)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(team, "bob", "agents", "old.md")); !os.IsNotExist(err) {
+		t.Fatal("user agent file was kept")
+	}
 
 	other := filepath.Join(t.TempDir(), "other-team")
 	if err := os.MkdirAll(other, 0o755); err != nil {
@@ -177,6 +295,37 @@ func TestTeamMemberReplacesAgents(t *testing.T) {
 	}
 	if cfg.Path != other || cfg.User != "cara" || cfg.Member != "cara" {
 		t.Fatalf("changed folder = %+v", cfg)
+	}
+}
+
+func TestTeamMemberRequiresAUser(t *testing.T) {
+	app := newTeamTestServer(t)
+	team := filepath.Join(t.TempDir(), "team")
+	member := filepath.Join(team, "alice", "agents")
+	if err := os.MkdirAll(member, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(member, "note.md"), []byte("shared"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	local := filepath.Join(app.Root, ".kiki", "agents")
+	if err := os.MkdirAll(local, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(local, "keep.md"), []byte("keep"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Store.SaveTeamFolder(store.TeamFolder{Path: team}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/team/member", strings.NewReader(`{"name":"alice"}`))
+	rec := httptest.NewRecorder()
+	app.handleTeamMember(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Settings") {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(filepath.Join(local, "keep.md")); err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -217,6 +366,155 @@ func TestTeamSaveCopiesAgentsUnderTheUser(t *testing.T) {
 	}
 }
 
+func TestTeamMembersReportsFoldersThatDiffer(t *testing.T) {
+	app := newTeamTestServer(t)
+	agents := filepath.Join(app.Root, ".kiki", "agents")
+	if err := os.MkdirAll(agents, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agents, "local.md"), []byte("local\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	team := filepath.Join(t.TempDir(), "team")
+	if err := os.MkdirAll(filepath.Join(team, "bob", "agents"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(team, "bob", "agents", "bob.md"), []byte("bob\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(team, "cara"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/team", strings.NewReader(`{"path":"`+team+`","user":"alice"}`))
+	rec := httptest.NewRecorder()
+	app.handleTeamSave(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/team/members", nil)
+	rec = httptest.NewRecorder()
+	app.handleTeamMembers(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Members []string `json:"members"`
+		Differs []string `json:"differs"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(payload.Differs, "bob") || !slices.Contains(payload.Differs, "cara") || slices.Contains(payload.Differs, "alice") {
+		t.Fatalf("differs = %#v", payload.Differs)
+	}
+}
+
+func TestTeamCompareListsAppUserAndMember(t *testing.T) {
+	app := newTeamTestServer(t)
+	localDir := filepath.Join(app.Root, ".kiki", "agents", "backend")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "backend_runner.md"), []byte(localAgentFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	team := filepath.Join(t.TempDir(), "team")
+	if err := os.MkdirAll(filepath.Join(team, "bob", "agents", "backend"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bob := strings.Replace(localAgentFile, "Local Runner", "Bob Runner", 1)
+	if err := os.WriteFile(filepath.Join(team, "bob", "agents", "backend", "backend_runner.md"), []byte(bob), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/team", strings.NewReader(`{"path":"`+team+`","user":"alice"}`))
+	rec := httptest.NewRecorder()
+	app.handleTeamSave(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/team/compare?member=bob", nil)
+	rec = httptest.NewRecorder()
+	app.handleTeamCompare(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var payload struct {
+		Members []string `json:"members"`
+		App []struct {
+			Name string `json:"name"`
+			Hash string `json:"hash"`
+		} `json:"app"`
+		User struct {
+			Name    string `json:"name"`
+			Differs bool   `json:"differs"`
+			Agents  []struct {
+				Name string `json:"name"`
+				Hash string `json:"hash"`
+			} `json:"agents"`
+		} `json:"user"`
+		Member struct {
+			Name    string `json:"name"`
+			Differs bool   `json:"differs"`
+			Agents  []struct {
+				Name string `json:"name"`
+				Hash string `json:"hash"`
+			} `json:"agents"`
+		} `json:"member"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(payload.Members, "alice") || !slices.Contains(payload.Members, "bob") {
+		t.Fatalf("members = %#v", payload.Members)
+	}
+	if payload.User.Name != "alice" || payload.User.Differs || len(payload.User.Agents) != 1 || payload.User.Agents[0].Name != "Local Runner" {
+		t.Fatalf("user = %+v", payload.User)
+	}
+	if payload.Member.Name != "bob" || !payload.Member.Differs || len(payload.Member.Agents) != 1 || payload.Member.Agents[0].Name != "Bob Runner" {
+		t.Fatalf("member = %+v", payload.Member)
+	}
+	if len(payload.App) != 1 || payload.App[0].Name != "Local Runner" {
+		t.Fatalf("app = %+v", payload.App)
+	}
+	if payload.App[0].Hash == "" || payload.User.Agents[0].Hash != payload.App[0].Hash || payload.Member.Agents[0].Hash == payload.App[0].Hash {
+		t.Fatalf("hashes app=%q user=%q member=%q", payload.App[0].Hash, payload.User.Agents[0].Hash, payload.Member.Agents[0].Hash)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/team/diff?folder=bob&id=backend_runner", nil)
+	rec = httptest.NewRecorder()
+	app.handleTeamDiff(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("diff status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var diff struct {
+		Name string `json:"name"`
+		Diff []struct {
+			Kind string `json:"kind"`
+			Text string `json:"text"`
+		} `json:"diff"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &diff); err != nil {
+		t.Fatal(err)
+	}
+	if diff.Name != "Local Runner" {
+		t.Fatalf("diff name = %q", diff.Name)
+	}
+	var sawLocal, sawBob bool
+	for _, line := range diff.Diff {
+		if line.Kind == "del" && strings.Contains(line.Text, "Local Runner") {
+			sawLocal = true
+		}
+		if line.Kind == "add" && strings.Contains(line.Text, "Bob Runner") {
+			sawBob = true
+		}
+	}
+	if !sawLocal || !sawBob {
+		t.Fatalf("diff = %+v", diff.Diff)
+	}
+}
+
 func TestTeamSaveAsksWhenTheUserAlreadyHasAgents(t *testing.T) {
 	app := newTeamTestServer(t)
 	if err := os.MkdirAll(filepath.Join(app.Root, ".kiki", "agents", "backend"), 0o755); err != nil {
@@ -236,7 +534,7 @@ func TestTeamSaveAsksWhenTheUserAlreadyHasAgents(t *testing.T) {
 	req := httptest.NewRequest(http.MethodPut, "/api/team", strings.NewReader(`{"path":"`+team+`","user":"alice"}`))
 	rec := httptest.NewRecorder()
 	app.handleTeamSave(rec, req)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"conflict":"agents"`) {
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"conflict":"name"`) {
 		t.Fatalf("status = %d body = %s", rec.Code, rec.Body.String())
 	}
 	cfg, err := app.Store.TeamFolder()
@@ -244,13 +542,26 @@ func TestTeamSaveAsksWhenTheUserAlreadyHasAgents(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.Path != "" || cfg.User != "" {
-		t.Fatalf("team was saved: %+v", cfg)
+		t.Fatalf("folder was saved before a choice: %+v", cfg)
+	}
+	req = httptest.NewRequest(http.MethodPut, "/api/team", strings.NewReader(`{"path":"`+team+`","user":"alice","useExisting":true}`))
+	rec = httptest.NewRecorder()
+	app.handleTeamSave(rec, req)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"conflict":"agents"`) {
+		t.Fatalf("own folder status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	cfg, err = app.Store.TeamFolder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Path != "" || cfg.User != "" {
+		t.Fatalf("team changed before a choice: %+v", cfg)
 	}
 	if _, err := os.Stat(filepath.Join(team, "alice", "agents", "backend", "backend_runner.md")); !os.IsNotExist(err) {
 		t.Fatal("local agents were copied before a choice")
 	}
 
-	req = httptest.NewRequest(http.MethodPut, "/api/team", strings.NewReader(`{"path":"`+team+`","user":"alice","direction":"pull"}`))
+	req = httptest.NewRequest(http.MethodPut, "/api/team", strings.NewReader(`{"path":"`+team+`","user":"alice","useExisting":true,"direction":"pull"}`))
 	rec = httptest.NewRecorder()
 	app.handleTeamSave(rec, req)
 	if rec.Code != http.StatusOK {
@@ -302,7 +613,7 @@ func TestTeamMemberResolvesAnUnknownRepository(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/team/member", strings.NewReader(`{"name":"bob","repos":{"payments":{"action":"use","id":"backend"}}}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/team/member", strings.NewReader(`{"name":"bob","direction":"pull","repos":{"payments":{"action":"use","id":"backend"}}}`))
 	rec = httptest.NewRecorder()
 	app.handleTeamMember(rec, req)
 	if rec.Code != http.StatusOK {
@@ -318,11 +629,18 @@ func TestTeamMemberResolvesAnUnknownRepository(t *testing.T) {
 	if !strings.Contains(string(got), "Take payments.") {
 		t.Fatalf("description was dropped:\n%s", got)
 	}
+	source, err := os.ReadFile(filepath.Join(member, "requirement_document.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(source), "id: payments") {
+		t.Fatalf("source member was rewritten: %s", source)
+	}
 
 	if err := os.WriteFile(filepath.Join(member, "requirement_document.md"), []byte(shared), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	req = httptest.NewRequest(http.MethodPost, "/api/team/member", strings.NewReader(`{"name":"bob","repos":{"payments":{"action":"create"}}}`))
+	req = httptest.NewRequest(http.MethodPost, "/api/team/member", strings.NewReader(`{"name":"bob","direction":"pull","repos":{"payments":{"action":"create"}}}`))
 	rec = httptest.NewRecorder()
 	app.handleTeamMember(rec, req)
 	if rec.Code != http.StatusOK {
@@ -356,7 +674,7 @@ func TestTeamMemberResolvesAnUnknownRepository(t *testing.T) {
 
 const localAgentFile = "---\nid: backend_runner\nname: Local Runner\ndescription: Local copy.\nenabled: true\nai_tool: cursor\nmodel: auto\nrepos:\n  - backend\n---\n\nLocal.\n"
 
-func TestAgentTeamDiffChoosesACopy(t *testing.T) {
+func TestSaveUserAgents(t *testing.T) {
 	app := newTeamTestServer(t)
 	localDir := filepath.Join(app.Root, ".kiki", "agents", "backend")
 	if err := os.MkdirAll(localDir, 0o755); err != nil {
@@ -375,48 +693,94 @@ func TestAgentTeamDiffChoosesACopy(t *testing.T) {
 	if err := os.WriteFile(teamFile, []byte(teamBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := app.Store.SaveTeamFolder(store.TeamFolder{Path: team, User: "alice"}); err != nil {
+	if err := os.WriteFile(filepath.Join(team, "alice", "agents", "old.md"), []byte("old"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	state, err := app.snapshot()
-	if err != nil {
+	if err := app.Store.SaveTeamFolder(store.TeamFolder{Path: team, User: "alice", Member: "alice"}); err != nil {
 		t.Fatal(err)
 	}
-	agents, _ := state["agents"].([]map[string]any)
-	var drift bool
-	for _, agent := range agents {
-		if agent["id"] == "backend_runner" {
-			drift, _ = agent["teamDrift"].(bool)
-		}
-	}
-	if !drift {
-		t.Fatal("different copies were not marked")
+	if !teamFlag(t, app, "userStale") {
+		t.Fatal("different agents did not show save")
 	}
 	rec := httptest.NewRecorder()
-	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/agents/backend_runner/team-diff", nil))
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "From the team.") || !strings.Contains(rec.Body.String(), `"kind":"del"`) {
-		t.Fatalf("diff status = %d body = %s", rec.Code, rec.Body.String())
-	}
-	rec = httptest.NewRecorder()
-	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/agents/backend_runner/team-diff", strings.NewReader(`{"keep":"local"}`)))
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/team/agents", nil))
 	if rec.Code != http.StatusOK {
-		t.Fatalf("keep local status = %d body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("save status = %d body = %s", rec.Code, rec.Body.String())
 	}
 	got, err := os.ReadFile(teamFile)
 	if err != nil || string(got) != localAgentFile {
 		t.Fatalf("team file = %q err = %v", got, err)
 	}
-	if err := os.WriteFile(teamFile, []byte(teamBody), 0o644); err != nil {
+	if _, err := os.Stat(filepath.Join(team, "alice", "agents", "old.md")); !os.IsNotExist(err) {
+		t.Fatal("old team file was kept")
+	}
+	kept, err := os.ReadFile(localPath)
+	if err != nil || string(kept) != localAgentFile {
+		t.Fatalf("local file = %q err = %v", kept, err)
+	}
+	if teamFlag(t, app, "userStale") {
+		t.Fatal("saved agents were still different")
+	}
+	cfg, err := app.Store.TeamFolder()
+	if err != nil {
 		t.Fatal(err)
 	}
-	rec = httptest.NewRecorder()
-	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/agents/backend_runner/team-diff", strings.NewReader(`{"keep":"team"}`)))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("keep team status = %d body = %s", rec.Code, rec.Body.String())
+	if cfg.Member != "alice" {
+		t.Fatalf("member = %q", cfg.Member)
 	}
-	got, err = os.ReadFile(localPath)
-	if err != nil || string(got) != teamBody {
-		t.Fatalf("local file = %q err = %v", got, err)
+}
+
+func TestTeamMemberPushOverwritesTheSelectedFolder(t *testing.T) {
+	app := newTeamTestServer(t)
+	localDir := filepath.Join(app.Root, ".kiki", "agents", "backend")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "backend_runner.md"), []byte(localAgentFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	team := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(team, "cara"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.Store.SaveTeamFolder(store.TeamFolder{Path: team, User: "alice", Member: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/team/member", strings.NewReader(`{"name":"cara","direction":"pull"}`))
+	rec := httptest.NewRecorder()
+	app.handleTeamMember(rec, req)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "no agents folder") {
+		t.Fatalf("pull status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/team/member", strings.NewReader(`{"name":"cara","direction":"sideways"}`))
+	rec = httptest.NewRecorder()
+	app.handleTeamMember(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("direction status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/team/member", strings.NewReader(`{"name":"cara","direction":"push"}`))
+	rec = httptest.NewRecorder()
+	app.handleTeamMember(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("push status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	got, err := os.ReadFile(filepath.Join(team, "cara", "agents", "backend", "backend_runner.md"))
+	if err != nil || string(got) != localAgentFile {
+		t.Fatalf("pushed = %q err = %v", got, err)
+	}
+	kept, err := os.ReadFile(filepath.Join(localDir, "backend_runner.md"))
+	if err != nil || string(kept) != localAgentFile {
+		t.Fatalf("local = %q err = %v", kept, err)
+	}
+	cfg, err := app.Store.TeamFolder()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Member != "cara" || cfg.User != "alice" {
+		t.Fatalf("team = %+v", cfg)
+	}
+	if teamStale(t, app) {
+		t.Fatal("pushed agents were still different")
 	}
 }
 

@@ -59,8 +59,6 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/agents/{id}", s.handleAgent)
 	mux.HandleFunc("PUT /api/agents/{id}", s.handleSaveAgent)
 	mux.HandleFunc("POST /api/agents/{id}/preview", s.handlePreview)
-	mux.HandleFunc("GET /api/agents/{id}/team-diff", s.handleTeamAgentDiff)
-	mux.HandleFunc("POST /api/agents/{id}/team-diff", s.handleTeamAgentDiff)
 	mux.HandleFunc("POST /api/agents/{id}/launch", s.handleLaunch)
 	mux.HandleFunc("DELETE /api/launches/{id}", s.handleDeleteLaunch)
 	mux.HandleFunc("DELETE /api/launches", s.handleClearLaunches)
@@ -78,7 +76,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/team/browse", s.handleTeamBrowse)
 	mux.HandleFunc("PUT /api/team", s.handleTeamSave)
 	mux.HandleFunc("GET /api/team/members", s.handleTeamMembers)
+	mux.HandleFunc("GET /api/team/compare", s.handleTeamCompare)
+	mux.HandleFunc("GET /api/team/diff", s.handleTeamDiff)
 	mux.HandleFunc("POST /api/team/member", s.handleTeamMember)
+	mux.HandleFunc("POST /api/team/agents", s.handleSaveUserAgents)
 	mux.HandleFunc("GET /", s.handlePage)
 	mux.HandleFunc("GET /app.css", s.handleAsset)
 	mux.HandleFunc("GET /app.js", s.handleAsset)
@@ -97,6 +98,7 @@ func (s *Server) handleState(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		WorkspaceID   string `json:"workspaceId"`
+		Orchestrator  string `json:"orchestrator"`
 		OrcaAgent     string `json:"orcaAgent"`
 		GenerateTool  string `json:"generateTool"`
 		GenerateModel string `json:"generateModel"`
@@ -124,6 +126,7 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 	snap := console.Snapshot{
 		Root:          s.Root,
 		WorkspaceID:   strings.TrimSpace(body.WorkspaceID),
+		Orchestrator:  strings.TrimSpace(body.Orchestrator),
 		OrcaAgent:     strings.TrimSpace(body.OrcaAgent),
 		GenerateTool:  strings.TrimSpace(body.GenerateTool),
 		GenerateModel: strings.TrimSpace(body.GenerateModel),
@@ -148,6 +151,10 @@ func (s *Server) handleSave(w http.ResponseWriter, r *http.Request) {
 		snap.Repos[i].Index = kept.Index
 		snap.Repos[i].Sparse = kept.Sparse
 	}
+	if snap.Orchestrator == "" {
+		snap.Orchestrator = current.Orchestrator
+	}
+	snap.Orchestrator = console.NormalizeOrchestrator(snap.Orchestrator)
 	snap, err = console.ApplyRoot(s.Root, snap)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
@@ -260,7 +267,7 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	project, err := orca.ProjectName(prep.snap.WorkspaceID, prep.kind)
+	command, project, err := s.previewOrchestrator(prep)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -269,7 +276,7 @@ func (s *Server) handlePreview(w http.ResponseWriter, r *http.Request) {
 		"agentId":  prep.agent.ID,
 		"runtime":  prep.tool,
 		"model":    prep.model,
-		"command":  displayCommand(prep.tool, prep.worktree, prep.prompt, project, prep.agent.ID, prep.model),
+		"command":  command,
 		"prompt":   prep.prompt,
 		"note":     prep.note,
 		"worktree": prep.worktree,
@@ -283,33 +290,9 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	project, err := orca.ProjectName(prep.snap.WorkspaceID, prep.kind)
-	if err != nil {
-		writeErr(w, http.StatusBadRequest, err)
-		return
-	}
 	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
 	defer cancel()
-	client := s.Orca
-	if client == nil {
-		client = &orca.Client{Dir: prep.worktree}
-	}
-	var raw string
-	if prep.stamp != "" {
-		project, err = orca.FeatureProjectName(prep.snap.WorkspaceID, prep.kind, prep.stamp)
-		if err != nil {
-			writeErr(w, http.StatusBadRequest, err)
-			return
-		}
-		branch, branchErr := orca.FeatureBranch(prep.stamp, prep.slug, prep.kind)
-		if branchErr != nil {
-			writeErr(w, http.StatusBadRequest, branchErr)
-			return
-		}
-		raw, err = client.LaunchFeature(ctx, prep.tool, prep.worktree, prep.prompt, project, prep.agent.ID, prep.model, prep.slug, branch)
-	} else {
-		raw, err = client.Launch(ctx, prep.tool, prep.worktree, prep.prompt, project, prep.agent.ID, prep.model)
-	}
+	raw, err := s.launchOrchestrator(ctx, prep)
 	status := "ok"
 	detail := raw
 	if err != nil {
@@ -684,20 +667,6 @@ func (s *Server) lookupAgent(w http.ResponseWriter, id string) (agentfile.File, 
 }
 
 func agentJSON(file agentfile.File) map[string]any {
-	repos := make([]map[string]string, 0, len(file.Repos))
-	for _, repo := range file.Repos {
-		repos = append(repos, map[string]string{
-			"kind":        repo.Kind,
-			"description": repo.Description,
-		})
-	}
-	works := make([]map[string]string, 0, len(file.WorksWith))
-	for _, peer := range file.WorksWith {
-		works = append(works, map[string]string{
-			"id":            peer.ID,
-			"collaboration": peer.Collaboration,
-		})
-	}
 	return map[string]any{
 		"id":          file.ID,
 		"name":        file.Name,
@@ -706,8 +675,8 @@ func agentJSON(file agentfile.File) map[string]any {
 		"enabled":     file.Enabled,
 		"tool":        file.AITool,
 		"model":       file.Model,
-		"repos":       repos,
-		"worksWith":   works,
+		"repos":       repositoryJSON(file.Repos),
+		"worksWith":   teamworkJSON(file.WorksWith),
 		"prompt":      file.Prompt,
 	}
 }
@@ -728,6 +697,34 @@ func catalogRepos(list []agentfile.Repository) []agentdef.Repo {
 		repos = append(repos, agentdef.Repo{Kind: repo.Kind, Description: repo.Description})
 	}
 	return repos
+}
+
+func teamworkJSON(list []agentfile.Collaborator) []map[string]string {
+	out := make([]map[string]string, 0, len(list))
+	for _, peer := range list {
+		if peer.ID == "" {
+			continue
+		}
+		out = append(out, map[string]string{
+			"id":            peer.ID,
+			"collaboration": peer.Collaboration,
+		})
+	}
+	return out
+}
+
+func repositoryJSON(list []agentfile.Repository) []map[string]string {
+	out := make([]map[string]string, 0, len(list))
+	for _, repo := range list {
+		if repo.Kind == "" {
+			continue
+		}
+		out = append(out, map[string]string{
+			"kind":        repo.Kind,
+			"description": repo.Description,
+		})
+	}
+	return out
 }
 
 func peerIDs(list []agentfile.Collaborator) []string {
@@ -793,6 +790,7 @@ func (s *Server) snapshot() (map[string]any, error) {
 			"empty":     empty,
 			"index":     repo.Index,
 			"sparse":    repo.Sparse,
+			"git":       gitOrigin(repo.Folder),
 		})
 	}
 	agentPath, err := agentfile.Resolve(s.Root, "")
@@ -803,33 +801,22 @@ func (s *Server) snapshot() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
-	teamDir, teamReady, err := s.userAgentsDir()
-	if err != nil {
-		return nil, err
-	}
 	agents := make([]map[string]any, 0, len(files))
 	for _, file := range files {
 		kinds := repoKinds(file.Repos)
-		drift := false
-		if teamReady {
-			same, err := agentFilesMatch(agentPath, file.Path, teamDir)
-			if err != nil {
-				return nil, err
-			}
-			drift = !same
-		}
 		agents = append(agents, map[string]any{
-			"id":        file.ID,
-			"title":     file.Name,
-			"group":     file.Category,
-			"category":  file.Category,
-			"repos":     kinds,
-			"worksWith": peerIDs(file.WorksWith),
-			"summary":   file.Description,
-			"enabled":   file.Enabled,
-			"tool":      file.AITool,
-			"model":     file.Model,
-			"teamDrift": drift,
+			"id":             file.ID,
+			"title":          file.Name,
+			"group":          file.Category,
+			"category":       file.Category,
+			"repos":          kinds,
+			"repositoryUses": repositoryJSON(file.Repos),
+			"worksWith":      peerIDs(file.WorksWith),
+			"teamwork":       teamworkJSON(file.WorksWith),
+			"summary":        file.Description,
+			"enabled":        file.Enabled,
+			"tool":           file.AITool,
+			"model":          file.Model,
 		})
 	}
 	team, err := s.teamStatus()
@@ -841,6 +828,8 @@ func (s *Server) snapshot() (map[string]any, error) {
 		"setupFile":       s.Store.File(),
 		"agentPath":       agentPath,
 		"workspaceId":     snap.WorkspaceID,
+		"orchestrator":    snap.Orchestrator,
+		"orchestrators":   console.Orchestrators,
 		"orcaAgent":       snap.OrcaAgent,
 		"generateTool":    snap.GenerateTool,
 		"generateModel":   snap.GenerateModel,
@@ -949,7 +938,56 @@ func (s *Server) indexes(snap console.Snapshot) []map[string]any {
 	return out
 }
 
-func displayCommand(runtime, root, prompt, project, tab, model string) string {
+func (s *Server) previewOrchestrator(prep launchPrep) (string, string, error) {
+	switch console.NormalizeOrchestrator(prep.snap.Orchestrator) {
+	case "orca":
+		return s.previewOrca(prep)
+	default:
+		return "", "", fmt.Errorf("Agent Orchestration tool is not supported")
+	}
+}
+
+func (s *Server) previewOrca(prep launchPrep) (string, string, error) {
+	project, err := orca.ProjectName(prep.snap.WorkspaceID, prep.kind)
+	if err != nil {
+		return "", "", err
+	}
+	return orcaCommand(prep.tool, prep.worktree, prep.prompt, project, prep.agent.ID, prep.model), project, nil
+}
+
+func (s *Server) launchOrchestrator(ctx context.Context, prep launchPrep) (string, error) {
+	switch console.NormalizeOrchestrator(prep.snap.Orchestrator) {
+	case "orca":
+		return s.launchOrca(ctx, prep)
+	default:
+		return "", fmt.Errorf("Agent Orchestration tool is not supported")
+	}
+}
+
+func (s *Server) launchOrca(ctx context.Context, prep launchPrep) (string, error) {
+	project, err := orca.ProjectName(prep.snap.WorkspaceID, prep.kind)
+	if err != nil {
+		return "", err
+	}
+	client := s.Orca
+	if client == nil {
+		client = &orca.Client{Dir: prep.worktree}
+	}
+	if prep.stamp != "" {
+		project, err = orca.FeatureProjectName(prep.snap.WorkspaceID, prep.kind, prep.stamp)
+		if err != nil {
+			return "", err
+		}
+		branch, branchErr := orca.FeatureBranch(prep.stamp, prep.slug, prep.kind)
+		if branchErr != nil {
+			return "", branchErr
+		}
+		return client.LaunchFeature(ctx, prep.tool, prep.worktree, prep.prompt, project, prep.agent.ID, prep.model, prep.slug, branch)
+	}
+	return client.Launch(ctx, prep.tool, prep.worktree, prep.prompt, project, prep.agent.ID, prep.model)
+}
+
+func orcaCommand(runtime, root, prompt, project, tab, model string) string {
 	args := orca.LaunchArgs(runtime, root, prompt, model)
 	for i, arg := range args {
 		if arg == "--prompt" && i+1 < len(args) {

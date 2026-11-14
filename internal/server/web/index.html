@@ -24,6 +24,7 @@
       <button type="button" data-tab="agents" aria-selected="true">Agents</button>
       <button type="button" data-tab="repos" aria-selected="false" disabled>Repositories</button>
       <button type="button" data-tab="indexes" aria-selected="false" disabled>Indexes</button>
+      <button type="button" data-tab="workflow" aria-selected="false" disabled>Topology</button>
     </nav>
     <button type="button" id="start-feature" class="primary" disabled>Start Feature</button>
   </div>
@@ -37,6 +38,7 @@
     </section>
     <section id="panel-repos" hidden></section>
     <section id="panel-indexes" hidden></section>
+    <section id="panel-workflow" hidden></section>
   </main>
   <dialog id="launch-dialog">
     <form method="dialog" id="launch-form">
@@ -65,7 +67,7 @@
       <p id="launch-result" class="result" hidden></p>
       <div class="actions">
         <button type="submit" value="cancel">Close</button>
-        <button type="button" id="launch-go">Start on Orca</button>
+        <button type="button" id="launch-go">Start</button>
       </div>
     </form>
   </dialog>
@@ -82,7 +84,7 @@
           <span>What this feature does</span>
           <textarea id="feature-description" rows="4" placeholder="Describe the feature"></textarea>
         </label>
-        <p class="hint">Turn on the agents to start. AI Tool and model start from each agent. Agents that are turned off stay out of this list.</p>
+        <p id="feature-lead" class="hint">Turn on the agents to start. AI Tool and model start from each agent. Agents that are turned off stay out of this list.</p>
         <div id="feature-agents"></div>
       </div>
       <p id="feature-error" class="result error" hidden></p>
@@ -150,6 +152,18 @@
       </div>
     </form>
   </dialog>
+  <dialog id="team-name-dialog">
+    <form method="dialog">
+      <div class="dialog-body">
+        <h2>Name already in the team folder</h2>
+        <p id="team-name-text" class="hint"></p>
+      </div>
+      <div class="actions">
+        <button type="button" id="team-name-rename">Enter a different name</button>
+        <button type="button" id="team-name-use" class="primary">Use this folder</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="team-sync-dialog">
     <form method="dialog">
       <div class="dialog-body">
@@ -176,15 +190,33 @@
       </div>
     </form>
   </dialog>
+  <dialog id="team-share-dialog">
+    <div id="team-share-bar" class="reader-bar">
+      <h2>Team Sharing</h2>
+      <button type="button" id="team-share-close">Close</button>
+    </div>
+    <div id="team-share-diff-bar" class="reader-bar generate-bar" hidden>
+      <button type="button" id="team-share-back" class="icon-button" aria-label="Back">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14.5 5.5 8 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+      </button>
+      <h2 id="team-share-diff-title">Agent</h2>
+    </div>
+    <div id="team-share-body" class="dialog-body"></div>
+    <div id="team-share-diff" class="dialog-body" hidden>
+      <div id="team-share-diff-grid" class="compare-grid"></div>
+    </div>
+  </dialog>
   <dialog id="team-member-dialog">
     <form method="dialog">
       <div class="dialog-body">
-        <h2>Replace local agents</h2>
+        <h2>Copy agents</h2>
         <p id="team-member-text" class="hint"></p>
       </div>
       <div class="actions">
         <button type="submit" value="cancel">Cancel</button>
-        <button type="button" id="team-member-replace" class="danger">Replace</button>
+        <button type="button" id="team-member-replace" class="danger">Copy</button>
       </div>
     </form>
   </dialog>
@@ -327,31 +359,6 @@
         <button type="button" id="generate-use" class="primary" disabled>Use</button>
       </div>
     </div>
-  </dialog>
-  <dialog id="team-agent-dialog">
-    <div class="reader-bar">
-      <h2 id="team-agent-title">Compare agent</h2>
-    </div>
-    <div class="dialog-body">
-      <p id="team-agent-hint" class="hint"></p>
-      <div id="team-agent-diff" class="compare-grid"></div>
-      <p id="team-agent-error" class="result error" hidden></p>
-    </div>
-    <div class="actions">
-      <button type="button" id="team-agent-cancel">Cancel</button>
-    </div>
-  </dialog>
-  <dialog id="team-keep-dialog">
-    <form method="dialog">
-      <div class="dialog-body">
-        <h2 id="team-keep-title">Overwrite agent</h2>
-        <p id="team-keep-text" class="hint"></p>
-      </div>
-      <div class="actions">
-        <button type="submit" value="cancel">Cancel</button>
-        <button type="button" id="team-keep-go" class="danger">Overwrite</button>
-      </div>
-    </form>
   </dialog>
   <dialog id="prompt-reader">
     <div class="reader-bar">

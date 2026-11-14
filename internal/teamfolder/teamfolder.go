@@ -4,6 +4,7 @@
 package teamfolder
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -134,6 +135,32 @@ func Member(team, name string) (string, error) {
 		return "", errors.New("That folder is not in the team folder.")
 	}
 	return child, nil
+}
+
+// Same reports whether the two folders contain the same agent files Copy would read.
+func Same(left, right string) (bool, error) {
+	a, err := readTree(left)
+	if err != nil {
+		return false, err
+	}
+	b, err := readTree(right)
+	if err != nil {
+		return false, err
+	}
+	if len(a) != len(b) {
+		return false, nil
+	}
+	index := make(map[string][]byte, len(a))
+	for _, file := range a {
+		index[file.rel] = file.body
+	}
+	for _, file := range b {
+		body, ok := index[file.rel]
+		if !ok || !bytes.Equal(body, file.body) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // Copy replaces agentDir with the files in memberDir.

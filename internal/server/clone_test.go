@@ -42,6 +42,24 @@ func TestFolderEmptyIgnoresIndexSetup(t *testing.T) {
 	}
 }
 
+func TestGitOrigin(t *testing.T) {
+	dir := t.TempDir()
+	if got := gitOrigin(dir); got != "" {
+		t.Fatalf("plain folder: %q", got)
+	}
+	runGit(t, dir, "init", "-b", "main")
+	if got := gitOrigin(dir); got != "" {
+		t.Fatalf("no remote: %q", got)
+	}
+	runGit(t, dir, "remote", "add", "origin", "https://example.com/app.git")
+	if got := gitOrigin(dir); got != "https://example.com/app.git" {
+		t.Fatalf("origin: %q", got)
+	}
+	if got := gitOrigin(filepath.Join(dir, "missing")); got != "" {
+		t.Fatalf("missing: %q", got)
+	}
+}
+
 func TestFolderEmptyMissingPath(t *testing.T) {
 	empty, err := folderEmpty(filepath.Join(t.TempDir(), "missing"))
 	if err != nil || !empty {

@@ -20,6 +20,50 @@ import (
 // OrcaAgents are the runtimes `orca agent launch --agent` accepts in this console.
 var OrcaAgents = []string{"cursor", "claude", "codex", "gemini"}
 
+// Orchestrator is one app that starts agents and groups their work.
+type Orchestrator struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+}
+
+// Orchestrators are the Agent Orchestration tools a user can choose.
+// Only Orca is supported.
+var Orchestrators = []Orchestrator{
+	{ID: "orca", Label: "Orca"},
+}
+
+// NormalizeOrchestrator returns the saved tool, or Orca when none is set.
+func NormalizeOrchestrator(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return "orca"
+	}
+	return id
+}
+
+// KnownOrchestrator reports whether id is a supported Agent Orchestration tool.
+// An empty id is Orca.
+func KnownOrchestrator(id string) bool {
+	id = NormalizeOrchestrator(id)
+	for _, item := range Orchestrators {
+		if item.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// OrchestratorLabel is the name shown for an Agent Orchestration tool.
+func OrchestratorLabel(id string) string {
+	id = NormalizeOrchestrator(id)
+	for _, item := range Orchestrators {
+		if item.ID == id {
+			return item.Label
+		}
+	}
+	return id
+}
+
 var (
 	workspaceID = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,31}$`)
 	serviceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -41,6 +85,7 @@ type Snapshot struct {
 	SetupFile     string
 	Worktree      string
 	WorkspaceID   string
+	Orchestrator  string
 	OrcaAgent     string
 	AgentPath     string
 	GenerateTool  string
@@ -62,6 +107,9 @@ func (s Snapshot) Repo(kind string) Repo {
 func Validate(snap Snapshot) error {
 	if !workspaceID.MatchString(snap.WorkspaceID) {
 		return fmt.Errorf("workspace must be lowercase letters, digits, hyphens, or underscores")
+	}
+	if !KnownOrchestrator(snap.Orchestrator) {
+		return fmt.Errorf("Agent Orchestration tool is not supported")
 	}
 	if !contains(OrcaAgents, snap.OrcaAgent) {
 		return fmt.Errorf("Default AI Tool is not supported")
@@ -294,18 +342,29 @@ type Peer struct {
 	Note string
 }
 
-// Prompt is the text passed to `orca agent launch --prompt`.
+// writeLaunchLead names the Agent Orchestration tool that started this agent.
+// Orca is told it was started with `orca agent launch`.
+func writeLaunchLead(b *strings.Builder, snap Snapshot) {
+	switch NormalizeOrchestrator(snap.Orchestrator) {
+	case "orca":
+		b.WriteString("KIKI started you with `orca agent launch`. Follow the agent document at the end of this prompt exactly. That document is your operating instructions.\n\n")
+	default:
+		fmt.Fprintf(b, "KIKI started you with %s. Follow the agent document at the end of this prompt exactly. That document is your operating instructions.\n\n", OrchestratorLabel(snap.Orchestrator))
+	}
+}
+
+// Prompt is the text passed to the selected Agent Orchestration tool.
 func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string, peers []Peer) string {
 	snap = Fill(snap)
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are %s (%s).\n\n", agent.ID, agent.Title)
-	b.WriteString("KIKI started you with `orca agent launch`. Follow the agent document at the end of this prompt exactly. That document is your operating instructions.\n\n")
+	writeLaunchLead(&b, snap)
 	fmt.Fprintf(&b, "Repository root: %s\n", snap.Root)
-	fmt.Fprintf(&b, "Orca worktree: %s\n", snap.Worktree)
+	fmt.Fprintf(&b, "%s worktree: %s\n", OrchestratorLabel(snap.Orchestrator), snap.Worktree)
 	fmt.Fprintf(&b, "Setup file: %s\n", snap.SetupFile)
 	fmt.Fprintf(&b, "Workspace id: %s\n", snap.WorkspaceID)
 	b.WriteString("\nThe setup file is .kiki/kiki.yaml next to the app. The app folder is the repository root. Its absolute path is the Setup file line above. Read that file in Step 0. It is the only setup file. Do not read .kiki/agents/config.local.yaml. The workspace id is workspace_id in that file. Do not invent values that are missing, and do not assume the workspace id is kiki. Folder paths and service names below are the saved setup.\n\n")
-	b.WriteString("You were started in the Orca worktree. That folder is the repository for this launch. Run git, gh, and project commands in the repository folder from the setup file. Do not create, edit, commit, or run project commands in a repository that is not listed. A repository with no folder is not set up.\n\n")
+	fmt.Fprintf(&b, "You were started in the %s worktree. That folder is the repository for this launch. Run git, gh, and project commands in the repository folder from the setup file. Do not create, edit, commit, or run project commands in a repository that is not listed. A repository with no folder is not set up.\n\n", OrchestratorLabel(snap.Orchestrator))
 	b.WriteString("Service names are the Nx project names in a code repository. Use them when you choose a project and its AGENTS.md. The document repository has a folder and no service names.\n\n")
 	b.WriteString("Repositories for this agent:\n")
 	for _, item := range agent.Repos {

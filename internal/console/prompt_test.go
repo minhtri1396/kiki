@@ -25,6 +25,9 @@ func TestPromptNamesCollaboratorsByID(t *testing.T) {
 		Note: "Hand over the requirement folder.\nWait for design.html.",
 	}})
 	for _, want := range []string{
+		"KIKI started you with `orca agent launch`.",
+		"Orca worktree: ",
+		"You were started in the Orca worktree.",
 		"Your agent id is requirement_document.",
 		"- document",
 		"Work in this repository:",
