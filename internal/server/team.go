@@ -19,6 +19,8 @@ import (
 	"kiki/internal/store"
 	"kiki/internal/teamfolder"
 	"kiki/internal/toolchain"
+
+	"gopkg.in/yaml.v3"
 )
 
 // chooseFolder opens the system folder dialog. Tests replace it.
@@ -349,7 +351,7 @@ func agentViews(dir string) ([]teamAgentView, error) {
 	return views, nil
 }
 
-func compareFolder(local, memberDir, name string) (map[string]any, error) {
+func compareFolder(localAgents, localRepos, memberDir, name string) (map[string]any, error) {
 	views := []teamAgentView{}
 	differs := true
 	if teamfolder.HasAgents(memberDir) {
@@ -358,13 +360,23 @@ func compareFolder(local, memberDir, name string) (map[string]any, error) {
 		if err != nil {
 			return nil, err
 		}
-		same, err := teamfolder.Same(local, teamfolder.AgentsDir(memberDir))
+		same, err := teamfolder.Same(localAgents, teamfolder.AgentsDir(memberDir))
 		if err != nil {
 			return nil, err
 		}
 		differs = !same
 	}
-	return map[string]any{"name": name, "differs": differs, "agents": views}, nil
+	repos, reposDiffer, err := compareRepos(localRepos, memberDir)
+	if err != nil {
+		return nil, err
+	}
+	return map[string]any{
+		"name":        name,
+		"differs":     differs,
+		"agents":      views,
+		"repos":       repos,
+		"reposDiffer": reposDiffer,
+	}, nil
 }
 
 func (s *Server) handleTeamCompare(w http.ResponseWriter, r *http.Request) {
@@ -391,12 +403,22 @@ func (s *Server) handleTeamCompare(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	repoDir, err := s.repoDir()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	appRepos, err := repoViews(repoDir)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
 	userDir, err := teamfolder.UserDir(cfg.Path, cfg.User)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	user, err := compareFolder(local, userDir, cfg.User)
+	user, err := compareFolder(local, repoDir, userDir, cfg.User)
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -407,13 +429,26 @@ func (s *Server) handleTeamCompare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	memberName := strings.TrimSpace(r.URL.Query().Get("member"))
-	member := map[string]any{"name": "", "differs": false, "agents": []teamAgentView{}}
+	member := map[string]any{
+		"name":        "",
+		"differs":     false,
+		"agents":      []teamAgentView{},
+		"repos":       []teamRepoView{},
+		"reposDiffer": false,
+	}
 	if memberName != "" {
 		memberDir, err := teamfolder.Member(cfg.Path, memberName)
 		if err != nil {
-			member = map[string]any{"name": memberName, "differs": false, "missing": true, "agents": []teamAgentView{}}
+			member = map[string]any{
+				"name":        memberName,
+				"differs":     false,
+				"missing":     true,
+				"agents":      []teamAgentView{},
+				"repos":       []teamRepoView{},
+				"reposDiffer": false,
+			}
 		} else {
-			member, err = compareFolder(local, memberDir, memberName)
+			member, err = compareFolder(local, repoDir, memberDir, memberName)
 			if err != nil {
 				writeErr(w, http.StatusInternalServerError, err)
 				return
@@ -423,6 +458,7 @@ func (s *Server) handleTeamCompare(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"members": names,
 		"app":     app,
+		"repos":   appRepos,
 		"user":    user,
 		"member":  member,
 	})
@@ -435,8 +471,16 @@ func (s *Server) handleTeamDiff(w http.ResponseWriter, r *http.Request) {
 	defer s.teamMu.Unlock()
 	folder := strings.TrimSpace(r.URL.Query().Get("folder"))
 	id := strings.TrimSpace(r.URL.Query().Get("id"))
+	part := strings.TrimSpace(r.URL.Query().Get("part"))
+	if part == "" {
+		part = "agents"
+	}
 	if folder == "" || id == "" {
-		writeErr(w, http.StatusBadRequest, errors.New("Choose an agent file to compare."))
+		writeErr(w, http.StatusBadRequest, errors.New("Choose a file to compare."))
+		return
+	}
+	if part != "agents" && part != "repos" {
+		writeErr(w, http.StatusBadRequest, errors.New("Choose agents or repositories to compare."))
 		return
 	}
 	cfg, err := s.Store.TeamFolder()
@@ -451,6 +495,10 @@ func (s *Server) handleTeamDiff(w http.ResponseWriter, r *http.Request) {
 	memberDir, err := teamfolder.Member(cfg.Path, folder)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if part == "repos" {
+		s.writeRepoDiff(w, memberDir, folder, id)
 		return
 	}
 	local, err := s.agentDir()
@@ -509,6 +557,7 @@ func (s *Server) handleTeamMember(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		Name      string                  `json:"name"`
 		Direction string                  `json:"direction"`
+		Part      string                  `json:"part"`
 		Repos     map[string]repoDecision `json:"repos"`
 	}
 	if !readJSON(w, r, &body) {
@@ -532,14 +581,35 @@ func (s *Server) handleTeamMember(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
+	direction := strings.TrimSpace(body.Direction)
+	if direction == "" {
+		direction = "pull"
+	}
+	part := strings.TrimSpace(body.Part)
+	if part == "" {
+		part = "agents"
+	}
+	if part == "repos" {
+		if err := s.copyRepos(member, direction); err != nil {
+			writeErr(w, http.StatusBadRequest, err)
+			return
+		}
+		cfg.Member = filepath.Base(member)
+		if err := s.Store.SaveTeamFolder(cfg); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+		s.handleState(w, r)
+		return
+	}
+	if part != "agents" {
+		writeErr(w, http.StatusBadRequest, errors.New("Choose agents or repositories to copy."))
+		return
+	}
 	local, err := s.agentDir()
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
 		return
-	}
-	direction := strings.TrimSpace(body.Direction)
-	if direction == "" {
-		direction = "pull"
 	}
 	switch direction {
 	case "pull":
@@ -608,6 +678,399 @@ func (s *Server) copyLocalAgentsToUser(cfg store.TeamFolder, local string) error
 		return err
 	}
 	return teamfolder.Copy(local, teamfolder.AgentsDir(userDir))
+}
+
+func (s *Server) handleSaveUserRepos(w http.ResponseWriter, r *http.Request) {
+	if !s.beginTeam(w) {
+		return
+	}
+	defer s.teamMu.Unlock()
+	cfg, err := s.Store.TeamFolder()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if strings.TrimSpace(cfg.Path) == "" || strings.TrimSpace(cfg.User) == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("Set up the team folder in Settings first."))
+		return
+	}
+	userDir, err := teamfolder.UserDir(cfg.Path, cfg.User)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := os.MkdirAll(userDir, 0o755); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	local, err := s.repoDir()
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := publishRepos(local, teamfolder.ReposDir(userDir)); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.handleState(w, r)
+}
+
+func (s *Server) copyRepos(memberDir, direction string) error {
+	local, err := s.repoDir()
+	if err != nil {
+		return err
+	}
+	switch direction {
+	case "pull":
+		return s.adoptRepos(teamfolder.ReposDir(memberDir))
+	case "push":
+		return publishRepos(local, teamfolder.ReposDir(memberDir))
+	default:
+		return errors.New("Choose how to copy the repositories.")
+	}
+}
+
+func (s *Server) repoDir() (string, error) {
+	file := strings.TrimSpace(s.Store.File())
+	if file == "" || !filepath.IsAbs(file) {
+		return "", errors.New("The repository folder is not available.")
+	}
+	return filepath.Join(filepath.Dir(file), "repos"), nil
+}
+
+type teamRepoView struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Hash string `json:"hash"`
+}
+
+type sharedRepo struct {
+	ID       string   `yaml:"id"`
+	Services []string `yaml:"services"`
+	Index    string   `yaml:"index,omitempty"`
+	Sparse   string   `yaml:"sparse,omitempty"`
+}
+
+func (r sharedRepo) canonical() (string, error) {
+	if r.Services == nil {
+		r.Services = []string{}
+	}
+	raw, err := yaml.Marshal(r)
+	if err != nil {
+		return "", err
+	}
+	return string(raw), nil
+}
+
+func repoViews(dir string) ([]teamRepoView, error) {
+	repos, err := listSharedRepos(dir)
+	if err != nil {
+		return nil, err
+	}
+	views := make([]teamRepoView, 0, len(repos))
+	for _, repo := range repos {
+		text, err := repo.canonical()
+		if err != nil {
+			return nil, err
+		}
+		sum := sha256.Sum256([]byte(text))
+		views = append(views, teamRepoView{
+			ID:   repo.ID,
+			Name: repo.ID,
+			Hash: hex.EncodeToString(sum[:]),
+		})
+	}
+	return views, nil
+}
+
+func compareRepos(localRepos, memberDir string) ([]teamRepoView, bool, error) {
+	local, err := repoViews(localRepos)
+	if err != nil {
+		return nil, false, err
+	}
+	member, err := repoViews(teamfolder.ReposDir(memberDir))
+	if err != nil {
+		return nil, false, err
+	}
+	return member, !sameRepoViews(local, member), nil
+}
+
+func sameRepoViews(left, right []teamRepoView) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	index := make(map[string]string, len(left))
+	for _, repo := range left {
+		index[repo.ID] = repo.Hash
+	}
+	for _, repo := range right {
+		hash, ok := index[repo.ID]
+		if !ok || hash != repo.Hash {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Server) writeRepoDiff(w http.ResponseWriter, memberDir, folder, id string) {
+	if !toolchain.RepoID(id) {
+		writeErr(w, http.StatusBadRequest, errors.New("Choose a repository to compare."))
+		return
+	}
+	local, err := s.repoDir()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	appText, appOK, err := repoShareText(local, id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	folderText, folderOK, err := repoShareText(teamfolder.ReposDir(memberDir), id)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	if !appOK && !folderOK {
+		writeErr(w, http.StatusNotFound, errors.New("That repository is not in this app or that folder."))
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"id":     id,
+		"name":   id,
+		"folder": folder,
+		"diff":   console.TextDiff(appText, folderText),
+	})
+}
+
+func repoShareText(dir, id string) (string, bool, error) {
+	raw, err := os.ReadFile(filepath.Join(dir, id+".yaml"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	repo, ok, err := parseSharedRepo(raw, id+".yaml")
+	if err != nil || !ok {
+		return "", false, err
+	}
+	text, err := repo.canonical()
+	if err != nil {
+		return "", false, err
+	}
+	return text, true, nil
+}
+
+func listSharedRepos(dir string) ([]sharedRepo, error) {
+	if !teamfolderHasDir(dir) {
+		return []sharedRepo{}, nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	repos := make([]sharedRepo, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".yaml") || strings.HasPrefix(name, ".") {
+			continue
+		}
+		raw, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return nil, err
+		}
+		repo, ok, err := parseSharedRepo(raw, name)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+		repos = append(repos, repo)
+	}
+	sort.Slice(repos, func(i, j int) bool { return repos[i].ID < repos[j].ID })
+	return repos, nil
+}
+
+func teamfolderHasDir(path string) bool {
+	info, err := os.Lstat(path)
+	return err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0
+}
+
+func parseSharedRepo(raw []byte, name string) (sharedRepo, bool, error) {
+	var row struct {
+		ID       string   `yaml:"id"`
+		Kind     string   `yaml:"kind"`
+		Services []string `yaml:"services"`
+		Index    string   `yaml:"index"`
+		Sparse   string   `yaml:"sparse"`
+	}
+	if err := yaml.Unmarshal(raw, &row); err != nil {
+		return sharedRepo{}, false, fmt.Errorf("read %s: %w", name, err)
+	}
+	id := strings.TrimSuffix(name, ".yaml")
+	if !toolchain.RepoID(id) {
+		return sharedRepo{}, false, nil
+	}
+	services := make([]string, 0, len(row.Services))
+	for _, service := range row.Services {
+		service = strings.TrimSpace(service)
+		if service == "" {
+			continue
+		}
+		services = append(services, service)
+	}
+	if id == "document" {
+		services = []string{}
+	}
+	index := strings.TrimSpace(row.Index)
+	if index != "obsidian" && index != "codegraph" {
+		index = ""
+	}
+	sparse, err := console.SparsePath(row.Sparse)
+	if err != nil {
+		return sharedRepo{}, false, fmt.Errorf("%s: %w", id, err)
+	}
+	return sharedRepo{ID: id, Services: services, Index: index, Sparse: sparse}, true, nil
+}
+
+func publishRepos(src, dest string) error {
+	repos, err := listSharedRepos(src)
+	if err != nil {
+		return err
+	}
+	if len(repos) == 0 {
+		return errors.New("This app has no repository files to copy.")
+	}
+	tmp, err := os.MkdirTemp("", "kiki-repos-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(tmp)
+	for _, repo := range repos {
+		body, err := repo.canonical()
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(filepath.Join(tmp, repo.ID+".yaml"), []byte(body), 0o644); err != nil {
+			return err
+		}
+	}
+	return teamfolder.Copy(tmp, dest)
+}
+
+func (s *Server) adoptRepos(src string) error {
+	shared, err := listSharedRepos(src)
+	if err != nil {
+		return err
+	}
+	if len(shared) == 0 {
+		return errors.New("That folder has no repositories to copy.")
+	}
+	byID := make(map[string]sharedRepo, len(shared))
+	for _, repo := range shared {
+		byID[repo.ID] = repo
+	}
+	snap, err := s.load()
+	if err != nil {
+		return err
+	}
+	known := make(map[string]console.Repo, len(snap.Repos))
+	for _, repo := range snap.Repos {
+		known[repo.Kind] = repo
+	}
+	next := make([]console.Repo, 0, len(toolchain.Kinds)+len(byID))
+	for _, kind := range toolchain.Kinds {
+		repo := known[kind]
+		repo.Kind = kind
+		if file, ok := byID[kind]; ok {
+			repo = applySharedRepo(repo, file)
+			delete(byID, kind)
+		}
+		next = append(next, repo)
+	}
+	extras := make([]string, 0, len(byID))
+	for id := range byID {
+		extras = append(extras, id)
+	}
+	sort.Strings(extras)
+	added := []string{}
+	for _, id := range extras {
+		prev, existed := known[id]
+		repo := prev
+		repo.Kind = id
+		repo = applySharedRepo(repo, byID[id])
+		if !existed {
+			repo.Folder = ""
+			added = append(added, id)
+		}
+		next = append(next, repo)
+	}
+	snap.Repos = next
+	snap, err = console.ApplyRoot(s.Root, snap)
+	if err != nil {
+		return err
+	}
+	if err := console.Validate(snap); err != nil {
+		return err
+	}
+	if err := s.Store.Save(snap); err != nil {
+		return err
+	}
+	keep := make(map[string]bool, len(snap.Repos))
+	for _, repo := range snap.Repos {
+		keep[repo.Kind] = true
+	}
+	if err := removeExtraRepoFiles(filepath.Join(filepath.Dir(s.Store.File()), "repos"), keep); err != nil {
+		return err
+	}
+	if len(added) == 0 {
+		return nil
+	}
+	entries := make([]gitignore.Entry, 0, len(added))
+	for _, id := range added {
+		entries = append(entries, gitignore.Entry{Path: filepath.Join(s.Root, id), Dir: true})
+	}
+	_, err = gitignore.Ensure(s.Root, entries)
+	return err
+}
+
+func applySharedRepo(repo console.Repo, file sharedRepo) console.Repo {
+	repo.Kind = file.ID
+	if file.ID == "document" {
+		repo.Services = []string{}
+	} else {
+		repo.Services = append([]string(nil), file.Services...)
+	}
+	repo.Index = file.Index
+	repo.Sparse = file.Sparse
+	return repo
+}
+
+func removeExtraRepoFiles(dir string, keep map[string]bool) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if entry.IsDir() || !strings.HasSuffix(name, ".yaml") {
+			continue
+		}
+		id := strings.TrimSuffix(name, ".yaml")
+		if keep[id] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // importAgents replaces dest with the agent files in source.

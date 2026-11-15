@@ -363,6 +363,8 @@ button.team-share-card {
   margin-top: 0.65rem;
 }
 
+.team-compare + .team-compare { margin-top: 0.9rem; }
+
 .team-view {
   min-width: 0;
   border: 1px solid var(--line);

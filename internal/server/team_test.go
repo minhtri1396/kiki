@@ -869,6 +869,128 @@ func TestTeamMemberPushOverwritesTheSelectedFolder(t *testing.T) {
 	}
 }
 
+func TestTeamReposCompareCopyAndKeepTheCheckoutFolder(t *testing.T) {
+	app := newTeamTestServer(t)
+	checkout := filepath.Join(app.Root, "backend")
+	if err := os.MkdirAll(checkout, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := app.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range snap.Repos {
+		if snap.Repos[i].Kind != "backend" {
+			continue
+		}
+		snap.Repos[i].Folder = checkout
+		snap.Repos[i].Services = []string{"api"}
+		snap.Repos[i].Index = "codegraph"
+	}
+	if err := app.Store.Save(snap); err != nil {
+		t.Fatal(err)
+	}
+	team := t.TempDir()
+	if err := app.Store.SaveTeamFolder(store.TeamFolder{Path: team, User: "alice", Member: "alice"}); err != nil {
+		t.Fatal(err)
+	}
+	bob := filepath.Join(team, "bob", "repos")
+	if err := os.MkdirAll(bob, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bobFile := "id: backend\nfolder: /other/machine/backend\nservices:\n  - web\nindex: codegraph\n"
+	if err := os.WriteFile(filepath.Join(bob, "backend.yaml"), []byte(bobFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/team/compare?member=bob", nil)
+	rec := httptest.NewRecorder()
+	app.handleTeamCompare(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compare status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var compared struct {
+		Repos []struct {
+			ID   string `json:"id"`
+			Hash string `json:"hash"`
+		} `json:"repos"`
+		Member struct {
+			ReposDiffer bool `json:"reposDiffer"`
+			Repos       []struct {
+				ID   string `json:"id"`
+				Hash string `json:"hash"`
+			} `json:"repos"`
+		} `json:"member"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &compared); err != nil {
+		t.Fatal(err)
+	}
+	if !compared.Member.ReposDiffer || len(compared.Repos) == 0 || len(compared.Member.Repos) != 1 {
+		t.Fatalf("compare = %+v", compared)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/team/diff?folder=bob&id=backend&part=repos", nil)
+	rec = httptest.NewRecorder()
+	app.handleTeamDiff(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("diff status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "/other/machine") || strings.Contains(rec.Body.String(), checkout) {
+		t.Fatalf("diff includes a checkout folder: %s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "api") || !strings.Contains(rec.Body.String(), "web") {
+		t.Fatalf("diff = %s", rec.Body.String())
+	}
+
+	rec = httptest.NewRecorder()
+	app.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/api/team/repos", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("push status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	pushed, err := os.ReadFile(filepath.Join(team, "alice", "repos", "backend.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(pushed), "folder:") || !strings.Contains(string(pushed), "api") {
+		t.Fatalf("pushed = %s", pushed)
+	}
+
+	if err := os.WriteFile(filepath.Join(team, "alice", "repos", "backend.yaml"), []byte("id: backend\nservices:\n  - billing\nindex: codegraph\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/team/member", strings.NewReader(`{"name":"alice","direction":"pull","part":"repos"}`))
+	rec = httptest.NewRecorder()
+	app.handleTeamMember(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pull status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	snap, err = app.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := snap.Repo("backend")
+	if got.Folder != checkout || len(got.Services) != 1 || got.Services[0] != "billing" || got.Index != "codegraph" {
+		t.Fatalf("backend = %+v", got)
+	}
+	req = httptest.NewRequest(http.MethodGet, "/api/team/compare?member=alice", nil)
+	rec = httptest.NewRecorder()
+	app.handleTeamCompare(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("after pull status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var after struct {
+		User struct {
+			ReposDiffer bool `json:"reposDiffer"`
+		} `json:"user"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &after); err != nil {
+		t.Fatal(err)
+	}
+	if after.User.ReposDiffer {
+		t.Fatalf("repositories still differ: %s", rec.Body.String())
+	}
+}
+
 func newTeamTestServer(t *testing.T) *Server {
 	t.Helper()
 	root := t.TempDir()

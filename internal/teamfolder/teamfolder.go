@@ -111,7 +111,21 @@ func AgentsDir(memberDir string) string {
 
 // HasAgents reports whether memberDir contains a real agents directory.
 func HasAgents(memberDir string) bool {
-	info, err := os.Lstat(AgentsDir(memberDir))
+	return realDir(AgentsDir(memberDir))
+}
+
+// ReposDir is the repositories folder inside a member folder.
+func ReposDir(memberDir string) string {
+	return filepath.Join(filepath.Clean(memberDir), "repos")
+}
+
+// HasRepos reports whether memberDir contains a real repos directory.
+func HasRepos(memberDir string) bool {
+	return realDir(ReposDir(memberDir))
+}
+
+func realDir(path string) bool {
+	info, err := os.Lstat(path)
 	return err == nil && info.IsDir() && info.Mode()&os.ModeSymlink == 0
 }
 

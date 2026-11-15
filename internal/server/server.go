@@ -105,6 +105,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/atlassian/confluence/pages", s.handleConfluencePages)
 	mux.HandleFunc("POST /api/team/member", s.handleTeamMember)
 	mux.HandleFunc("POST /api/team/agents", s.handleSaveUserAgents)
+	mux.HandleFunc("POST /api/team/repos", s.handleSaveUserRepos)
 	mux.HandleFunc("GET /", s.handlePage)
 	mux.HandleFunc("GET /app.css", s.handleAsset)
 	mux.HandleFunc("GET /app.js", s.handleAsset)

@@ -201,7 +201,7 @@ function renderAgentSource(team) {
   const heading = el("h2", "", memberInUseTitle(team.member));
   heading.id = "team-share-title";
   copy.append(heading);
-  copy.append(el("p", "hint", "Share this app's agents with the team. The team folder keeps a folder of agents for you and for each member."));
+  copy.append(el("p", "hint", "Share this app's agents and repositories with the team. The team folder keeps a folder of each for you and for each member."));
   const badge = el("span", "badge", "");
   badge.id = "team-share-badge";
   badge.hidden = true;
@@ -210,7 +210,7 @@ function renderAgentSource(team) {
   const body = document.querySelector("#team-share-body");
   if (!body) return card;
   body.replaceChildren();
-  body.append(el("p", "hint", "Copy agents between this app and the team folder. Your own folder can go both ways. Another member's folder only copies into this app."));
+  body.append(el("p", "hint", "Copy agents or repositories between this app and the team folder. Your own folder can go both ways. Another member's folder only copies into this app."));
   const picker = el("div", "team-share");
   const title = el("div", "team-share-title");
   title.append(el("h3", "", "Member"));
@@ -231,13 +231,13 @@ function renderAgentSource(team) {
     "user-compare",
     "This app and " + (team.user || "your folder"),
     true,
-    "Your folder in the team folder. Use → to copy this app's agents into that folder, or ← to copy that folder's agents into this app. The arrows enable only when the two sides differ."
+    "Your folder in the team folder. Agents and repositories each have their own arrows. → copies this app into that folder, and ← copies that folder into this app. An arrow enables only when that row differs."
   ));
   const memberCompare = renderCompare(
     "member-compare",
     "This app and a member",
     false,
-    "Another member's folder. Choose a member above, then use ← to copy that member's agents into this app. The arrow enables only when the two sides differ. Choosing a member asks before replacing this app's agents."
+    "Another member's folder. Choose a member above, then use ← to copy that member's agents or repositories into this app. An arrow enables only when that row differs."
   );
   if (chosenMember(team) === String(team.user || "").trim()) memberCompare.hidden = true;
   body.append(memberCompare);
@@ -254,10 +254,16 @@ function renderCompare(id, title, push, description) {
   head.append(badge);
   block.append(head);
   if (description) block.append(el("p", "hint", description));
-  const row = el("div", "team-compare");
-  row.append(agentColumn("This app's agents"), arrowColumn(push !== false), agentColumn("Folder agents"));
-  block.append(row);
+  block.append(compareRow("agents", "This app's agents", "Folder agents", push));
+  block.append(compareRow("repos", "This app's repositories", "Folder repositories", push));
   return block;
+}
+
+function compareRow(part, left, right, push) {
+  const row = el("div", "team-compare");
+  row.dataset.part = part;
+  row.append(agentColumn(left), arrowColumn(push !== false, part), agentColumn(right));
+  return row;
 }
 
 function agentColumn(heading) {
@@ -267,19 +273,21 @@ function agentColumn(heading) {
   return view;
 }
 
-function arrowColumn(push) {
+function arrowColumn(push, part) {
   const arrows = el("div", "team-arrows");
-  if (push) arrows.append(arrowButton("→", "push"));
-  arrows.append(arrowButton("←", "pull"));
+  if (push) arrows.append(arrowButton("→", "push", part));
+  arrows.append(arrowButton("←", "pull", part));
   return arrows;
 }
 
-function arrowButton(glyph, direction) {
+function arrowButton(glyph, direction, part) {
   const button = el("button", "text-button", glyph);
   button.type = "button";
   button.disabled = true;
   button.dataset.sync = direction;
-  button.setAttribute("aria-label", glyph === "→" ? "Copy this app's agents to the folder" : "Copy the folder's agents to this app");
+  button.dataset.part = part || "agents";
+  const noun = button.dataset.part === "repos" ? "repositories" : "agents";
+  button.setAttribute("aria-label", glyph === "→" ? "Copy this app's " + noun + " to the folder" : "Copy the folder's " + noun + " to this app");
   return button;
 }
 
@@ -1235,24 +1243,27 @@ function agentFileChanged(agent, otherByID) {
   return String(other.hash || "") !== String(agent.hash || "");
 }
 
-function fillAgentList(list, agents, other, folder) {
+function fillAgentList(list, agents, other, folder, part) {
+  const kind = part === "repos" ? "repos" : "agents";
   list.replaceChildren();
   if (!agents.length) {
-    list.append(el("li", "hint", "No agents."));
+    list.append(el("li", "hint", kind === "repos" ? "No repositories." : "No agents."));
     return;
   }
   const otherByID = other ? agentsByID(other) : null;
   for (const agent of agents) {
     const item = el("li");
-    const name = el("span", "name", agent.name || agent.id);
-    const meta = agent.category ? el("span", "meta", agent.category) : null;
+    const label = kind === "repos" ? (repoLabel[agent.id] || agent.name || agent.id) : (agent.name || agent.id);
+    const name = el("span", "name", label);
+    const meta = kind === "agents" && agent.category ? el("span", "meta", agent.category) : null;
     if (agentFileChanged(agent, otherByID)) {
       item.classList.add("is-diff");
       const button = el("button", "agent-diff");
       button.type = "button";
       button.dataset.agentDiff = agent.id;
       button.dataset.folder = folder || "";
-      button.setAttribute("aria-label", "Show how " + (agent.name || agent.id) + " differs");
+      button.dataset.part = kind;
+      button.setAttribute("aria-label", "Show how " + label + " differs");
       button.append(name);
       if (meta) button.append(meta);
       item.append(button);
@@ -1276,29 +1287,42 @@ function paintPair(id, title, folderHeading, app, side) {
   const block = document.querySelector("#" + id);
   if (!block) return;
   block.querySelector("h3").textContent = title;
-  const views = block.querySelectorAll(".team-view");
-  views[0].querySelector("h4").textContent = "This app's agents";
-  views[1].querySelector("h4").textContent = folderHeading;
-  const badge = block.querySelector(".badge");
   const comparable = !!(side && side.name && !side.missing);
-  const folderAgents = comparable ? (side.agents || []) : null;
-  fillAgentList(views[0].querySelector("ul"), app, folderAgents, comparable ? side.name : "");
+  const reposHeading = folderHeading.replace(/agents$/, "repositories");
+  paintShareRow(block, "agents", "This app's agents", folderHeading, app, side && side.agents, !!side && side.differs, comparable, side);
+  paintShareRow(block, "repos", "This app's repositories", reposHeading, (teamShare && teamShare.repos) || [], side && side.repos, !!side && side.reposDiffer, comparable, side);
+  const badge = block.querySelector(".badge");
+  if (!comparable) {
+    badge.hidden = true;
+    return;
+  }
+  const matched = !side.differs && !side.reposDiffer;
+  badge.hidden = false;
+  badge.className = "badge " + (matched ? "ok" : "wait");
+  badge.textContent = matched ? "Matches" : "Not matched";
+}
+
+function paintShareRow(block, part, leftTitle, rightTitle, appItems, sideItems, differs, comparable, side) {
+  const row = block.querySelector('[data-part="' + part + '"]');
+  if (!row) return;
+  const views = row.querySelectorAll(".team-view");
+  views[0].querySelector("h4").textContent = leftTitle;
+  views[1].querySelector("h4").textContent = rightTitle;
+  const folderItems = comparable ? (sideItems || []) : null;
+  const folderName = comparable ? side.name : "";
+  fillAgentList(views[0].querySelector("ul"), appItems || [], folderItems, folderName, part);
   if (!comparable) {
     views[1].querySelector("ul").replaceChildren(el("li", "hint", side && side.missing ? "This folder is not in the team folder." : "Choose a member."));
-    badge.hidden = true;
   } else {
-    fillAgentList(views[1].querySelector("ul"), side.agents || [], app, side.name);
-    badge.hidden = false;
-    badge.className = "badge " + (side.differs ? "wait" : "ok");
-    badge.textContent = side.differs ? "Not matched" : "Matches";
+    fillAgentList(views[1].querySelector("ul"), sideItems || [], appItems || [], folderName, part);
   }
-  const name = comparable ? side.name : "";
-  const toFolder = block.querySelector("[data-sync='push']");
-  const toApp = block.querySelector("[data-sync='pull']");
-  if (toFolder) toFolder.dataset.folder = name;
-  if (toApp) toApp.dataset.folder = name;
-  setArrow(toFolder, comparable && !!side.differs && app.length > 0, name ? "Copy this app's agents to " + name : "Copy this app's agents to the folder");
-  setArrow(toApp, comparable && !!side.differs && (side.agents || []).length > 0, name ? "Copy " + name + "'s agents to this app" : "Copy the folder's agents to this app");
+  const noun = part === "repos" ? "repositories" : "agents";
+  const toFolder = row.querySelector("[data-sync='push']");
+  const toApp = row.querySelector("[data-sync='pull']");
+  if (toFolder) toFolder.dataset.folder = folderName;
+  if (toApp) toApp.dataset.folder = folderName;
+  setArrow(toFolder, comparable && differs && (appItems || []).length > 0, folderName ? "Copy this app's " + noun + " to " + folderName : "Copy this app's " + noun + " to the folder");
+  setArrow(toApp, comparable && differs && (sideItems || []).length > 0, folderName ? "Copy " + folderName + "'s " + noun + " to this app" : "Copy the folder's " + noun + " to this app");
 }
 
 function paintTeamShare() {
@@ -1311,8 +1335,9 @@ function paintTeamShare() {
   const yours = !!(user.name && member.name && member.name === user.name);
   const memberBlock = document.querySelector("#member-compare");
   if (memberBlock) memberBlock.hidden = yours;
-  const memberOff = !!(member.name && member.name !== user.name && (member.missing || member.differs));
-  paintShareBadge(!!user.name && !user.differs && !memberOff, true);
+  const userOff = !!(user.differs || user.reposDiffer);
+  const memberOff = !!(member.name && member.name !== user.name && (member.missing || member.differs || member.reposDiffer));
+  paintShareBadge(!!user.name && !userOff && !memberOff, true);
   paintPair("user-compare", "This app and " + (user.name || "your folder"), user.name ? user.name + "'s agents" : "Your agents", app, user);
   if (!yours) paintPair("member-compare", member.name ? "This app and " + member.name : "This app and a member", member.name ? member.name + "'s agents" : "Member agents", app, member);
   const note = document.querySelector("#agent-member-note");
@@ -1321,8 +1346,10 @@ function paintTeamShare() {
   if (!(share.members || []).length) return;
   if (member.missing) note.textContent = member.name + " is no longer in the team folder. Choose another.";
   else if (!member.name) note.textContent = "Choose a member to compare that folder with this app.";
+  else if (member.differs && member.reposDiffer) note.textContent = member.name + "'s agents and repositories differ from this app.";
   else if (member.differs) note.textContent = member.name + "'s agents differ from this app's agents.";
-  else note.textContent = member.name + "'s agents match this app's agents.";
+  else if (member.reposDiffer) note.textContent = member.name + "'s repositories differ from this app's repositories.";
+  else note.textContent = member.name + "'s agents and repositories match this app.";
 }
 
 function paintShareBadge(matched, ready) {
@@ -1526,12 +1553,14 @@ function showTeamShareList() {
   if (diff) diff.hidden = true;
 }
 
-async function openAgentDiff(id, folder) {
-  const data = await api("/api/team/diff?folder=" + encodeURIComponent(folder) + "&id=" + encodeURIComponent(id));
-  document.querySelector("#team-share-diff-title").textContent = data.name || id;
+async function openAgentDiff(id, folder, part) {
+  const kind = part === "repos" ? "repos" : "agents";
+  const data = await api("/api/team/diff?folder=" + encodeURIComponent(folder) + "&id=" + encodeURIComponent(id) + "&part=" + kind);
+  document.querySelector("#team-share-diff-title").textContent = kind === "repos" ? (repoLabel[data.name || id] || data.name || id) : (data.name || id);
+  const noun = kind === "repos" ? "repositories" : "agents";
   showSideBySideDiff(data.diff || [], {
     grid: document.querySelector("#team-share-diff-grid"),
-    titles: ["This app", (data.folder || folder) + "'s agents"],
+    titles: ["This app", (data.folder || folder) + "'s " + noun],
   });
   document.querySelector("#team-share-bar").hidden = true;
   document.querySelector("#team-share-body").hidden = true;
@@ -4139,8 +4168,9 @@ async function putTeam(body) {
   }
 }
 
-async function postMember(name, repos, direction) {
+async function postMember(name, repos, direction, part) {
   const body = { name, direction: direction || "pull" };
+  if (part) body.part = part;
   if (repos) body.repos = repos;
   try {
     return await api("/api/team/member", {
@@ -4149,22 +4179,27 @@ async function postMember(name, repos, direction) {
       body: JSON.stringify(body),
     });
   } catch (error) {
-    if (direction !== "push" && error.payload && Array.isArray(error.payload.unknown) && error.payload.unknown.length) {
+    if (part !== "repos" && direction !== "push" && error.payload && Array.isArray(error.payload.unknown) && error.payload.unknown.length) {
       const choices = await askRepoChoices(error.payload.unknown, error.payload.repos || []);
       if (!choices) return null;
-      return postMember(name, choices, direction);
+      return postMember(name, choices, direction, part);
     }
     throw error;
   }
 }
 
-function confirmMemberSync(name, direction) {
+function confirmMemberSync(name, direction, part) {
   const dialog = document.querySelector("#team-member-dialog");
   const push = direction === "push";
+  const repos = part === "repos";
   dialog.querySelector("h2").textContent = push ? "Copy this app to " + name : "Copy " + name + " to this app";
-  document.querySelector("#team-member-text").textContent = push
-    ? "Replace " + name + "'s agents with this app's agents? This overwrites every agent file in that folder."
-    : "Replace this app's agents with " + name + "'s agents? This overwrites every agent in this app.";
+  document.querySelector("#team-member-text").textContent = repos
+    ? (push
+      ? "Replace " + name + "'s repositories with this app's repositories? Checkout folders are not copied."
+      : "Replace this app's repositories with " + name + "'s repositories? Checkout folders on this computer stay.")
+    : (push
+      ? "Replace " + name + "'s agents with this app's agents? This overwrites every agent file in that folder."
+      : "Replace this app's agents with " + name + "'s agents? This overwrites every agent in this app.");
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value) => {
@@ -4184,17 +4219,18 @@ function confirmMemberSync(name, direction) {
   });
 }
 
-async function syncFolder(name, direction) {
+async function syncFolder(name, direction, part) {
   if (!name || agentMemberBusy) return;
   const team = (state.data && state.data.teamFolder) || {};
   if (direction === "push" && name !== (team.user || "")) return;
-  const confirmed = await confirmMemberSync(name, direction);
+  const confirmed = await confirmMemberSync(name, direction, part);
   if (!confirmed) return;
-  await runAgentCopy(name, direction);
+  await runAgentCopy(name, direction, part);
 }
 
-async function runAgentCopy(name, direction) {
+async function runAgentCopy(name, direction, part) {
   if (!name || agentMemberBusy) return;
+  const kind = part === "repos" ? "repos" : "agents";
   const select = document.querySelector("#agent-member");
   const arrows = [...document.querySelectorAll(".team-arrows button")];
   const selectWasDisabled = !!(select && select.disabled);
@@ -4202,14 +4238,15 @@ async function runAgentCopy(name, direction) {
   if (select) select.disabled = true;
   for (const button of arrows) {
     button.disabled = true;
-    if (button.dataset.folder === name && button.dataset.sync === direction) button.classList.add("busy");
+    if (button.dataset.folder === name && button.dataset.sync === direction && button.dataset.part === kind) button.classList.add("busy");
   }
   let copied = null;
   try {
     const team = (state.data && state.data.teamFolder) || {};
-    copied = direction === "push" && name === (team.user || "")
-      ? await api("/api/team/agents", { method: "POST" })
-      : await postMember(name, null, direction);
+    const ownPush = direction === "push" && name === (team.user || "");
+    copied = ownPush
+      ? await api(kind === "repos" ? "/api/team/repos" : "/api/team/agents", { method: "POST" })
+      : await postMember(name, null, direction, kind);
   } catch (error) {
     banner(error.message, true);
   } finally {
@@ -4221,9 +4258,10 @@ async function runAgentCopy(name, direction) {
   }
   if (copied) {
     render(copied);
+    const noun = kind === "repos" ? "repositories" : "agents";
     banner(direction === "push"
-      ? "Copied this app's agents into " + name + "'s agents folder."
-      : "Copied " + name + "'s agents into this app.");
+      ? "Copied this app's " + noun + " into " + name + "'s " + noun + " folder."
+      : "Copied " + name + "'s " + noun + " into this app.");
     return;
   }
   if (select && select.isConnected) loadAgentMembers(select.value).catch((error) => banner(error.message, true));
@@ -6208,12 +6246,12 @@ document.querySelector("#launch-repo").addEventListener("change", () => {
 document.querySelector("#team-share-dialog").addEventListener("click", (event) => {
   const diff = event.target.closest("[data-agent-diff]");
   if (diff) {
-    openAgentDiff(diff.dataset.agentDiff, diff.dataset.folder).catch((error) => banner(error.message, true));
+    openAgentDiff(diff.dataset.agentDiff, diff.dataset.folder, diff.dataset.part).catch((error) => banner(error.message, true));
     return;
   }
   const arrow = event.target.closest(".team-arrows button");
   if (!arrow) return;
-  syncFolder(arrow.dataset.folder, arrow.dataset.sync).catch((error) => banner(error.message, true));
+  syncFolder(arrow.dataset.folder, arrow.dataset.sync, arrow.dataset.part).catch((error) => banner(error.message, true));
 });
 document.querySelector("#team-share-back").addEventListener("click", showTeamShareList);
 document.querySelector("#team-share-dialog").addEventListener("close", showTeamShareList);
