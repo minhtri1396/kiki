@@ -39,7 +39,15 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	folder := toolchain.Folder(s.Root, kind)
+	snap, err := s.load()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	folder := strings.TrimSpace(snap.Repo(kind).Folder)
+	if folder == "" {
+		folder = toolchain.Folder(s.Root, kind)
+	}
 	if err := os.MkdirAll(folder, 0o755); err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -59,7 +67,7 @@ func (s *Server) handleClone(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, err)
 		return
 	}
-	snap, err := s.load()
+	snap, err = s.load()
 	if err != nil {
 		writeErr(w, http.StatusInternalServerError, err)
 		return

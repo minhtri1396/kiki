@@ -11,9 +11,11 @@ import (
 
 // Repo is one repository this agent uses.
 // Description is the note written into the agent file when KIKI creates it.
+// Readonly means this agent may read the repository and must not change it.
 type Repo struct {
 	Kind        string
 	Description string
+	Readonly    bool
 }
 
 // Peer is one agent this agent coordinates with.
@@ -21,6 +23,22 @@ type Repo struct {
 type Peer struct {
 	ID            string
 	Collaboration string
+}
+
+// Use is one MCP server or tool this agent uses.
+// Name is the label shown in the launch prompt. Description is what the agent does with it.
+// Board and space fields are the Jira board or Confluence space and parent page for that server.
+type Use struct {
+	ID          string
+	Name        string
+	Description string
+	BoardID     string
+	BoardName   string
+	SpaceID     string
+	SpaceKey    string
+	SpaceName   string
+	ParentID    string
+	ParentTitle string
 }
 
 // Agent is one embedded instruction document the console can start.
@@ -31,6 +49,8 @@ type Agent struct {
 	File    string
 	Repos   []Repo
 	Peers   []Peer
+	MCPs    []Use
+	Tools   []Use
 	Summary string
 }
 
@@ -72,6 +92,7 @@ var Catalog = []Agent{
 			{ID: "website_runner", Collaboration: plannerToRunner("website_runner", "website")},
 			{ID: "mobile_runner", Collaboration: plannerToRunner("mobile_runner", "mobile")},
 		},
+		MCPs:    atlassianMCPs(plannerJira, plannerConfluence),
 		Summary: "Creates Jira tickets from a requirement folder.",
 	},
 	{
@@ -81,6 +102,7 @@ var Catalog = []Agent{
 		File:    "development/backend/runner.md",
 		Repos:   []Repo{{Kind: "backend", Description: runnerRepo("backend", "website, mobile, or document")}},
 		Peers:   []Peer{{ID: "backend_reviewer", Collaboration: runnerToReviewer("backend_runner", "backend_reviewer")}},
+		MCPs:    atlassianMCPs(runnerJira, runnerConfluence),
 		Summary: "Implements a backend ticket and opens a pull request.",
 	},
 	{
@@ -90,6 +112,7 @@ var Catalog = []Agent{
 		File:    "development/backend/reviewer.md",
 		Repos:   []Repo{{Kind: "backend", Description: reviewerRepo("backend", "website, mobile, or document")}},
 		Peers:   []Peer{{ID: "backend_runner", Collaboration: reviewerToRunner("backend_reviewer", "backend_runner")}},
+		MCPs:    atlassianMCPs(reviewerJira, reviewerConfluence),
 		Summary: "Reviews pull requests from backend_runner.",
 	},
 	{
@@ -99,6 +122,7 @@ var Catalog = []Agent{
 		File:    "development/website/runner.md",
 		Repos:   []Repo{{Kind: "website", Description: runnerRepo("website", "backend, mobile, or document")}},
 		Peers:   []Peer{{ID: "website_reviewer", Collaboration: runnerToReviewer("website_runner", "website_reviewer")}},
+		MCPs:    atlassianMCPs(runnerJira, runnerConfluence),
 		Summary: "Implements a website ticket and opens a pull request.",
 	},
 	{
@@ -108,6 +132,7 @@ var Catalog = []Agent{
 		File:    "development/website/reviewer.md",
 		Repos:   []Repo{{Kind: "website", Description: reviewerRepo("website", "backend, mobile, or document")}},
 		Peers:   []Peer{{ID: "website_runner", Collaboration: reviewerToRunner("website_reviewer", "website_runner")}},
+		MCPs:    atlassianMCPs(reviewerJira, reviewerConfluence),
 		Summary: "Reviews pull requests from website_runner.",
 	},
 	{
@@ -117,6 +142,7 @@ var Catalog = []Agent{
 		File:    "development/mobile/runner.md",
 		Repos:   []Repo{{Kind: "mobile", Description: runnerRepo("mobile", "backend, website, or document")}},
 		Peers:   []Peer{{ID: "mobile_reviewer", Collaboration: runnerToReviewer("mobile_runner", "mobile_reviewer")}},
+		MCPs:    atlassianMCPs(runnerJira, runnerConfluence),
 		Summary: "Implements a mobile ticket and opens a pull request.",
 	},
 	{
@@ -126,6 +152,7 @@ var Catalog = []Agent{
 		File:    "development/mobile/reviewer.md",
 		Repos:   []Repo{{Kind: "mobile", Description: reviewerRepo("mobile", "backend, website, or document")}},
 		Peers:   []Peer{{ID: "mobile_runner", Collaboration: reviewerToRunner("mobile_reviewer", "mobile_runner")}},
+		MCPs:    atlassianMCPs(reviewerJira, reviewerConfluence),
 		Summary: "Reviews pull requests from mobile_runner.",
 	},
 }

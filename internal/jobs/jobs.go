@@ -316,6 +316,16 @@ func (m *Manager) runObsidianCheck(ctx context.Context, folder string) Check {
 	out, runErr := cmd.CombinedOutput()
 	text := cleanOutput(string(out))
 	ready := exists && runErr == nil && pathMentioned(text, abs)
+	if !ready && obsidianVaultCommandMissing(text) && cctx.Err() == nil {
+		if err := sleepContext(cctx, obsidianCommandRetryDelay); err == nil {
+			again := exec.CommandContext(cctx, bin, args[1:]...)
+			again.Dir = abs
+			again.Env = commandEnv()
+			out, runErr = again.CombinedOutput()
+			text = cleanOutput(string(out))
+			ready = exists && runErr == nil && pathMentioned(text, abs)
+		}
+	}
 	if !ready && strings.Contains(text, "Vault not found") && cctx.Err() == nil {
 		if err := toolchain.OpenVault(bin, abs); err == nil {
 			again := exec.CommandContext(cctx, bin, args[1:]...)
@@ -345,6 +355,25 @@ func (m *Manager) runObsidianCheck(ctx context.Context, folder string) Check {
 		DirExists: exists,
 		Summary:   summary,
 		CheckedAt: now(),
+	}
+}
+
+// Obsidian's CLI answers "Command \"vault\" not found" while the app is still
+// starting. The next check waits and tries once more.
+var obsidianCommandRetryDelay = 3 * time.Second
+
+func obsidianVaultCommandMissing(text string) bool {
+	return strings.Contains(text, `Command "vault" not found`)
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
 	}
 }
 

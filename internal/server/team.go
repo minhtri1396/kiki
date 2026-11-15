@@ -500,7 +500,9 @@ func agentFileText(dir, id string) (string, string, bool, error) {
 	if name == "" {
 		name = file.ID
 	}
-	return string(raw), name, true, nil
+	// Category is the folder, not a line in the file. Prefix it so a move still diffs.
+	text := "category: " + file.Category + "\n" + string(raw)
+	return text, name, true, nil
 }
 
 func (s *Server) handleTeamMember(w http.ResponseWriter, r *http.Request) {

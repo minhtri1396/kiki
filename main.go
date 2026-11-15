@@ -13,6 +13,7 @@ import (
 	"github.com/webview/webview_go"
 
 	"kiki/internal/gitignore"
+	"kiki/internal/guard"
 	"kiki/internal/jobs"
 	"kiki/internal/orca"
 	"kiki/internal/server"
@@ -20,6 +21,13 @@ import (
 )
 
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "guardrail" {
+		tool := "cursor"
+		if len(os.Args) > 2 {
+			tool = os.Args[2]
+		}
+		os.Exit(guard.Run(tool))
+	}
 	addr := flag.String("addr", "127.0.0.1:8787", "listen address")
 	noOpen := flag.Bool("no-open", false, "serve without opening the window")
 	flag.Parse()
@@ -41,7 +49,7 @@ func main() {
 	if err := db.EnsureLayout(root); err != nil {
 		log.Fatal(err)
 	}
-	agentPath, err := server.EnsureAgentFiles(root, db)
+	agentPath, err := server.EnsureAgentFiles(root)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -62,6 +70,12 @@ func main() {
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	url := "http://" + *addr + "/"
+	if err := app.EnableGuardrails(*addr); err != nil {
+		fmt.Printf("Guardrails: %s\n", err)
+	}
+	if err := app.SyncRTK(); err != nil {
+		fmt.Printf("RTK: %s\n", err)
+	}
 	fmt.Printf("KIKI: %s\nRepository: %s\nSetup: %s\nAgents: %s\nLogs: %s\n", url, root, setupPath, agentPath, db.LogFile())
 	if ignorePath != "" {
 		fmt.Printf("Git ignore: %s\n", ignorePath)

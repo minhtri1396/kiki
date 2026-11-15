@@ -442,7 +442,7 @@ func TestTeamCompareListsAppUserAndMember(t *testing.T) {
 	}
 	var payload struct {
 		Members []string `json:"members"`
-		App []struct {
+		App     []struct {
 			Name string `json:"name"`
 			Hash string `json:"hash"`
 		} `json:"app"`
@@ -511,6 +511,91 @@ func TestTeamCompareListsAppUserAndMember(t *testing.T) {
 		}
 	}
 	if !sawLocal || !sawBob {
+		t.Fatalf("diff = %+v", diff.Diff)
+	}
+}
+
+func TestTeamDiffShowsACategoryChange(t *testing.T) {
+	app := newTeamTestServer(t)
+	localDir := filepath.Join(app.Root, ".kiki", "agents", "backend")
+	if err := os.MkdirAll(localDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(localDir, "backend_runner.md"), []byte(localAgentFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	team := filepath.Join(t.TempDir(), "team")
+	moved := filepath.Join(team, "bob", "agents", "frontend")
+	if err := os.MkdirAll(moved, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(moved, "backend_runner.md"), []byte(localAgentFile), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/team", strings.NewReader(`{"path":"`+team+`","user":"alice"}`))
+	rec := httptest.NewRecorder()
+	app.handleTeamSave(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/team/compare?member=bob", nil)
+	rec = httptest.NewRecorder()
+	app.handleTeamCompare(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("compare status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var compared struct {
+		App []struct {
+			Category string `json:"category"`
+			Hash     string `json:"hash"`
+		} `json:"app"`
+		Member struct {
+			Differs bool `json:"differs"`
+			Agents  []struct {
+				Category string `json:"category"`
+				Hash     string `json:"hash"`
+			} `json:"agents"`
+		} `json:"member"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &compared); err != nil {
+		t.Fatal(err)
+	}
+	if len(compared.App) != 1 || len(compared.Member.Agents) != 1 {
+		t.Fatalf("compare = %+v", compared)
+	}
+	if compared.App[0].Category != "backend" || compared.Member.Agents[0].Category != "frontend" {
+		t.Fatalf("categories = %q %q", compared.App[0].Category, compared.Member.Agents[0].Category)
+	}
+	if !compared.Member.Differs || compared.App[0].Hash == "" || compared.App[0].Hash != compared.Member.Agents[0].Hash {
+		t.Fatalf("member = %+v app = %+v", compared.Member, compared.App)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/team/diff?folder=bob&id=backend_runner", nil)
+	rec = httptest.NewRecorder()
+	app.handleTeamDiff(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("diff status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	var diff struct {
+		Diff []struct {
+			Kind string `json:"kind"`
+			Text string `json:"text"`
+		} `json:"diff"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &diff); err != nil {
+		t.Fatal(err)
+	}
+	var sawBackend, sawFrontend bool
+	for _, line := range diff.Diff {
+		if line.Kind == "del" && line.Text == "category: backend" {
+			sawBackend = true
+		}
+		if line.Kind == "add" && line.Text == "category: frontend" {
+			sawFrontend = true
+		}
+	}
+	if !sawBackend || !sawFrontend {
 		t.Fatalf("diff = %+v", diff.Diff)
 	}
 }
@@ -793,9 +878,11 @@ func newTeamTestServer(t *testing.T) *Server {
 	}
 	t.Cleanup(func() { _ = db.Close() })
 	return &Server{
-		Root:  root,
-		Store: db,
-		Orca:  &orca.Client{Dir: root},
-		Jobs:  jobs.New(),
+		Root:       root,
+		Store:      db,
+		Orca:       &orca.Client{Dir: root},
+		Jobs:       jobs.New(),
+		RTKHooks:   func(string, bool) error { return nil },
+		GuardHooks: func(string, bool) error { return nil },
 	}
 }

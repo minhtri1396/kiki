@@ -7,10 +7,11 @@ import (
 	"strings"
 )
 
-// indexPages are the only addresses the console may open in the system browser.
+// browserPages are the only addresses the console may open in the system browser.
 var indexPages = map[string]struct{}{
-	"https://obsidian.md/help/cli":              {},
-	"https://github.com/colbymchenry/codegraph": {},
+	"https://obsidian.md/help/cli":                                {},
+	"https://github.com/colbymchenry/codegraph":                   {},
+	"https://id.atlassian.com/manage-profile/security/api-tokens": {},
 }
 
 func openIndexPage(raw string) error {

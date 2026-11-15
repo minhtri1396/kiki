@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
@@ -16,6 +17,10 @@ import (
 type Client struct {
 	Bin string
 	Dir string
+	// Env is added to the environment of Orca commands.
+	Env []string
+	// OnWorktree is called with the folder an agent will run in, before that agent starts.
+	OnWorktree func(path string)
 }
 
 // LaunchArgs is `orca agent launch` for a terminal agent in this repository.
@@ -95,6 +100,7 @@ func (c *Client) Launch(ctx context.Context, runtime, root, prompt, project, tab
 	if err := c.ensureProject(ctx, root, project); err != nil {
 		return "", err
 	}
+	c.noteWorktree(root)
 	out, err := c.run(ctx, LaunchArgs(runtime, root, prompt, model)...)
 	if err != nil {
 		return "", err
@@ -125,6 +131,7 @@ func (c *Client) LaunchFeature(ctx context.Context, runtime, root, prompt, proje
 	if err != nil {
 		return "", err
 	}
+	c.noteWorktree(checkout)
 	out, err := c.run(ctx, LaunchArgs(runtime, checkout, prompt, model)...)
 	if err != nil {
 		return "", err
@@ -137,6 +144,12 @@ func (c *Client) LaunchFeature(ctx context.Context, runtime, root, prompt, proje
 		return "", err
 	}
 	return string(out), nil
+}
+
+func (c *Client) noteWorktree(path string) {
+	if c != nil && c.OnWorktree != nil && strings.TrimSpace(path) != "" {
+		c.OnWorktree(path)
+	}
 }
 
 func (c *Client) ensureGroup(ctx context.Context, name, project string) error {
@@ -421,6 +434,9 @@ func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	if c.Dir != "" {
 		cmd.Dir = c.Dir
+	}
+	if len(c.Env) > 0 {
+		cmd.Env = append(os.Environ(), c.Env...)
 	}
 	out, err := cmd.CombinedOutput()
 	if err != nil {

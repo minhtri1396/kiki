@@ -2,6 +2,7 @@
 package store
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
 	"os"
@@ -48,7 +49,6 @@ type TeamFolder struct {
 type fileDoc struct {
 	WorkspaceID   string     `yaml:"workspace_id"`
 	Orchestrator  string     `yaml:"orchestrator,omitempty"`
-	OrcaAgent     string     `yaml:"orca_agent"`
 	AgentPath     string     `yaml:"agent_path,omitempty"`
 	GenerateTool  string     `yaml:"generate_tool,omitempty"`
 	GenerateModel string     `yaml:"generate_model,omitempty"`
@@ -214,7 +214,6 @@ func (s *Store) Save(snap console.Snapshot) error {
 	}
 	doc.WorkspaceID = snap.WorkspaceID
 	doc.Orchestrator = console.NormalizeOrchestrator(snap.Orchestrator)
-	doc.OrcaAgent = snap.OrcaAgent
 	doc.AgentPath = snap.AgentPath
 	doc.GenerateTool = strings.TrimSpace(snap.GenerateTool)
 	doc.GenerateModel = strings.TrimSpace(snap.GenerateModel)
@@ -241,11 +240,27 @@ func (s *Store) read() (fileDoc, error) {
 		doc.Orchestrator = "orca"
 	}
 	doc.Orchestrator = strings.TrimSpace(doc.Orchestrator)
-	if doc.OrcaAgent == "" {
-		doc.OrcaAgent = "cursor"
-	}
 	doc.Repos = normalizeRepos(doc.Repos)
+	if yamlHasKey(raw, "orca_agent") {
+		if err := s.write(doc); err != nil {
+			return fileDoc{}, err
+		}
+	}
 	return doc, nil
+}
+
+func yamlHasKey(raw []byte, key string) bool {
+	prefix := []byte(key + ":")
+	for _, line := range bytes.Split(raw, []byte("\n")) {
+		line = bytes.TrimSpace(line)
+		if len(line) == 0 || line[0] == '#' {
+			continue
+		}
+		if bytes.HasPrefix(line, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) write(doc fileDoc) error {
@@ -266,7 +281,6 @@ func defaultDoc() fileDoc {
 	return fileDoc{
 		WorkspaceID:  "kiki",
 		Orchestrator: "orca",
-		OrcaAgent:    "cursor",
 		Repos:        normalizeRepos(nil),
 	}
 }
@@ -347,7 +361,6 @@ func (d fileDoc) snapshot() console.Snapshot {
 	snap := console.Snapshot{
 		WorkspaceID:   d.WorkspaceID,
 		Orchestrator:  d.Orchestrator,
-		OrcaAgent:     d.OrcaAgent,
 		AgentPath:     d.AgentPath,
 		GenerateTool:  strings.TrimSpace(d.GenerateTool),
 		GenerateModel: strings.TrimSpace(d.GenerateModel),

@@ -43,7 +43,7 @@ func TestEnsureCreatesFolderAndAgentFiles(t *testing.T) {
 		"ai_tool: cursor\n",
 		"model: auto\n",
 		"enabled: true\n",
-		"teamwork:\n",
+		"agents_coordination:\n",
 		"id: requirement_designer\n",
 		"description:",
 		"tell the user to run agent id requirement_designer",
@@ -59,8 +59,8 @@ func TestEnsureCreatesFolderAndAgentFiles(t *testing.T) {
 	if !splitOK {
 		t.Fatal("seeded document file has no front matter")
 	}
-	if strings.Contains(frontMatter, "kind:") || strings.Contains(frontMatter, "works_with:") || strings.Contains(frontMatter, "collaboration:") {
-		t.Fatalf("seeded front matter still uses the old teamwork keys:\n%s", frontMatter)
+	if strings.Contains(frontMatter, "kind:") || strings.Contains(frontMatter, "teamwork:") || strings.Contains(frontMatter, "works_with:") || strings.Contains(frontMatter, "collaboration:") {
+		t.Fatalf("seeded front matter still uses an old Agents Coordination key:\n%s", frontMatter)
 	}
 	if strings.Contains(body, "## Works with agents") || strings.Contains(body, "**Agent ID:**") || strings.Contains(body, "**Document repository:**") {
 		t.Fatal("seeded prompt repeats fields the launch prompt already includes")
@@ -96,12 +96,29 @@ func TestEnsureCreatesFolderAndAgentFiles(t *testing.T) {
 			t.Fatalf("planner repo %s has no description", repo.Kind)
 		}
 	}
+	if len(planner.MCPs) != 2 || planner.MCPs[0].ID != "atlassian_jira" || planner.MCPs[1].ID != "atlassian_confluence" || !strings.Contains(planner.MCPs[0].Description, "Do not call Jira until the user gives a requirement folder.") || !strings.Contains(planner.MCPs[1].Description, "Do not create, edit, or delete a page.") {
+		t.Fatalf("planner mcps = %#v", planner.MCPs)
+	}
+	document, ok, err := Find(dir, "requirement_document")
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	if len(document.MCPs) != 0 || len(document.Tools) != 0 {
+		t.Fatalf("document uses = %#v %#v", document.MCPs, document.Tools)
+	}
 	runner, ok, err := Find(dir, "backend_runner")
 	if err != nil || !ok || len(runner.WorksWith) != 1 {
 		t.Fatal(err, ok)
 	}
 	if runner.WorksWith[0].ID != "backend_reviewer" || !strings.Contains(runner.WorksWith[0].Collaboration, "[backend_runner -> backend_reviewer]") {
 		t.Fatalf("runner collaboration = %#v", runner.WorksWith[0])
+	}
+	if len(runner.MCPs) != 2 || runner.MCPs[0].ID != "atlassian_jira" || runner.MCPs[1].ID != "atlassian_confluence" || !strings.Contains(runner.MCPs[0].Description, "Do not search Jira for work.") || !strings.Contains(runner.MCPs[1].Description, "when the ticket or the user names it") {
+		t.Fatalf("runner mcps = %#v", runner.MCPs)
+	}
+	reviewer, ok, err := Find(dir, "backend_reviewer")
+	if err != nil || !ok || len(reviewer.MCPs) != 2 || reviewer.MCPs[0].ID != "atlassian_jira" || reviewer.MCPs[1].ID != "atlassian_confluence" || !strings.Contains(reviewer.MCPs[0].Description, "Do not set a ticket to Done.") || !strings.Contains(reviewer.MCPs[1].Description, "when the ticket, the pull request, or the user names it") {
+		t.Fatalf("reviewer mcps = %#v %v", reviewer.MCPs, ok)
 	}
 	if !strings.Contains(front, "ai_tool: cursor\n") || !strings.Contains(front, "model: auto\n") {
 		t.Fatalf("designer did not use the default tool and model:\n%s", front)
@@ -232,8 +249,64 @@ func TestSaveKeepsCollaborationNote(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	if !strings.Contains(text, "id: requirement_designer\n") || !strings.Contains(text, "description:") || strings.Contains(text, "works_with:") || strings.Contains(text, "collaboration:") {
+	if !strings.Contains(text, "agents_coordination:\n") || !strings.Contains(text, "id: requirement_designer\n") || !strings.Contains(text, "description:") || strings.Contains(text, "\nteamwork:") || strings.Contains(text, "works_with:") || strings.Contains(text, "collaboration:") {
 		t.Fatalf("front matter = %s", text)
+	}
+}
+
+func TestSaveKeepsMCPAndToolNotes(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agents")
+	if err := Ensure(dir, "cursor"); err != nil {
+		t.Fatal(err)
+	}
+	current, ok, err := Find(dir, "requirement_document")
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	if current.MCPs != nil || current.Tools != nil {
+		t.Fatalf("seeded uses = %#v %#v", current.MCPs, current.Tools)
+	}
+	next := current
+	next.MCPs = []Use{{
+		ID:          "atlassian_jira",
+		Description: "Read the Jira ticket.\nWrite the comment.",
+		BoardID:     "12",
+		BoardName:   "KIKI",
+	}, {
+		ID:          "atlassian_confluence",
+		Description: "Read the design page.",
+		SpaceID:     "111",
+		SpaceKey:    "ENG",
+		SpaceName:   "Engineering",
+		ParentID:    "99",
+		ParentTitle: "Requirements",
+	}}
+	next.Tools = []Use{{ID: "github"}}
+	if err := Save(dir, "requirement_document", next); err != nil {
+		t.Fatal(err)
+	}
+	saved, ok, err := Find(dir, "requirement_document")
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	if len(saved.MCPs) != 2 || saved.MCPs[0].ID != "atlassian_jira" || saved.MCPs[0].Description != "Read the Jira ticket.\nWrite the comment." || saved.MCPs[0].BoardID != "12" || saved.MCPs[0].BoardName != "KIKI" || saved.MCPs[1].SpaceKey != "ENG" || saved.MCPs[1].ParentTitle != "Requirements" {
+		t.Fatalf("mcps = %#v", saved.MCPs)
+	}
+	if len(saved.Tools) != 1 || saved.Tools[0].ID != "github" || saved.Tools[0].Description != "" {
+		t.Fatalf("tools = %#v", saved.Tools)
+	}
+	raw, err := os.ReadFile(saved.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "mcps:\n") || !strings.Contains(text, "id: atlassian_jira\n") || !strings.Contains(text, "board_id: \"12\"\n") || !strings.Contains(text, "id: atlassian_confluence\n") || !strings.Contains(text, "space_key: ENG\n") || !strings.Contains(text, "parent_title: Requirements\n") || !strings.Contains(text, "tools:\n") || !strings.Contains(text, "- github\n") {
+		t.Fatalf("front matter = %s", text)
+	}
+	next.MCPs = nil
+	next.Tools = []Use{{ID: "GitHub"}}
+	if err := Save(dir, "requirement_document", next); err == nil {
+		t.Fatal("tool id with a capital letter was accepted")
 	}
 }
 
@@ -270,5 +343,58 @@ func TestParseAcceptsLegacyTeamworkKeys(t *testing.T) {
 	}
 	if len(file.WorksWith) != 1 || file.WorksWith[0].ID != "backend_reviewer" || file.WorksWith[0].Collaboration != "Hand the pull request over." {
 		t.Fatalf("works with = %#v", file.WorksWith)
+	}
+}
+
+func TestParseAcceptsPreviousTeamworkKey(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agents", "backend")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nid: backend_runner\nname: Senior Backend Developer\ndescription: Implements a backend ticket.\nai_tool: cursor\nmodel: auto\nrepos:\n    - backend\nteamwork:\n    - id: backend_reviewer\n      description: Hand the pull request over.\n---\n\nPrompt.\n"
+	if err := os.WriteFile(filepath.Join(dir, "backend_runner.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	file, ok, err := Find(filepath.Dir(dir), "backend_runner")
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	if len(file.WorksWith) != 1 || file.WorksWith[0].ID != "backend_reviewer" || file.WorksWith[0].Collaboration != "Hand the pull request over." {
+		t.Fatalf("works with = %#v", file.WorksWith)
+	}
+}
+
+func TestSaveKeepsReadonlyRepository(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agents")
+	if err := Ensure(dir, "cursor"); err != nil {
+		t.Fatal(err)
+	}
+	current, ok, err := Find(dir, "requirement_planner")
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	next := current
+	next.Repos = []Repository{
+		{Kind: "document", Description: "Read the notes.", Readonly: true},
+		{Kind: "backend", Readonly: true},
+		{Kind: "website", Description: "Change the website."},
+	}
+	if err := Save(dir, current.ID, next); err != nil {
+		t.Fatal(err)
+	}
+	saved, ok, err := Find(dir, current.ID)
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	if len(saved.Repos) != 3 || !saved.Repos[0].Readonly || saved.Repos[0].Description != "Read the notes." || !saved.Repos[1].Readonly || saved.Repos[1].Description != "" || saved.Repos[2].Readonly {
+		t.Fatalf("repos = %#v", saved.Repos)
+	}
+	raw, err := os.ReadFile(saved.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if !strings.Contains(text, "readonly: true") || strings.Count(text, "readonly: true") != 2 {
+		t.Fatalf("readonly was not stored on the two chosen repositories:\n%s", text)
 	}
 }

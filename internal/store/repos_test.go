@@ -233,3 +233,49 @@ func TestSaveRepoIndexRequiresAKnownRepository(t *testing.T) {
 		t.Fatal("expected an unknown repository")
 	}
 }
+
+func TestSaveRepoFolderKeepsThePath(t *testing.T) {
+	root := t.TempDir()
+	db, err := Open(Path(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = db.Close() })
+	if err := db.EnsureLayout(root); err != nil {
+		t.Fatal(err)
+	}
+	custom := t.TempDir()
+	snap, err := db.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveRepoFolder(snap, "backend", custom); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.SaveRepoFolder(snap, "backend", "relative/path"); err == nil {
+		t.Fatal("expected a relative path to be rejected")
+	}
+	if err := db.SaveRepoFolder(snap, "backend", filepath.Join(root, "missing-folder")); err == nil {
+		t.Fatal("expected a missing folder to be rejected")
+	}
+	if err := db.EnsureLayout(root); err != nil {
+		t.Fatal(err)
+	}
+	snap, err = db.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := snap.Repo("backend").Folder; got != custom {
+		t.Fatalf("backend folder = %q, want %q", got, custom)
+	}
+	if got := snap.Repo("website").Folder; got != filepath.Join(root, "website") {
+		t.Fatalf("website folder = %q", got)
+	}
+	saved, err := os.ReadFile(filepath.Join(root, ".kiki", "kiki.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(saved), custom) {
+		t.Fatalf("kiki.yaml:\n%s", saved)
+	}
+}

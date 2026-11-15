@@ -1,4 +1,4 @@
-const state = { data: null, agentId: null, editingAgentId: "", busySetup: "", checkingIndexes: new Set(), tab: "agents", workflowSelection: null };
+const state = { data: null, agentId: null, editingAgentId: "", busySetup: "", busyKind: "", pendingRepoIndex: null, checkingIndexes: new Set(), tab: "agents", workflowSelection: null, indexChoice: {} };
 let pageScrollLock = null;
 
 function lockPageScroll() {
@@ -45,6 +45,13 @@ HTMLDialogElement.prototype.close = function () {
   dialogClose.apply(this, arguments);
   syncPageScroll();
 };
+document.addEventListener(
+  "cancel",
+  (event) => {
+    if (event.target instanceof HTMLDialogElement) event.preventDefault();
+  },
+  true,
+);
 let teamMemberLoad = 0;
 let teamShare = null;
 let teamStage = 0;
@@ -81,6 +88,30 @@ function toolLabel(name) {
   return name.charAt(0).toUpperCase() + name.slice(1);
 }
 const repoKinds = ["document", "backend", "website", "mobile"];
+const workspacePattern = /^[a-z][a-z0-9_-]{0,31}$/;
+const settingsFieldRequiredMsg = "This field needs information.";
+const themeKey = "kiki-theme";
+
+function savedTheme() {
+  try {
+    const value = localStorage.getItem(themeKey);
+    if (value === "light" || value === "dark" || value === "system") return value;
+  } catch (error) {}
+  const set = document.documentElement.dataset.theme;
+  if (set === "light" || set === "dark") return set;
+  return "system";
+}
+
+function applyTheme(theme) {
+  const next = theme === "light" || theme === "dark" ? theme : "system";
+  if (next === "system") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = next;
+  try {
+    localStorage.setItem(themeKey, next);
+  } catch (error) {}
+}
+
+applyTheme(savedTheme());
 
 function el(tag, className, text) {
   const node = document.createElement(tag);
@@ -155,10 +186,10 @@ function render(data) {
   renderAgents(data);
   renderRepos(data);
   renderConfig(data);
-  renderIndexes(data);
   renderWorkflow(data);
   renderHistory(data);
   syncSave();
+  paintGenerateIcons();
 }
 
 function renderAgentSource(team) {
@@ -179,7 +210,7 @@ function renderAgentSource(team) {
   const body = document.querySelector("#team-share-body");
   if (!body) return card;
   body.replaceChildren();
-  body.append(el("p", "hint", "This app's agents sit beside your folder in the team folder, with an arrow each way. Choosing another member also shows that member beside this app. That comparison only copies the member's agents into this app. Choosing a member asks before replacing this app's agents with that member's agents."));
+  body.append(el("p", "hint", "Copy agents between this app and the team folder. Your own folder can go both ways. Another member's folder only copies into this app."));
   const picker = el("div", "team-share");
   const title = el("div", "team-share-title");
   title.append(el("h3", "", "Member"));
@@ -196,14 +227,24 @@ function renderAgentSource(team) {
   select.append(waiting);
   picker.append(select);
   body.append(picker);
-  body.append(renderCompare("user-compare", "This app and " + (team.user || "your folder")));
-  const memberCompare = renderCompare("member-compare", "This app and a member", false);
+  body.append(renderCompare(
+    "user-compare",
+    "This app and " + (team.user || "your folder"),
+    true,
+    "Your folder in the team folder. Use → to copy this app's agents into that folder, or ← to copy that folder's agents into this app. The arrows enable only when the two sides differ."
+  ));
+  const memberCompare = renderCompare(
+    "member-compare",
+    "This app and a member",
+    false,
+    "Another member's folder. Choose a member above, then use ← to copy that member's agents into this app. The arrow enables only when the two sides differ. Choosing a member asks before replacing this app's agents."
+  );
   if (chosenMember(team) === String(team.user || "").trim()) memberCompare.hidden = true;
   body.append(memberCompare);
   return card;
 }
 
-function renderCompare(id, title, push) {
+function renderCompare(id, title, push, description) {
   const block = el("section", "team-compare-block");
   block.id = id;
   const head = el("div", "team-share-title");
@@ -212,6 +253,7 @@ function renderCompare(id, title, push) {
   badge.hidden = true;
   head.append(badge);
   block.append(head);
+  if (description) block.append(el("p", "hint", description));
   const row = el("div", "team-compare");
   row.append(agentColumn("This app's agents"), arrowColumn(push !== false), agentColumn("Folder agents"));
   block.append(row);
@@ -280,6 +322,11 @@ function renderAgents(data) {
       const title = el("div", "card-title");
       title.append(el("h3", "", agent.title));
       if (agent.enabled === false) title.append(el("span", "badge bad", "Off"));
+      for (const mark of mcpOverrideLabels(agent)) {
+        const badge = el("span", "badge warn", mark.text);
+        badge.title = mark.title;
+        title.append(badge);
+      }
       head.append(title);
       const actions = el("div", "card-actions");
       const edit = el("button", "text-button", "Edit");
@@ -304,7 +351,7 @@ function renderAgents(data) {
           const other = state.data.agents.find((item) => item.id === peerId);
           return other ? other.title : peerId;
         });
-        body.append(el("p", "hint", "Teamwork: " + names.join(", ")));
+        body.append(el("p", "hint", "Agents Coordination: " + names.join(", ")));
       }
       card.append(body, agentPicks(agent.id));
       cards.append(card);
@@ -412,7 +459,7 @@ async function clearRuns() {
 function renderRepos(data) {
   const panel = document.querySelector("#panel-repos");
   panel.replaceChildren();
-  panel.append(el("p", "hint", "Each repository is a folder inside " + data.root + ". Backend, website, and mobile also have service names. Document is the docs folder. KIKI saves each repository in " + data.root + "/.kiki/repos."));
+  panel.append(el("p", "hint", "Each repository has an index and a folder. Turn the index on to use Obsidian or CodeGraph. A tool already in the folder is used as it is. Choose a folder and KIKI uses that path. Clone into it when the folder is empty. KIKI saves each repository in " + data.root + "/.kiki/repos."));
 
   const grid = el("div", "repo-grid");
   const rank = (kind) => {
@@ -424,49 +471,47 @@ function renderRepos(data) {
     const card = el("article", "card");
     const head = el("div", "repo-head");
     head.append(el("h3", "", repoLabel[repo.kind] || repo.kind));
-    head.append(el("p", "repo-path", repo.folder || ""));
-    card.append(head);
-    const indexLine = el("p", "hint", "Index: " + indexLabel(repo.index));
-    indexLine.dataset.repoIndex = repo.kind;
-    card.append(indexLine);
-    if (repo.folder && !repo.exists) card.append(el("p", "hint", "Folder is missing."));
-    if (repo.empty) card.append(el("p", "hint", "This folder is empty."));
-    if (repo.sparse) card.append(el("p", "hint", "Checkout: " + repo.sparse + ". Other folders are not in this working tree."));
-    if (repo.kind !== "document") {
-      const services = el("div", "services");
-      services.append(el("span", "hint", "Services"));
-      const tags = el("div", "service-tags");
-      tags.dataset.services = repo.kind;
-      services.append(tags);
-      const note = el("p", "hint", "");
-      note.dataset.serviceNote = repo.kind;
-      services.append(note);
-      fillServiceTags(tags, note, repo.available || [], repo.services || []);
-      card.append(services);
-    }
-    if (repo.empty) {
-      const actions = el("div", "actions");
-      const clone = el("button", "", "Clone repository");
-      clone.type = "button";
-      clone.dataset.clone = repo.kind;
-      actions.append(clone);
-      card.append(actions);
-    }
+    card.append(head, repoFolderSection(repo), repoIndexSection(repo));
     grid.append(card);
   }
   panel.append(grid);
   panel.append(saveButton());
+  if (state.checkingIndexes.size) markIndexesChecking();
+  if (state.busySetup) paintRepoSetupButtons();
 }
 
 function renderConfig(data) {
   document.querySelector("#settings-hint").textContent =
-    "Press Save to write Workspace, Agent Orchestration, Generate text, and Team folder to " + data.setupFile + ". Close discards unsaved changes.";
+    "Press Save to write Workspace, Agent Orchestration, Generate text, and Team folder to " + data.setupFile + ". MCP credentials are saved in mcp.yaml beside that file. Tokens stay there and are not written into the setup file agents read. Tools are saved in tools.yaml beside that file. Appearance applies immediately and stays on this computer. Close discards other unsaved changes.";
   const settings = el("div", "setup-row");
+  settings.append(renderAppearance());
   settings.append(field("Workspace", "text", "workspace-id", data.workspaceId));
   settings.append(renderOrchestration(data));
   settings.append(renderGenerate(data));
   settings.append(renderTeam(data.teamFolder || {}));
+  settings.append(renderGuardrails(data.guardrails !== false));
+  settings.append(renderMCP(data.atlassian || {}));
+  settings.append(renderTools(data.toolChoices || []));
   document.querySelector("#settings-fields").replaceChildren(settings);
+}
+
+function renderAppearance() {
+  const section = el("section", "appearance-setup");
+  const wrap = el("label", "field");
+  wrap.append(el("span", "", "Appearance"));
+  const select = el("select");
+  select.id = "appearance";
+  const current = savedTheme();
+  for (const [id, label] of [["system", "System"], ["light", "Light"], ["dark", "Dark"]]) {
+    const option = el("option", "", label);
+    option.value = id;
+    if (id === current) option.selected = true;
+    select.append(option);
+  }
+  wrap.append(select);
+  wrap.append(el("p", "hint", "Light, dark, or match this computer."));
+  section.append(wrap);
+  return section;
 }
 
 function renderOrchestration(data) {
@@ -494,13 +539,13 @@ function renderOrchestration(data) {
 function renderGenerate(data) {
   const section = el("section", "generate-setup");
   section.append(el("h3", "", "Generate text"));
-  section.append(el("p", "hint", "AI Tool and model used when Generate rewrites a prompt, a repository note, or a teamwork note in Edit agent. KIKI runs that tool's CLI."));
+  section.append(el("p", "hint", "AI Tool and model used when Generate rewrites a prompt, a repository note, an Agents Coordination note, an MCP note, or a tool note in Edit agent. KIKI runs that tool's CLI."));
   const grid = el("div", "agent-grid");
   const toolField = el("label", "field");
   toolField.append(el("span", "", "AI Tool"));
   const tool = el("select");
   tool.id = "generate-tool";
-  const toolName = usableTool(data.generateTool || data.orcaAgent);
+  const toolName = usableTool(data.generateTool);
   fillToolSelect(tool, toolName);
   tool.dataset.saved = tool.value;
   toolField.append(tool);
@@ -554,6 +599,395 @@ function savedTeamForMount(overrides) {
     user: saved.user || "",
     memberName: saved.user || "",
   }, overrides || {});
+}
+
+function renderGuardrails(on) {
+  const section = el("section", "tools-setup wide");
+  section.append(el("h3", "", "Guardrails"));
+  section.append(el("p", "hint", "Guardrails apply to every agent when they are on. Starting an agent adds the guardrail hook to that AI tool when it is missing. Turning guardrails off removes those hooks from Cursor, Claude, Codex, and Gemini. Save writes this choice to tools.yaml beside the setup file."));
+  const card = el("div", "mcp-card");
+  const head = el("div", "mcp-head");
+  head.append(el("strong", "", "Guardrails"));
+  const button = el("button", "switch");
+  button.type = "button";
+  button.id = "guardrails-toggle";
+  button.dataset.guardrailsToggle = "1";
+  button.setAttribute("aria-pressed", on ? "true" : "false");
+  button.setAttribute("aria-label", "Use Guardrails");
+  button.append(el("span", "switch-knob"));
+  head.append(button);
+  card.append(head);
+  card.append(el("p", "hint", "The hook checks each command, file, MCP server, and agent before it runs."));
+  section.append(card);
+  return section;
+}
+
+function renderTools(choices) {
+  const section = el("section", "tools-setup wide");
+  section.append(el("h3", "", "Tools"));
+  section.append(el("p", "hint", "GitHub CLI is chosen on each agent. RTK applies to every agent when it is on. Starting an agent adds the RTK hook to that AI tool when it is missing. Turning RTK off removes the RTK hook from Cursor, Claude, Codex, and Gemini. Save writes these choices to tools.yaml beside the setup file. Agents do not read that file."));
+  for (const tool of choices) section.append(renderToolCard(tool));
+  return section;
+}
+
+function renderToolCard(tool) {
+  const card = el("div", "mcp-card");
+  const head = el("div", "mcp-head");
+  const title = el("div", "tool-title");
+  title.append(el("strong", "", tool.name || tool.id));
+  if (tool.global) title.append(el("span", "badge", "Every agent"));
+  const badge = el("span", tool.installed ? "badge ok" : "badge wait", tool.installed ? "Installed" : "Not installed");
+  title.append(badge);
+  head.append(title, toolSwitch(tool));
+  card.append(head);
+  const hint = el("p", "hint");
+  if (tool.detail) hint.append(document.createTextNode(tool.detail + " "));
+  if (tool.command) {
+    hint.append(document.createTextNode("Command: "));
+    hint.append(el("code", "", tool.command));
+    hint.append(document.createTextNode(". "));
+  }
+  if (tool.page) {
+    const link = document.createElement("a");
+    link.className = "index-tool-link";
+    link.href = tool.page;
+    link.dataset.url = tool.page;
+    link.textContent = tool.page;
+    hint.append(link);
+  }
+  card.append(hint);
+  return card;
+}
+
+function toolSwitch(tool) {
+  const button = el("button", "switch");
+  button.type = "button";
+  button.id = "tool-" + tool.id;
+  button.dataset.toolToggle = tool.id;
+  button.setAttribute("aria-pressed", tool.enabled ? "true" : "false");
+  button.setAttribute("aria-label", "Use " + (tool.name || tool.id));
+  button.append(el("span", "switch-knob"));
+  return button;
+}
+
+function collectTools() {
+  const buttons = document.querySelectorAll("#settings-fields [data-tool-toggle]");
+  const guard = document.querySelector("#settings-fields [data-guardrails-toggle]");
+  if (!buttons.length && !guard) return null;
+  const tools = {};
+  for (const button of buttons) tools[button.dataset.toolToggle] = button.getAttribute("aria-pressed") === "true";
+  if (guard) tools.guardrails = guard.getAttribute("aria-pressed") === "true";
+  return tools;
+}
+
+function toolsDirty() {
+  const choices = (state.data && state.data.toolChoices) || [];
+  for (const tool of choices) {
+    const button = document.querySelector("#settings-fields [data-tool-toggle='" + CSS.escape(tool.id) + "']");
+    if (!button) return false;
+    if ((button.getAttribute("aria-pressed") === "true") !== !!tool.enabled) return true;
+  }
+  return guardrailsDirty();
+}
+
+function guardrailsDirty() {
+  const button = document.querySelector("#settings-fields [data-guardrails-toggle]");
+  if (!button || !state.data) return false;
+  return (button.getAttribute("aria-pressed") === "true") !== (state.data.guardrails !== false);
+}
+
+function renderMCP(cfg) {
+  const section = el("section", "mcp-setup wide");
+  section.append(el("h3", "", "MCP Servers"));
+  section.append(el("p", "hint", "Before a run, KIKI adds an MCP server to the agent's AI Tool when that tool does not already have one. A token left blank keeps the saved token."));
+  section.append(renderAtlassianMCP(cfg));
+  syncMCP(section);
+  return section;
+}
+
+function renderAtlassianMCP(cfg) {
+  const card = el("div", "mcp-card");
+  const head = el("div", "mcp-head");
+  head.append(el("strong", "", "Atlassian"));
+  head.append(mcpSwitch("mcp-atlassian", "Use Atlassian", !!cfg.enabled));
+  card.append(head);
+  const body = el("div", "mcp-body");
+  body.id = "mcp-atlassian-body";
+  body.append(atlassianTokenHint());
+  body.append(...mcpCredentialFields("mcp", cfg, "you@company.com"));
+  rememberSettingsPlaces(cfg);
+  body.append(mcpService("Jira", "jira", cfg.jira || {}, "https://your-company.atlassian.net"));
+  body.append(mcpService("Confluence", "confluence", cfg.confluence || {}, "https://your-company.atlassian.net/wiki"));
+  card.append(body);
+  return card;
+}
+
+function mcpSwitch(id, label, on) {
+  const button = el("button", "switch");
+  button.type = "button";
+  button.id = id;
+  button.dataset.mcpToggle = id;
+  button.setAttribute("aria-pressed", on ? "true" : "false");
+  button.setAttribute("aria-label", label);
+  button.append(el("span", "switch-knob"));
+  return button;
+}
+
+function mcpService(title, name, product, placeholder) {
+  const block = el("div", "mcp-service");
+  const head = el("div", "mcp-head");
+  head.append(el("strong", "", title));
+  head.append(mcpSwitch("mcp-" + name, "Use " + title, !!product.enabled));
+  block.append(head);
+  const body = el("div", "mcp-service-body");
+  body.id = "mcp-" + name + "-body";
+  const url = field("Site URL", "text", "mcp-" + name + "-url", product.url || "");
+  const urlInput = url.querySelector("input");
+  urlInput.placeholder = placeholder;
+  urlInput.spellcheck = false;
+  urlInput.autocomplete = "off";
+  const own = el("label", "mcp-own");
+  const box = el("input");
+  box.type = "checkbox";
+  box.id = "mcp-" + name + "-own";
+  box.checked = !!product.ownCredentials;
+  own.append(box, document.createTextNode("Use a separate email and API token"));
+  const creds = el("div", "mcp-own-fields");
+  creds.id = "mcp-" + name + "-creds";
+  creds.append(...mcpCredentialFields("mcp-" + name, product, "you@company.com"));
+  body.append(url, own, creds, ...settingsPlaceFields(name));
+  block.append(body);
+  return block;
+}
+
+function rememberSettingsPlaces(cfg) {
+  const jira = (cfg && cfg.jira) || {};
+  const wiki = (cfg && cfg.confluence) || {};
+  state.settingsPlaces = {
+    jira: placeFields(jira),
+    confluence: placeFields(wiki),
+  };
+}
+
+function settingsPlaceFields(name) {
+  const saved = () => state.settingsPlaces[name];
+  if (name === "jira") {
+    return [el("p", "hint", "Agents use this board unless an agent chooses another one."), searchSelect({
+      label: "Board",
+      placeholder: "Search Jira boards",
+      value: () => saved().boardName || "",
+      load: (query) => fetchPlaces("/api/atlassian/jira/boards?q=" + encodeURIComponent(query)),
+      onChoose: (item) => {
+        saved().boardId = item ? item.id : "";
+        saved().boardName = item ? (item.name || "") : "";
+        syncSave();
+      },
+    })];
+  }
+  let parentField;
+  const space = searchSelect({
+    label: "Space",
+    placeholder: "Search Confluence spaces",
+    value: () => saved().spaceName || "",
+    load: (query) => fetchPlaces("/api/atlassian/confluence/spaces?q=" + encodeURIComponent(query)),
+    onChoose: (item) => {
+      const current = saved();
+      current.spaceId = item ? item.id : "";
+      current.spaceKey = item ? (item.key || "") : "";
+      current.spaceName = item ? (item.name || "") : "";
+      current.parentId = "";
+      current.parentTitle = "";
+      if (parentField) parentField.refresh();
+      syncSave();
+    },
+  });
+  parentField = searchSelect({
+    label: "Parent page",
+    placeholder: () => saved().spaceId ? "Search pages" : "Choose a space first.",
+    value: () => saved().parentTitle || "",
+    disabled: () => !saved().spaceId,
+    load: (query) => {
+      const current = saved();
+      const params = new URLSearchParams({ space: current.spaceId || "", key: current.spaceKey || "", q: query });
+      return fetchPlaces("/api/atlassian/confluence/pages?" + params.toString());
+    },
+    onChoose: (item) => {
+      saved().parentId = item ? item.id : "";
+      saved().parentTitle = item ? (item.name || "") : "";
+      syncSave();
+    },
+  });
+  return [el("p", "hint", "Agents use this space and parent page unless an agent chooses another one."), space, parentField];
+}
+
+function atlassianTokenHint() {
+  const hint = el("div", "hint mcp-token-hint");
+  const url = "https://id.atlassian.com/manage-profile/security/api-tokens";
+  const link = document.createElement("a");
+  link.className = "index-tool-link";
+  link.href = url;
+  link.dataset.url = url;
+  link.textContent = url;
+  const intro = el("p");
+  intro.append(
+    document.createTextNode("Sign in to Atlassian, open "),
+    link,
+    document.createTextNode(", choose Create API token with scopes, and paste that token here with the account email. Turn these scopes on:"),
+  );
+  const list = el("ul", "mcp-scopes");
+  list.append(
+    scopeLine("Jira", ["read:jira-work", "write:jira-work", "read:jira-user"]),
+    scopeLine("Confluence", [
+      "read:confluence-content.all",
+      "read:confluence-space.summary",
+      "write:confluence-content",
+      "search:confluence",
+      "read:confluence-user",
+    ]),
+  );
+  hint.append(intro, list, el("p", "", "Jira and Confluence use this email and token unless a row has its own."));
+  return hint;
+}
+
+function scopeLine(product, scopes) {
+  const item = el("li");
+  item.append(el("span", "", product + ": "));
+  scopes.forEach((scope, index) => {
+    if (index) item.append(document.createTextNode(", "));
+    item.append(el("code", "", scope));
+  });
+  return item;
+}
+
+function mcpCredentialFields(prefix, product, emailPlaceholder) {
+  const email = field("Email", "text", prefix + "-username", product.username || "");
+  const emailInput = email.querySelector("input");
+  emailInput.placeholder = emailPlaceholder;
+  emailInput.spellcheck = false;
+  emailInput.autocomplete = "off";
+  const api = secretField("API token", prefix + "-api-token", product.apiToken || "");
+  return [email, api];
+}
+
+function secretField(label, id, value) {
+  const wrap = el("label", "field");
+  wrap.append(el("span", "", label));
+  const row = el("div", "secret-field");
+  const input = el("input");
+  input.type = "password";
+  input.id = id;
+  input.value = value || "";
+  input.autocomplete = "new-password";
+  input.spellcheck = false;
+  input.placeholder = "API token";
+  const button = el("button", "secret-toggle");
+  button.type = "button";
+  button.dataset.secretToggle = id;
+  button.setAttribute("aria-pressed", "false");
+  button.setAttribute("aria-label", "Show API token");
+  button.append(eyeIcon(false));
+  row.append(input, button);
+  wrap.append(row);
+  return wrap;
+}
+
+function eyeIcon(shown) {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("fill", "none");
+  path.setAttribute("stroke", "currentColor");
+  path.setAttribute("stroke-width", "1.8");
+  path.setAttribute("stroke-linecap", "round");
+  path.setAttribute("stroke-linejoin", "round");
+  path.setAttribute("d", shown
+    ? "M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 5.2A9.8 9.8 0 0 1 12 5c5 0 8.5 3.2 10 7a12 12 0 0 1-2.8 4M6.1 6.1C4.2 7.4 2.7 9.1 2 12c1.5 3.8 5 7 10 7 1.6 0 3.1-.3 4.4-.9"
+    : "M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z");
+  svg.append(path);
+  if (!shown) {
+    const pupil = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+    pupil.setAttribute("cx", "12");
+    pupil.setAttribute("cy", "12");
+    pupil.setAttribute("r", "2.5");
+    pupil.setAttribute("fill", "none");
+    pupil.setAttribute("stroke", "currentColor");
+    pupil.setAttribute("stroke-width", "1.8");
+    svg.append(pupil);
+  }
+  return svg;
+}
+
+function syncMCP(root) {
+  root = root || document;
+  const atlassian = root.querySelector("#mcp-atlassian");
+  if (!atlassian) return;
+  const body = root.querySelector("#mcp-atlassian-body");
+  if (body) body.hidden = atlassian.getAttribute("aria-pressed") !== "true";
+  for (const name of ["jira", "confluence"]) {
+    const toggle = root.querySelector("#mcp-" + name);
+    const detail = root.querySelector("#mcp-" + name + "-body");
+    if (toggle && detail) detail.hidden = toggle.getAttribute("aria-pressed") !== "true";
+    const own = root.querySelector("#mcp-" + name + "-own");
+    const creds = root.querySelector("#mcp-" + name + "-creds");
+    if (own && creds) creds.hidden = !own.checked;
+  }
+}
+
+function fieldValue(selector) {
+  const input = document.querySelector(selector);
+  return input ? input.value.trim() : "";
+}
+
+function mcpPressed(id) {
+  const button = document.querySelector(id);
+  return !!button && button.getAttribute("aria-pressed") === "true";
+}
+
+function mcpChecked(id) {
+  const input = document.querySelector(id);
+  return !!input && input.checked;
+}
+
+function mcpDirty() {
+  const toggle = document.querySelector("#mcp-atlassian");
+  if (!toggle || !state.data) return false;
+  const saved = state.data.atlassian || {};
+  if (mcpPressed("#mcp-atlassian") !== !!saved.enabled) return true;
+  if (fieldValue("#mcp-username") !== (saved.username || "")) return true;
+  if (fieldValue("#mcp-api-token") !== (saved.apiToken || "")) return true;
+  return mcpServiceDirty("jira", saved.jira || {}) || mcpServiceDirty("confluence", saved.confluence || {});
+}
+
+function mcpServiceDirty(name, saved) {
+  if (mcpPressed("#mcp-" + name) !== !!saved.enabled) return true;
+  if (fieldValue("#mcp-" + name + "-url") !== (saved.url || "")) return true;
+  if (mcpChecked("#mcp-" + name + "-own") !== !!saved.ownCredentials) return true;
+  if (fieldValue("#mcp-" + name + "-username") !== (saved.username || "")) return true;
+  if (fieldValue("#mcp-" + name + "-api-token") !== (saved.apiToken || "")) return true;
+  const picked = (state.settingsPlaces && state.settingsPlaces[name]) || {};
+  const keys = name === "jira" ? ["boardId", "boardName"] : ["spaceId", "spaceKey", "spaceName", "parentId", "parentTitle"];
+  return keys.some((key) => (picked[key] || "") !== (saved[key] || ""));
+}
+
+function collectAtlassian() {
+  const toggle = document.querySelector("#mcp-atlassian");
+  if (!toggle) return null;
+  const picked = state.settingsPlaces || { jira: {}, confluence: {} };
+  const read = (name) => Object.assign(placeFields(picked[name]), {
+    enabled: mcpPressed("#mcp-" + name),
+    url: fieldValue("#mcp-" + name + "-url"),
+    ownCredentials: mcpChecked("#mcp-" + name + "-own"),
+    username: fieldValue("#mcp-" + name + "-username"),
+    apiToken: fieldValue("#mcp-" + name + "-api-token"),
+  });
+  return {
+    enabled: mcpPressed("#mcp-atlassian"),
+    username: fieldValue("#mcp-username"),
+    apiToken: fieldValue("#mcp-api-token"),
+    jira: read("jira"),
+    confluence: read("confluence"),
+  };
 }
 
 function renderTeam(team) {
@@ -631,7 +1065,7 @@ function renderTeam(team) {
     userInput.setAttribute("aria-invalid", missingName && mode === "new" ? "true" : "false");
     const freshRow = el("div", "choice-row");
     freshRow.append(freshLabel, userInput);
-    const nameError = el("p", "field-error", mode === "existing" ? "Choose a folder name." : "Enter your name.");
+    const nameError = el("p", "field-error", settingsFieldRequiredMsg);
     nameError.id = "team-user-error";
     nameError.hidden = !missingName;
     choices.append(existingRow, freshRow, nameError);
@@ -646,7 +1080,7 @@ function renderTeam(team) {
     userInput.setAttribute("aria-required", hasPath ? "true" : "false");
     userInput.setAttribute("aria-invalid", missingName ? "true" : "false");
     user.classList.toggle("is-invalid", missingName);
-    const nameError = el("p", "field-error", "Enter your name.");
+    const nameError = el("p", "field-error", settingsFieldRequiredMsg);
     nameError.id = "team-user-error";
     nameError.hidden = !missingName;
     user.append(nameError);
@@ -797,6 +1231,7 @@ function agentFileChanged(agent, otherByID) {
   if (!otherByID) return false;
   const other = otherByID.get(agent.id);
   if (!other) return true;
+  if (String(other.category || "") !== String(agent.category || "")) return true;
   return String(other.hash || "") !== String(agent.hash || "");
 }
 
@@ -943,7 +1378,9 @@ function configDirty() {
     || workspace.value !== (state.data.workspaceId || "")
     || orchestrator.value !== (state.data.orchestrator || "orca")
     || tool.value !== tool.dataset.saved
-    || model.value !== model.dataset.saved;
+    || model.value !== model.dataset.saved
+    || mcpDirty()
+    || toolsDirty();
 }
 
 function syncSave() {
@@ -953,42 +1390,31 @@ function syncSave() {
   if (config && !config.classList.contains("busy")) config.disabled = !configDirty();
 }
 
-let generateIconSeq = 0;
+function paintGenerateIcon(button) {
+  if (!button || button.classList.contains("busy")) return;
+  button.textContent = "Rewrite by AI";
+  button.setAttribute("aria-label", "Rewrite by AI");
+}
 
-function generateIcon() {
-  const id = "ai-spark-" + (++generateIconSeq);
-  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
-  svg.setAttribute("viewBox", "0 0 24 24");
-  svg.setAttribute("aria-hidden", "true");
-  const defs = document.createElementNS("http://www.w3.org/2000/svg", "defs");
-  const gradient = document.createElementNS("http://www.w3.org/2000/svg", "linearGradient");
-  gradient.id = id;
-  gradient.setAttribute("x1", "0");
-  gradient.setAttribute("y1", "1");
-  gradient.setAttribute("x2", "1");
-  gradient.setAttribute("y2", "0");
-  for (const [offset, color] of [["0%", "#f472b6"], ["34%", "#a78bfa"], ["66%", "#60a5fa"], ["100%", "#22d3ee"]]) {
-    const stop = document.createElementNS("http://www.w3.org/2000/svg", "stop");
-    stop.setAttribute("offset", offset);
-    stop.setAttribute("stop-color", color);
-    gradient.append(stop);
-  }
-  defs.append(gradient);
-  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-  path.setAttribute("fill", "url(#" + id + ")");
-  path.setAttribute("d", "M12 1.2c.7 4.7 2.2 6.4 7.4 7.3-5.2.9-6.7 2.6-7.4 7.3-.7-4.7-2.2-6.4-7.4-7.3 5.2-.9 6.7-2.6 7.4-7.3zm6.6 13.2c.28 1.7.85 2.35 2.7 2.7-1.85.35-2.42 1-2.7 2.7-.28-1.7-.85-2.35-2.7-2.7 1.85-.35 2.42-1 2.7-2.7z");
-  svg.append(defs, path);
-  return svg;
+function paintGenerateIcons() {
+  for (const button of document.querySelectorAll(".field-generate")) paintGenerateIcon(button);
 }
 
 function generateButton(kind, subject) {
-  const button = el("button", "icon-button field-generate");
+  const button = el("button", "field-generate", "Rewrite by AI");
   button.type = "button";
   button.dataset.generate = kind;
-  button.setAttribute("aria-label", "Generate");
+  button.setAttribute("aria-label", "Rewrite by AI");
   if (subject) button.dataset.generateSubject = subject;
-  button.append(generateIcon());
   return button;
+}
+
+function placeGenerateButtons() {
+  for (const area of document.querySelectorAll("#agent-dialog .compose textarea")) {
+    const compose = area.closest(".compose");
+    if (!compose) continue;
+    compose.classList.toggle("has-scroll", area.scrollHeight > area.clientHeight + 1);
+  }
 }
 
 let generateAbort = null;
@@ -999,9 +1425,13 @@ let generateSawThink = false;
 
 function generateTitle(button) {
   const subject = button.dataset.generateSubject || "";
-  if (button.dataset.generate === "prompt") return "Generate prompt";
-  if (button.dataset.generate === "repo") return "Generate " + (subject || "repository");
-  return "Generate " + (subject || "teamwork");
+  let what = subject;
+  if (button.dataset.generate === "prompt") what = "prompt";
+  else if (!what && button.dataset.generate === "repo") what = "repository";
+  else if (!what && button.dataset.generate === "mcp") what = "MCP Servers";
+  else if (!what && button.dataset.generate === "tool") what = "tool";
+  else if (!what) what = "Agents Coordination";
+  return "Rewrite " + what + " by AI";
 }
 
 function compareCell(text, kind) {
@@ -1134,7 +1564,7 @@ function showGenerateChoice(tool, model) {
 
 function savedGenerateChoice() {
   const data = state.data || {};
-  const tool = data.generateTool || data.orcaAgent || "";
+  const tool = data.generateTool || "";
   return { tool, model: data.generateModel || defaultModel(tool) };
 }
 
@@ -1168,8 +1598,16 @@ function showAgentForm() {
   document.querySelector("#agent-dialog").classList.remove("generating");
 }
 
+function generateAgentLabel() {
+  const name = (document.querySelector("#agent-name").value || "").trim();
+  const id = (document.querySelector("#agent-id").value || "").trim();
+  if (name && id && name !== id) return name + " · " + id;
+  return name || id;
+}
+
 function openGenerateDialog(title) {
   document.querySelector("#generate-dialog-title").textContent = title;
+  document.querySelector("#generate-dialog-agent").textContent = generateAgentLabel();
   const choice = savedGenerateChoice();
   showGenerateChoice(choice.tool, choice.model);
   resetGenerateOutput();
@@ -1203,6 +1641,12 @@ function finishGenerateSpinner() {
 function storeGeneratedText(button, value) {
   if (button.dataset.generate === "repo") state.repoNotes[button.dataset.generateSubject] = value;
   if (button.dataset.generate === "teamwork") state.peerNotes[button.dataset.generateSubject] = value;
+  const spec = useSections[button.dataset.generate];
+  if (!spec) return;
+  if (!state[spec.state]) state[spec.state] = {};
+  const area = button.closest(".field") && button.closest(".field").querySelector("textarea");
+  const id = (area && area.dataset.use) || button.dataset.generateSubject;
+  state[spec.state][id] = value;
 }
 
 function prepareGenerate(button) {
@@ -1379,62 +1823,443 @@ function indexLabel(index) {
   return "not set";
 }
 
+function indexItem(kind) {
+  return ((state.data && state.data.indexes) || []).find((item) => item.kind === kind) || null;
+}
+
+function indexAssigned(item) {
+  return !!item && (item.index === "obsidian" || item.index === "codegraph");
+}
+
+function repoIndexSection(repo) {
+  const section = el("div", "repo-index");
+  section.dataset.repoIndex = repo.kind;
+  const title = el("div", "repo-index-title");
+  title.append(el("p", "repo-region", "Index tool"));
+  const status = el("div", "index-repo-status");
+  status.dataset.repoIndexStatus = repo.kind;
+  const toggle = el("button", "switch");
+  toggle.type = "button";
+  toggle.dataset.repoIndexUse = repo.kind;
+  toggle.append(el("span", "switch-knob"));
+  title.append(status, toggle);
+  const head = el("div", "repo-index-head");
+  const field = el("label", "field repo-index-field");
+  const select = el("select");
+  select.dataset.repoIndexChoice = repo.kind;
+  select.setAttribute("aria-label", "Index for " + (repoLabel[repo.kind] || repo.kind));
+  for (const [value, label] of [["obsidian", "Obsidian"], ["codegraph", "CodeGraph"]]) {
+    const option = el("option", "", label);
+    option.value = value;
+    select.append(option);
+  }
+  field.append(select);
+  const actions = el("div", "repo-index-actions");
+  actions.dataset.repoIndexActions = repo.kind;
+  head.append(field, actions);
+  const detail = el("div", "repo-index-detail");
+  detail.dataset.repoIndexDetail = repo.kind;
+  section.append(title, head, detail);
+  paintRepoIndex(section, repo);
+  return section;
+}
+
+function repoFolderSection(repo) {
+  const section = el("div", "repo-folder");
+  section.dataset.repoFolderSection = repo.kind;
+  section.append(el("p", "repo-region", "Folder path"));
+  const row = el("div", "repo-folder-row");
+  const input = el("input");
+  input.type = "text";
+  input.spellcheck = false;
+  input.autocomplete = "off";
+  input.placeholder = "Full path of the folder";
+  input.value = repo.folder || "";
+  input.dataset.repoFolder = repo.kind;
+  input.dataset.saved = repo.folder || "";
+  input.setAttribute("aria-label", "Folder for " + (repoLabel[repo.kind] || repo.kind));
+  const browse = el("button", "", "Browse");
+  browse.type = "button";
+  browse.dataset.browseFolder = repo.kind;
+  row.append(input, browse);
+  section.append(row);
+  if (repo.folder && !repo.exists) section.append(el("p", "hint", "Folder is missing."));
+  if (repo.empty) section.append(el("p", "hint", "This folder is empty."));
+  if (repo.sparse) section.append(el("p", "hint", "Checkout: " + repo.sparse + ". Other folders are not in this working tree."));
+  if (repo.empty) {
+    const clone = el("button", "", "Clone repository from git");
+    clone.type = "button";
+    clone.dataset.clone = repo.kind;
+    section.append(clone);
+  }
+  if (repo.kind !== "document") {
+    const services = el("div", "services");
+    services.append(el("span", "hint", "Services"));
+    const tags = el("div", "service-tags");
+    tags.dataset.services = repo.kind;
+    services.append(tags);
+    const note = el("p", "hint", "");
+    note.dataset.serviceNote = repo.kind;
+    services.append(note);
+    fillServiceTags(tags, note, repo.available || [], repo.services || []);
+    section.append(services);
+  }
+  return section;
+}
+
 function paintRepoIndexes() {
   if (!state.data) return;
   for (const repo of state.data.repos || []) {
-    const node = document.querySelector(`[data-repo-index="${repo.kind}"]`);
-    if (node) node.textContent = "Index: " + indexLabel(repo.index);
+    const section = document.querySelector(`#panel-repos [data-repo-index="${CSS.escape(repo.kind)}"]`);
+    if (section) paintRepoIndex(section, repo);
   }
-}
-
-function renderIndexes(data) {
-  const panel = document.querySelector("#panel-indexes");
-  let cards = panel.querySelector("#index-cards");
-  if (!cards) {
-    panel.replaceChildren();
-    panel.append(el("p", "hint", "Set up Obsidian or CodeGraph on the repository you choose. KIKI saves that choice in .kiki/repos. The launch prompt tells the model how to query the index on that repository."));
-    cards = el("div", "index-grid");
-    cards.id = "index-cards";
-    panel.append(cards);
-  }
-  cards.replaceChildren();
-  cards.append(indexToolCard(data, "obsidian", "Obsidian", "Add Repository"));
-  cards.append(indexToolCard(data, "codegraph", "CodeGraph", "Add Repository"));
-  if (state.busySetup) markSetupBusy(state.busySetup, true);
   if (state.checkingIndexes.size) markIndexesChecking();
 }
 
-function indexToolCard(data, tool, title, action) {
-  const card = el("article", "card");
-  card.dataset.tool = tool;
-  const assigned = (data.indexes || []).filter((item) => item.index === tool);
-  const head = el("div", "repo-head index-tool-head");
-  const titleBlock = el("div", "index-tool-title");
-  titleBlock.append(el("h3", "", title));
-  const link = document.createElement("a");
-  link.className = "index-tool-link";
-  link.href = indexToolURL[tool];
-  link.dataset.url = indexToolURL[tool];
-  link.textContent = indexToolURL[tool];
-  titleBlock.append(link);
-  head.append(titleBlock);
-  const tools = el("div", "index-tool-actions");
-  const setup = el("button", "primary", action);
-  setup.type = "button";
-  setup.dataset.setup = tool;
-  tools.append(setup);
-  const refresh = el("button", "icon-button");
-  refresh.type = "button";
-  refresh.dataset.refreshIndex = tool;
-  refresh.setAttribute("aria-label", "Check " + title + " folders");
-  refresh.disabled = assigned.length === 0;
-  refresh.append(refreshIcon());
-  tools.append(refresh);
-  head.append(tools);
-  card.append(head);
-  if (!assigned.length) card.append(el("p", "hint", "No repository uses this index."));
-  for (const item of assigned) card.append(indexRepoRow(item));
-  return card;
+function paintRepoIndex(section, repo) {
+  const select = section.querySelector("[data-repo-index-choice]");
+  const saved = repo.index || "";
+  const dialog = document.querySelector("#repo-index-dialog");
+  const confirming = dialog && dialog.open && dialog.dataset.kind === repo.kind;
+  const settingUp = !!state.busySetup && state.busyKind === repo.kind;
+  const pending = state.pendingRepoIndex && state.pendingRepoIndex.kind === repo.kind;
+  const enabled = saved === "obsidian" || saved === "codegraph";
+  const using = enabled || settingUp || pending || (confirming && !enabled);
+  const locked = settingUp || pending;
+  section.classList.toggle("is-off", !using);
+  if (select) {
+    select.dataset.saved = saved;
+    if (!settingUp && !confirming && !pending) select.value = shownIndexTool(repo);
+    select.disabled = locked;
+    if (settingUp) select.setAttribute("aria-busy", "true");
+    else select.removeAttribute("aria-busy");
+  }
+  const toggle = section.querySelector("[data-repo-index-use]");
+  if (toggle) {
+    toggle.setAttribute("aria-pressed", using ? "true" : "false");
+    toggle.disabled = locked;
+    const name = repoLabel[repo.kind] || repo.kind;
+    toggle.setAttribute("aria-label", (using ? "Stop using the index on " : "Use the index on ") + name);
+  }
+  const item = indexItem(repo.kind);
+  const assigned = indexAssigned(item) && item.index === saved;
+  const status = section.querySelector("[data-repo-index-status]");
+  if (status) {
+    status.replaceChildren();
+    if (assigned && !settingUp) status.append(el("span", "badge " + badgeClass(item), badgeText(item)));
+  }
+  const actions = section.querySelector("[data-repo-index-actions]");
+  if (actions) {
+    actions.replaceChildren();
+    actions.removeAttribute("role");
+    actions.removeAttribute("aria-label");
+    if (settingUp) {
+      const spin = el("span", "spinner");
+      spin.setAttribute("aria-hidden", "true");
+      actions.setAttribute("role", "status");
+      actions.setAttribute("aria-label", "Setting up");
+      actions.append(spin, el("span", "repo-index-loading", "Setting up…"));
+    } else if (assigned) {
+      const refresh = el("button", "icon-button");
+      refresh.type = "button";
+      refresh.dataset.refreshRepo = repo.kind;
+      const busy = state.checkingIndexes.has(repo.kind);
+      refresh.disabled = busy;
+      refresh.classList.toggle("spin", busy);
+      refresh.setAttribute("aria-busy", busy ? "true" : "false");
+      refresh.setAttribute("aria-label", "Check " + indexLabel(item.index) + " on " + (repoLabel[repo.kind] || repo.kind));
+      refresh.append(refreshIcon());
+      actions.append(refresh, indexRemoveButton(item));
+    }
+  }
+  const detail = section.querySelector("[data-repo-index-detail]");
+  if (detail) {
+    detail.replaceChildren();
+    if (!assigned && !settingUp) {
+      detail.append(el("p", "hint", "Turn the index on to choose Obsidian or CodeGraph. A tool already in the folder is used as it is."));
+    }
+    if (assigned) {
+      const url = indexToolURL[item.index];
+      if (url) {
+        const link = document.createElement("a");
+        link.className = "index-tool-link";
+        link.href = url;
+        link.dataset.url = url;
+        link.textContent = url;
+        detail.append(link);
+      }
+      if (item.command) detail.append(el("p", "command", item.command));
+      if (item.summary) detail.append(el("p", "hint", item.summary));
+    }
+  }
+}
+
+function paintRepoSetupButtons() {
+  for (const select of document.querySelectorAll("#panel-repos [data-repo-index-choice]")) {
+    const kind = select.dataset.repoIndexChoice;
+    const settingUp = !!state.busySetup && state.busyKind === kind;
+    const pending = state.pendingRepoIndex && state.pendingRepoIndex.kind === kind;
+    select.disabled = settingUp || pending;
+    if (settingUp) select.setAttribute("aria-busy", "true");
+    else select.removeAttribute("aria-busy");
+  }
+  for (const toggle of document.querySelectorAll("#panel-repos [data-repo-index-use]")) {
+    const kind = toggle.dataset.repoIndexUse;
+    const settingUp = !!state.busySetup && state.busyKind === kind;
+    const pending = state.pendingRepoIndex && state.pendingRepoIndex.kind === kind;
+    toggle.disabled = settingUp || pending;
+  }
+}
+
+function rememberIndexChoice(kind, tool) {
+  if (tool !== "obsidian" && tool !== "codegraph") return;
+  state.indexChoice[kind] = tool;
+}
+
+function preferredIndexTool(kind) {
+  const held = state.indexChoice[kind];
+  if (held === "obsidian" || held === "codegraph") return held;
+  const item = indexItem(kind);
+  const present = item && Array.isArray(item.present) ? item.present : [];
+  if (present.includes("codegraph")) return "codegraph";
+  if (present.includes("obsidian")) return "obsidian";
+  return "obsidian";
+}
+
+function shownIndexTool(repo) {
+  const saved = repo && (repo.index || "");
+  if (saved === "obsidian" || saved === "codegraph") return saved;
+  return preferredIndexTool(repo ? repo.kind : "");
+}
+
+function indexIsSetup(kind, tool) {
+  const item = indexItem(kind);
+  return !!item && item.index === tool && !!item.dirExists;
+}
+
+function toolIsPresent(kind, tool) {
+  const item = indexItem(kind);
+  return !!item && Array.isArray(item.present) && item.present.includes(tool);
+}
+
+function requestRepoIndex(select) {
+  const kind = select.dataset.repoIndexChoice;
+  const chosen = select.value;
+  const repo = ((state.data && state.data.repos) || []).find((item) => item.kind === kind);
+  const saved = repo ? (repo.index || "") : (select.dataset.saved || "");
+  const shown = shownIndexTool(repo || { kind, index: saved });
+  if (state.busySetup || (state.pendingRepoIndex && state.pendingRepoIndex.kind === kind)) {
+    select.value = state.pendingRepoIndex && state.pendingRepoIndex.kind === kind ? state.pendingRepoIndex.tool : shown;
+    return;
+  }
+  if (chosen !== "obsidian" && chosen !== "codegraph") {
+    select.value = shown;
+    return;
+  }
+  rememberIndexChoice(kind, chosen);
+  const section = select.closest("[data-repo-index]");
+  const toggle = section && section.querySelector("[data-repo-index-use]");
+  if (!toggle || toggle.getAttribute("aria-pressed") !== "true") return;
+  if (chosen === saved && (indexIsSetup(kind, chosen) || toolIsPresent(kind, chosen))) return;
+  const request = { kind, tool: chosen };
+  state.pendingRepoIndex = request;
+  adoptRepoIndex(kind, chosen, saved, request);
+}
+
+function toggleRepoIndex(button) {
+  const kind = button.dataset.repoIndexUse;
+  if (!kind || state.busySetup || state.checkingIndexes.has(kind)) return;
+  if (state.pendingRepoIndex && state.pendingRepoIndex.kind === kind) return;
+  const section = button.closest("[data-repo-index]");
+  const select = section && section.querySelector("[data-repo-index-choice]");
+  const tool = select && (select.value === "obsidian" || select.value === "codegraph")
+    ? select.value
+    : preferredIndexTool(kind);
+  const turningOn = button.getAttribute("aria-pressed") !== "true";
+  if (!turningOn) {
+    button.setAttribute("aria-pressed", "false");
+    if (section) section.classList.add("is-off");
+    disableRepoIndex(kind);
+    return;
+  }
+  openRepoIndexChoice(kind, tool);
+}
+
+function openRepoIndexChoice(kind, tool) {
+  const dialog = document.querySelector("#repo-index-choose-dialog");
+  dialog.dataset.kind = kind;
+  const name = repoLabel[kind] || kind;
+  document.querySelector("#repo-index-choose-title").textContent = "Use an index";
+  document.querySelector("#repo-index-choose-text").textContent = "Choose the index for " + name + ".";
+  const select = document.querySelector("#repo-index-choose-tool");
+  select.value = tool === "codegraph" ? "codegraph" : "obsidian";
+  syncRepoIndexChoiceNote(kind, select.value);
+  dialog.showModal();
+}
+
+function syncRepoIndexChoiceNote(kind, tool) {
+  const note = document.querySelector("#repo-index-choose-note");
+  if (!note) return;
+  if (toolIsPresent(kind, tool)) {
+    const folder = tool === "obsidian" ? ".obsidian" : ".codegraph";
+    note.textContent = folder + " is already in this folder. KIKI will use it.";
+    return;
+  }
+  note.textContent = "KIKI will set " + indexLabel(tool) + " up for this repository.";
+}
+
+function applyRepoIndexChoice(kind, tool) {
+  if (tool !== "obsidian" && tool !== "codegraph") return;
+  rememberIndexChoice(kind, tool);
+  const section = document.querySelector(`#panel-repos [data-repo-index="${CSS.escape(kind)}"]`);
+  const select = section && section.querySelector("[data-repo-index-choice]");
+  if (select) select.value = tool;
+  const toggle = section && section.querySelector("[data-repo-index-use]");
+  if (toggle) toggle.setAttribute("aria-pressed", "true");
+  if (section) section.classList.remove("is-off");
+  const repo = ((state.data && state.data.repos) || []).find((item) => item.kind === kind);
+  const saved = repo ? (repo.index || "") : "";
+  if (tool === saved && (indexIsSetup(kind, tool) || toolIsPresent(kind, tool))) return;
+  if (!toolIsPresent(kind, tool)) {
+    setupRepoIndex(kind, tool);
+    return;
+  }
+  const request = { kind, tool };
+  state.pendingRepoIndex = request;
+  adoptRepoIndex(kind, tool, saved, request);
+}
+
+async function disableRepoIndex(kind) {
+  if (!kind || state.busySetup || state.checkingIndexes.has(kind)) return;
+  const repo = ((state.data && state.data.repos) || []).find((item) => item.kind === kind);
+  const saved = repo ? (repo.index || "") : "";
+  if (saved !== "obsidian" && saved !== "codegraph") {
+    paintRepoIndexes();
+    return;
+  }
+  rememberIndexChoice(kind, saved);
+  state.pendingRepoIndex = null;
+  const toggle = document.querySelector(`#panel-repos [data-repo-index-use="${CSS.escape(kind)}"]`);
+  if (toggle) toggle.disabled = true;
+  try {
+    const data = await api("/api/indexes/" + encodeURIComponent(kind), {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ deleteFolder: false }),
+    });
+    state.data = data;
+    paintRepoIndexes();
+    banner("Stopped using " + indexLabel(saved) + " on " + (repoLabel[kind] || kind) + ".");
+  } catch (error) {
+    banner(error.message, true);
+    paintRepoIndexes();
+  }
+}
+
+function missingIndexFolder(error) {
+  return /is not in this repository/.test((error && error.message) || "");
+}
+
+async function adoptRepoIndex(kind, tool, saved, request) {
+  try {
+    const data = await api("/api/indexes/" + encodeURIComponent(kind), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ index: tool }),
+    });
+    if (request && state.pendingRepoIndex !== request) return;
+    state.pendingRepoIndex = null;
+    state.data = data;
+    const selected = document.querySelector("[data-tab][aria-selected='true']");
+    const tab = (selected && selected.dataset.tab) || "repos";
+    render(data);
+    showTab(tab);
+    banner("Using " + indexLabel(tool) + " already in " + (repoLabel[kind] || kind) + ".");
+  } catch (error) {
+    if (request && state.pendingRepoIndex !== request) return;
+    state.pendingRepoIndex = null;
+    if (missingIndexFolder(error)) {
+      openRepoIndexConfirm(kind, tool, saved || "");
+      return;
+    }
+    banner(error.message, true);
+    paintRepoIndexes();
+  }
+}
+
+function openRepoIndexConfirm(kind, tool, saved) {
+  const dialog = document.querySelector("#repo-index-dialog");
+  dialog.dataset.kind = kind;
+  dialog.dataset.tool = tool;
+  dialog.dataset.previous = saved || "";
+  const name = repoLabel[kind] || kind;
+  document.querySelector("#repo-index-dialog-title").textContent = "Set up " + indexLabel(tool);
+  const text = "Set up " + indexLabel(tool) + " for " + name + ".";
+  document.querySelector("#repo-index-dialog-text").textContent = saved && saved !== tool
+    ? text + " This replaces " + indexLabel(saved) + "."
+    : text;
+  dialog.showModal();
+}
+
+function revertRepoIndexChoice(kind, saved) {
+  if (saved === "obsidian" || saved === "codegraph") rememberIndexChoice(kind, saved);
+  const select = document.querySelector(`#panel-repos [data-repo-index-choice="${CSS.escape(kind)}"]`);
+  const section = select && select.closest("[data-repo-index]");
+  const repo = ((state.data && state.data.repos) || []).find((item) => item.kind === kind);
+  if (section && repo) paintRepoIndex(section, repo);
+}
+
+const savingFolders = new Set();
+
+async function applyRepoFolder(kind, folder) {
+  const input = document.querySelector(`#panel-repos [data-repo-folder="${CSS.escape(kind)}"]`);
+  folder = (folder || "").trim();
+  const saved = input ? (input.dataset.saved || "") : "";
+  if (folder === saved) return;
+  if (!folder) {
+    if (input) input.value = saved;
+    return;
+  }
+  if (savingFolders.has(kind)) return;
+  savingFolders.add(kind);
+  if (input) {
+    input.value = folder;
+    input.dataset.saved = folder;
+  }
+  try {
+    const data = await api("/api/repos/" + encodeURIComponent(kind) + "/folder", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder }),
+    });
+    const selected = document.querySelector("[data-tab][aria-selected='true']");
+    const tab = (selected && selected.dataset.tab) || "repos";
+    render(data);
+    showTab(tab);
+    banner("Pointed " + (repoLabel[kind] || kind) + " at " + folder + ".");
+  } catch (error) {
+    banner(error.message, true);
+    if (input && input.isConnected) {
+      input.dataset.saved = saved;
+      input.value = saved;
+    }
+  } finally {
+    savingFolders.delete(kind);
+  }
+}
+
+async function browseRepoFolder(kind) {
+  const button = document.querySelector(`#panel-repos [data-browse-folder="${CSS.escape(kind)}"]`);
+  if (button) button.disabled = true;
+  try {
+    const picked = await api("/api/repos/browse", { method: "POST" });
+    if (picked.path) await applyRepoFolder(kind, picked.path);
+  } catch (error) {
+    if (error.message !== "Folder selection was cancelled.") banner(error.message, true);
+  } finally {
+    const current = document.querySelector(`#panel-repos [data-browse-folder="${CSS.escape(kind)}"]`);
+    if (current) current.disabled = false;
+  }
 }
 
 function refreshIcon() {
@@ -1456,22 +2281,6 @@ function refreshIcon() {
   add("M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16");
   add("M16 16h5v5");
   return svg;
-}
-
-function indexRepoRow(item) {
-  const row = el("div", "index-repo");
-  row.dataset.index = item.kind;
-  const head = el("div", "repo-head");
-  head.append(el("h3", "", repoLabel[item.kind] || item.kind));
-  const status = el("div", "index-repo-status");
-  status.append(el("span", "badge " + badgeClass(item), badgeText(item)));
-  status.append(indexRemoveButton(item));
-  head.append(status);
-  row.append(head);
-  if (item.folder) row.append(el("p", "repo-path", item.folder));
-  if (item.command) row.append(el("p", "command", item.command));
-  if (item.summary) row.append(el("p", "hint", item.summary));
-  return row;
 }
 
 function indexRemoveButton(item) {
@@ -1636,9 +2445,16 @@ function renderWorkflow(data) {
   state.workflowSelection = null;
   workflowEdges = [];
   panel.replaceChildren();
-  panel.append(el("p", "hint", "Teamwork is how each agent is set to work with another. A repository line uses the note stored on that agent. The index is the one saved for the repository."));
+  panel.append(el("p", "hint", "Select an agent. Lines go through the guardrail to the MCP servers, tools, repositories, and agents that agent may use."));
   const legend = el("div", "workflow-legend");
-  legend.append(workflowSwatch("teamwork", "Teamwork"), workflowSwatch("repository", "Repository"), workflowSwatch("index", "Index"));
+  legend.append(
+    workflowSwatch("guardrail", "Guardrail"),
+    workflowSwatch("mcp", "MCP Servers"),
+    workflowSwatch("tool", "Tool"),
+    workflowSwatch("repository", "Repository"),
+    workflowSwatch("teamwork", "Agents Coordination"),
+    workflowSwatch("index", "Index"),
+  );
   panel.append(legend);
   const scroll = el("div", "workflow-scroll");
   const stage = el("div", "workflow-stage");
@@ -1646,7 +2462,14 @@ function renderWorkflow(data) {
   svg.classList.add("workflow-lines");
   svg.setAttribute("aria-hidden", "true");
   const cols = el("div", "workflow-cols");
-  cols.append(workflowAgentColumn(data), workflowRepoColumn(data), workflowIndexColumn(data));
+  cols.append(
+    workflowAgentColumn(data),
+    workflowGuardrailColumn(),
+    workflowUseColumn(data, "mcp", "MCP Servers", "No agent lists an MCP server."),
+    workflowUseColumn(data, "tool", "Tools", "No agent lists a tool."),
+    workflowRepoColumn(data),
+    workflowIndexColumn(data),
+  );
   stage.append(svg, cols);
   scroll.append(stage);
   panel.append(scroll);
@@ -1675,69 +2498,196 @@ function workflowAgentColumn(data) {
     col.append(el("p", "hint", "No agents yet."));
     return col;
   }
-  let group = "";
-  for (const agent of agents) {
-    if (agent.group !== group) {
-      group = agent.group;
-      col.append(el("p", "workflow-group", categoryLabel(group)));
-    }
-    const card = el("div", "workflow-node" + (agent.enabled === false ? " is-off" : ""));
-    card.dataset.flow = "agent";
-    card.dataset.id = agent.id;
-    const open = el("button", "workflow-open");
-    open.type = "button";
-    open.setAttribute("aria-pressed", "false");
-    const row = el("span", "workflow-name-row");
-    const title = el("span", "workflow-title-line");
-    title.append(el("span", "workflow-name", agent.title));
-    if (agent.enabled === false) title.append(el("span", "badge bad", "Off"));
-    row.append(title);
-    open.append(row, el("span", "id", agent.id));
-    const choice = workflowChoice(agent);
-    if (choice) open.append(el("span", "workflow-meta", choice));
-    const prompt = el("button", "icon-button workflow-prompt");
-    prompt.type = "button";
-    prompt.dataset.prompt = agent.id;
-    prompt.setAttribute("aria-label", "Show the prompt for " + agent.title);
-    prompt.append(promptIcon());
-    card.append(open, prompt);
-    col.append(card);
-    for (const peer of agentTeamwork(agent)) {
-      if (!peer.id || peer.id === agent.id) continue;
-      workflowEdges.push({
-        kind: "teamwork",
-        fromType: "agent",
-        fromId: agent.id,
-        toType: "agent",
-        toId: peer.id,
-        fromKey: "agent:" + agent.id,
-        toKey: "agent:" + peer.id,
-        fromSide: "left",
-        toSide: "left",
-        kicker: "Teamwork",
-        title: agent.title + " → " + agentTitle(peer.id),
-        note: peer.collaboration || "",
-      });
-    }
-    for (const use of agentRepositoryUses(agent)) {
-      if (!use.kind) continue;
-      workflowEdges.push({
-        kind: "repository",
-        fromType: "agent",
-        fromId: agent.id,
-        toType: "repo",
-        toId: use.kind,
-        fromKey: "agent:" + agent.id,
-        toKey: "repo:" + use.kind,
-        fromSide: "right",
-        toSide: "left",
-        kicker: "Repository",
-        title: agent.title + " → " + (repoLabel[use.kind] || use.kind),
-        note: use.description || "",
-      });
+  for (const group of groups(agents)) {
+    col.append(el("p", "workflow-group", categoryLabel(group.name)));
+    for (const agent of group.agents) {
+      const card = el("div", "workflow-node" + (agent.enabled === false ? " is-off" : ""));
+      card.dataset.flow = "agent";
+      card.dataset.id = agent.id;
+      const open = el("button", "workflow-open");
+      open.type = "button";
+      open.setAttribute("aria-pressed", "false");
+      const row = el("span", "workflow-name-row");
+      const title = el("span", "workflow-title-line");
+      title.append(el("span", "workflow-name", agent.title));
+      if (agent.enabled === false) title.append(el("span", "badge bad", "Off"));
+      row.append(title);
+      open.append(row, el("span", "id", agent.id));
+      const choice = workflowChoice(agent);
+      if (choice) open.append(el("span", "workflow-meta", choice));
+      const prompt = el("button", "icon-button workflow-prompt");
+      prompt.type = "button";
+      prompt.dataset.prompt = agent.id;
+      prompt.setAttribute("aria-label", "Show the prompt for " + agent.title);
+      prompt.append(promptIcon());
+      card.append(open, prompt);
+      col.append(card);
+      for (const peer of agentTeamwork(agent)) {
+        if (!peer.id || peer.id === agent.id) continue;
+        workflowEdges.push({
+          kind: "teamwork",
+          fromType: "agent",
+          fromId: agent.id,
+          toType: "agent",
+          toId: peer.id,
+          fromKey: "agent:" + agent.id,
+          toKey: "agent:" + peer.id,
+          fromSide: "left",
+          toSide: "left",
+          kicker: "Agents Coordination",
+          title: agent.title + " → " + agentTitle(peer.id),
+          note: peer.collaboration || "",
+        });
+      }
+      for (const use of agentRepositoryUses(agent)) {
+        if (!use.kind) continue;
+        workflowEdges.push({
+          kind: "repository",
+          fromType: "agent",
+          fromId: agent.id,
+          toType: "repo",
+          toId: use.kind,
+          fromKey: "agent:" + agent.id,
+          toKey: "repo:" + use.kind,
+          fromSide: "right",
+          toSide: "left",
+          kicker: "Repository",
+          title: agent.title + " → " + (repoLabel[use.kind] || use.kind),
+          note: use.description || "",
+        });
+      }
+      pushWorkflowUses(agent, "mcp", configuredUses("mcp", agent.mcps || []));
+      pushWorkflowUses(agent, "tool", agent.tools || []);
     }
   }
   return col;
+}
+
+function pushWorkflowUses(agent, kind, items) {
+  const kicker = kind === "mcp" ? "MCP Servers" : "Tool";
+  for (const item of items) {
+    if (!item.id) continue;
+    workflowEdges.push({
+      kind,
+      fromType: "agent",
+      fromId: agent.id,
+      toType: kind,
+      toId: item.id,
+      fromKey: "agent:" + agent.id,
+      toKey: kind + ":" + item.id,
+      fromSide: "right",
+      toSide: "left",
+      kicker,
+      title: agent.title + " → " + workflowUseName(kind, item.id),
+      note: kind === "tool" ? toolDetail(item.id) : (item.description || ""),
+    });
+  }
+}
+
+function toolDetail(id) {
+  const choice = ((state.data && state.data.toolChoices) || []).find((item) => item.id === id);
+  return (choice && choice.detail) || "";
+}
+
+function workflowCard(kind, id) {
+  const card = el("div", "workflow-node");
+  card.dataset.flow = kind;
+  card.dataset.id = id;
+  const open = el("button", "workflow-open");
+  open.type = "button";
+  open.setAttribute("aria-pressed", "false");
+  card.append(open);
+  return card;
+}
+
+function workflowAboutButton(kind, id, name) {
+  const view = el("button", "icon-button workflow-prompt");
+  view.type = "button";
+  view.dataset.flowAbout = kind;
+  view.dataset.flowId = id;
+  view.setAttribute("aria-label", "Show what " + name + " is for");
+  view.append(promptIcon());
+  return view;
+}
+
+function workflowUseColumn(data, kind, title, empty) {
+  const col = el("div", "workflow-col");
+  col.append(el("h2", "", title));
+  const ids = workflowUseOrder(data, kind);
+  if (!ids.length) {
+    col.append(el("p", "hint", empty));
+    return col;
+  }
+  for (const id of ids) {
+    const name = workflowUseName(kind, id);
+    const card = workflowCard(kind, id);
+    const open = card.querySelector(".workflow-open");
+    open.append(el("span", "workflow-name", name));
+    open.append(el("span", "id", id));
+    card.append(workflowAboutButton(kind, id, name));
+    col.append(card);
+  }
+  return col;
+}
+
+function workflowUseOrder(data, kind) {
+  const ids = [];
+  const seen = new Set();
+  const sum = new Map();
+  const count = new Map();
+  (data.agents || []).forEach((agent, index) => {
+    const items = kind === "mcp" ? configuredUses("mcp", agent.mcps) : agent.tools;
+    for (const item of items || []) {
+      if (!item.id || seen.has(item.id)) {
+        if (item.id) {
+          sum.set(item.id, (sum.get(item.id) || 0) + index);
+          count.set(item.id, (count.get(item.id) || 0) + 1);
+        }
+        continue;
+      }
+      seen.add(item.id);
+      ids.push(item.id);
+      sum.set(item.id, (sum.get(item.id) || 0) + index);
+      count.set(item.id, (count.get(item.id) || 0) + 1);
+    }
+  });
+  return ids.sort((a, b) => sum.get(a) / count.get(a) - sum.get(b) / count.get(b));
+}
+
+function workflowGuardrailColumn() {
+  const col = el("div", "workflow-col");
+  col.append(el("h2", "", "Guardrail"));
+  const slot = el("div", "workflow-guardrail-slot");
+  const card = el("div", "workflow-node workflow-guardrail");
+  card.dataset.flow = "guardrail";
+  card.dataset.id = "guardrail";
+  const open = el("button", "workflow-open");
+  open.type = "button";
+  open.setAttribute("aria-pressed", "false");
+  open.append(el("span", "workflow-name", "KIKI guardrail"));
+  open.append(el("span", "workflow-meta", "Before input and after output"));
+  const view = el("button", "icon-button workflow-prompt");
+  view.type = "button";
+  view.dataset.guardrailView = "1";
+  view.setAttribute("aria-label", "Show what the guardrail checks");
+  view.append(promptIcon());
+  card.append(open, view);
+  slot.append(card);
+  col.append(slot);
+  return col;
+}
+
+function configuredUses(kind, items) {
+  const list = items || [];
+  if (kind !== "mcp") return list;
+  const offered = new Set(((state.data && state.data.mcps) || []).map((item) => item.id));
+  return list.filter((item) => item && offered.has(item.id));
+}
+
+function workflowUseName(kind, id) {
+  const catalog = kind === "mcp" ? (state.data.mcps || []) : (state.data.tools || []);
+  const found = catalog.find((item) => item.id === id);
+  return (found && found.name) || id;
 }
 
 function workflowRepoColumn(data) {
@@ -1750,16 +2700,14 @@ function workflowRepoColumn(data) {
   }
   for (const kind of kinds) {
     const repo = workflowRepo(kind);
-    const button = el("button", "workflow-node");
-    button.type = "button";
-    button.dataset.flow = "repo";
-    button.dataset.id = kind;
-    button.setAttribute("aria-pressed", "false");
-    button.append(el("span", "workflow-name", repoLabel[kind] || kind));
-    button.append(workflowPath(repo && repo.folder));
-    const remote = workflowRemote(repo && repo.git);
-    if (remote) button.append(remote);
-    col.append(button);
+    const name = repoLabel[kind] || kind;
+    const card = workflowCard("repo", kind);
+    const open = card.querySelector(".workflow-open");
+    open.append(el("span", "workflow-name", name));
+    const indexName = repo && repo.index ? indexLabel(repo.index) : "No index";
+    open.append(el("span", "workflow-meta", indexName));
+    card.append(workflowAboutButton("repo", kind, name));
+    col.append(card);
     const index = repo && repo.index ? repo.index : "none";
     workflowEdges.push({
       kind: "index",
@@ -1806,11 +2754,12 @@ function workflowIndexColumn(data) {
     const card = el("div", "workflow-node");
     card.dataset.flow = "index";
     card.dataset.id = id;
-    const open = el("button", "workflow-open plain");
+    const name = id === "none" ? "Not set" : indexLabel(id);
+    const open = el("button", "workflow-open");
     open.type = "button";
     open.setAttribute("aria-pressed", "false");
-    open.append(el("span", "workflow-name", id === "none" ? "Not set" : indexLabel(id)));
-    card.append(open);
+    open.append(el("span", "workflow-name", name));
+    card.append(open, workflowAboutButton("index", id, name));
     const url = indexToolURL[id];
     if (url) card.append(workflowIndexLink(url, "index-tool-link workflow-index-link"));
     col.append(card);
@@ -1822,38 +2771,89 @@ function layoutWorkflow() {
   const stage = document.querySelector(".workflow-stage");
   const svg = stage && stage.querySelector(".workflow-lines");
   if (!svg || stage.getClientRects().length === 0) return;
-  const svgNS = "http://www.w3.org/2000/svg";
-  const pairCount = {};
+  placeGuardrail(stage);
   svg.replaceChildren(workflowMarkers());
-  workflowEdges.forEach((edge, index) => {
-    const from = stage.querySelector(`.workflow-node[data-flow="${edge.fromType}"][data-id="${CSS.escape(edge.fromId)}"]`);
-    const to = stage.querySelector(`.workflow-node[data-flow="${edge.toType}"][data-id="${CSS.escape(edge.toId)}"]`);
-    if (!from || !to) return;
-    const start = workflowAnchor(stage, from, edge.fromSide);
-    const end = workflowAnchor(stage, to, edge.toSide);
-    let c1 = start.x + (end.x - start.x) * 0.45;
-    let c2 = end.x - (end.x - start.x) * 0.45;
-    if (edge.kind === "teamwork") {
-      const pair = [edge.fromId, edge.toId].sort().join("\0");
-      const n = pairCount[pair] || 0;
-      pairCount[pair] = n + 1;
-      const bend = -34 - n * 18;
-      c1 = start.x + bend;
-      c2 = end.x + bend;
-    }
-    const d = `M ${start.x} ${start.y} C ${c1} ${start.y}, ${c2} ${end.y}, ${end.x} ${end.y}`;
-    const path = document.createElementNS(svgNS, "path");
-    path.setAttribute("d", d);
-    path.setAttribute("class", "workflow-edge " + edge.kind);
-    path.dataset.edge = String(index);
-    path.setAttribute("marker-end", "url(#workflow-arrow-" + edge.kind + ")");
-    const hit = document.createElementNS(svgNS, "path");
-    hit.setAttribute("d", d);
-    hit.setAttribute("class", "workflow-hit");
-    hit.dataset.edge = String(index);
-    svg.append(path, hit);
-  });
+  if (state.workflowSelection) {
+    const show = workflowRelated(state.workflowSelection);
+    const linked = new Set();
+    const fan = {};
+    workflowEdges.forEach((edge, index) => {
+      if (!show.edges.has(index)) return;
+      if (edge.kind === "repository" || edge.kind === "teamwork" || edge.kind === "mcp" || edge.kind === "tool") {
+        drawThroughGuardrail(stage, svg, edge, index, linked, fan);
+        return;
+      }
+      drawWorkflowEdge(stage, svg, edge, index, true);
+    });
+  }
   paintWorkflowHighlight();
+}
+
+function placeGuardrail(stage) {
+  const card = stage.querySelector(".workflow-guardrail");
+  if (!card) return;
+  const sel = state.workflowSelection;
+  let anchorId = "";
+  if (sel && sel.kind === "agent") anchorId = sel.id;
+  if (sel && sel.kind === "edge") {
+    const edge = workflowEdges[sel.id];
+    if (edge && edge.fromType === "agent") anchorId = edge.fromId;
+  }
+  const anchor = anchorId
+    ? stage.querySelector(`.workflow-node[data-flow="agent"][data-id="${CSS.escape(anchorId)}"]`)
+    : null;
+  if (!anchor) {
+    card.style.marginTop = "0px";
+    return;
+  }
+  const slotTop = card.parentElement.getBoundingClientRect().top;
+  const anchorBox = anchor.getBoundingClientRect();
+  const cardBox = card.getBoundingClientRect();
+  const margin = anchorBox.top + anchorBox.height / 2 - slotTop - cardBox.height / 2;
+  card.style.marginTop = Math.max(0, margin) + "px";
+}
+
+function drawThroughGuardrail(stage, svg, edge, index, linked, fan) {
+  const guard = stage.querySelector('.workflow-node[data-flow="guardrail"]');
+  const from = stage.querySelector(`.workflow-node[data-flow="${edge.fromType}"][data-id="${CSS.escape(edge.fromId)}"]`);
+  const to = stage.querySelector(`.workflow-node[data-flow="${edge.toType}"][data-id="${CSS.escape(edge.toId)}"]`);
+  if (from && guard && !linked.has(edge.fromId)) {
+    linked.add(edge.fromId);
+    drawCurve(svg, workflowAnchor(stage, from, "right"), workflowAnchor(stage, guard, "left"), "guardrail", -1, false);
+  }
+  if (!guard || !to) return;
+  const back = edge.kind === "teamwork";
+  const start = workflowAnchor(stage, guard, back ? "left" : "right");
+  const end = workflowAnchor(stage, to, back ? "right" : "left");
+  const n = fan[edge.fromId] || 0;
+  fan[edge.fromId] = n + 1;
+  drawCurve(svg, start, end, edge.kind, index, true, (n - 1) * 14);
+}
+
+function drawWorkflowEdge(stage, svg, edge, index, hittable) {
+  const from = stage.querySelector(`.workflow-node[data-flow="${edge.fromType}"][data-id="${CSS.escape(edge.fromId)}"]`);
+  const to = stage.querySelector(`.workflow-node[data-flow="${edge.toType}"][data-id="${CSS.escape(edge.toId)}"]`);
+  if (!from || !to) return;
+  drawCurve(svg, workflowAnchor(stage, from, edge.fromSide), workflowAnchor(stage, to, edge.toSide), edge.kind, index, hittable, 0);
+}
+
+function drawCurve(svg, start, end, kind, index, hittable, bend = 0) {
+  const svgNS = "http://www.w3.org/2000/svg";
+  const c1 = start.x + (end.x - start.x) * 0.45;
+  const c2 = end.x - (end.x - start.x) * 0.45;
+  const d = `M ${start.x} ${start.y} C ${c1} ${start.y + bend}, ${c2} ${end.y + bend}, ${end.x} ${end.y}`;
+  const path = document.createElementNS(svgNS, "path");
+  path.setAttribute("d", d);
+  path.setAttribute("class", "workflow-edge " + kind);
+  if (index >= 0) path.dataset.edge = String(index);
+  path.setAttribute("marker-end", "url(#workflow-arrow-" + kind + ")");
+  svg.append(path);
+  if (!hittable || index < 0) return;
+  const hit = document.createElementNS(svgNS, "path");
+  hit.setAttribute("d", d);
+  hit.setAttribute("class", "workflow-hit");
+  hit.dataset.edge = String(index);
+  svg.append(hit);
 }
 
 function workflowAnchor(stage, node, side) {
@@ -1869,7 +2869,10 @@ function workflowMarkers() {
   const svgNS = "http://www.w3.org/2000/svg";
   const defs = document.createElementNS(svgNS, "defs");
   for (const [kind, color] of [
+    ["guardrail", "var(--accent)"],
     ["teamwork", "var(--accent)"],
+    ["mcp", "var(--mcp)"],
+    ["tool", "var(--tool)"],
     ["repository", "var(--ink)"],
     ["index", "var(--warn)"],
   ]) {
@@ -1907,14 +2910,20 @@ function workflowRelated(sel) {
     edges.add(sel.id);
     nodes.add(edge.fromKey);
     nodes.add(edge.toKey);
+    if (edge.kind === "repository" || edge.kind === "teamwork" || edge.kind === "mcp" || edge.kind === "tool") nodes.add("guardrail:guardrail");
+    return { nodes, edges };
+  }
+  if (sel.kind === "guardrail") {
+    nodes.add("guardrail:guardrail");
     return { nodes, edges };
   }
   if (sel.kind === "agent") {
     const key = "agent:" + sel.id;
     nodes.add(key);
+    nodes.add("guardrail:guardrail");
     const repos = new Set();
     workflowEdges.forEach((edge, index) => {
-      if (edge.kind === "teamwork" && (edge.fromKey === key || edge.toKey === key)) {
+      if (edge.kind === "teamwork" && edge.fromKey === key) {
         edges.add(index);
         nodes.add(edge.fromKey);
         nodes.add(edge.toKey);
@@ -1923,6 +2932,10 @@ function workflowRelated(sel) {
         edges.add(index);
         nodes.add(edge.toKey);
         repos.add(edge.toKey);
+      }
+      if ((edge.kind === "mcp" || edge.kind === "tool") && edge.fromKey === key) {
+        edges.add(index);
+        nodes.add(edge.toKey);
       }
     });
     workflowEdges.forEach((edge, index) => {
@@ -1936,6 +2949,20 @@ function workflowRelated(sel) {
   if (sel.kind === "repo") {
     const key = "repo:" + sel.id;
     nodes.add(key);
+    nodes.add("guardrail:guardrail");
+    workflowEdges.forEach((edge, index) => {
+      if (edge.fromKey === key || edge.toKey === key) {
+        edges.add(index);
+        nodes.add(edge.fromKey);
+        nodes.add(edge.toKey);
+      }
+    });
+    return { nodes, edges };
+  }
+  if (sel.kind === "mcp" || sel.kind === "tool") {
+    const key = sel.kind + ":" + sel.id;
+    nodes.add(key);
+    nodes.add("guardrail:guardrail");
     workflowEdges.forEach((edge, index) => {
       if (edge.fromKey === key || edge.toKey === key) {
         edges.add(index);
@@ -1948,6 +2975,7 @@ function workflowRelated(sel) {
   if (sel.kind === "index") {
     const key = "index:" + sel.id;
     nodes.add(key);
+    nodes.add("guardrail:guardrail");
     const repos = new Set();
     workflowEdges.forEach((edge, index) => {
       if (edge.kind === "index" && edge.toKey === key) {
@@ -1967,7 +2995,7 @@ function workflowRelated(sel) {
 }
 
 function applyWorkflowSelection() {
-  paintWorkflowHighlight();
+  layoutWorkflow();
   paintWorkflowDetail();
 }
 
@@ -1987,10 +3015,17 @@ function paintWorkflowHighlight() {
     press.setAttribute("aria-pressed", clicked ? "true" : "false");
   }
   for (const path of panel.querySelectorAll(".workflow-edge")) {
-    const on = related.edges.has(Number(path.dataset.edge));
+    const on = path.classList.contains("guardrail") || related.edges.has(Number(path.dataset.edge));
     path.classList.toggle("is-selected", !!active && active.kind === "edge" && Number(path.dataset.edge) === active.id);
     path.classList.toggle("is-dim", !!active && !on);
   }
+  paintGuardrailCard();
+}
+
+function paintGuardrailCard() {
+  const card = document.querySelector('.workflow-node[data-flow="guardrail"] .workflow-meta');
+  if (!card) return;
+  card.textContent = "Before input and after output";
 }
 
 function paintWorkflowDetail() {
@@ -1999,7 +3034,13 @@ function paintWorkflowDetail() {
   box.replaceChildren();
   const sel = state.workflowSelection;
   if (!sel) {
-    box.append(el("p", "hint", "Select an agent, a repository, an index, or a line."));
+    box.append(el("p", "hint", "Select an agent. The guardrail is what KIKI checks before input and after output."));
+    return;
+  }
+  if (sel.kind === "guardrail") {
+    box.append(el("p", "workflow-kicker", "Guardrail"));
+    box.append(el("h3", "", "KIKI guardrail"));
+    box.append(el("p", "hint", "Before a prompt is sent to the model, and after the model output, KIKI checks the agent. It allows only the MCP servers, tools, repositories, and agents set for that agent. A repository marked Readonly may be read and must not be changed. The check is code in the app. When KIKI is not running, the AI tool is not blocked."));
     return;
   }
   if (sel.kind === "edge") {
@@ -2015,6 +3056,7 @@ function paintWorkflowDetail() {
   }
   if (sel.kind === "agent") paintAgentWorkflow(box, sel.id);
   else if (sel.kind === "repo") paintRepoWorkflow(box, sel.id);
+  else if (sel.kind === "mcp" || sel.kind === "tool") paintUseWorkflow(box, sel.kind, sel.id);
   else if (sel.kind === "index") paintIndexWorkflow(box, sel.id);
 }
 
@@ -2030,9 +3072,13 @@ function paintAgentWorkflow(box, id) {
   const choice = workflowChoice(agent);
   if (choice) box.append(el("p", "workflow-meta", choice));
   if (agent.summary) box.append(el("p", "hint", agent.summary));
+  box.append(el("h4", "", "Guardrail"));
+  box.append(el("p", "hint", "Before input and after output, KIKI allows only the MCP servers, tools, repositories, and agents listed here."));
+  paintUseList(box, "MCP", configuredUses("mcp", agent.mcps || []), "mcp");
+  paintUseList(box, "Tools", agent.tools || [], "tool");
   const teamwork = agentTeamwork(agent);
   const uses = agentRepositoryUses(agent);
-  box.append(el("h4", "", "Teamwork"));
+  box.append(el("h4", "", "Agents Coordination"));
   if (!teamwork.length) box.append(el("p", "hint", "This agent does not list another agent."));
   for (const peer of teamwork) {
     const block = el("div", "workflow-block");
@@ -2048,6 +3094,44 @@ function paintAgentWorkflow(box, id) {
     const block = el("div", "workflow-block");
     block.append(el("p", "workflow-title", (repoLabel[use.kind] || use.kind) + " · " + index));
     block.append(el("p", "workflow-note", use.description || "No note is saved."));
+    box.append(block);
+  }
+}
+
+function paintUseList(box, title, items, kind) {
+  box.append(el("h4", "", title));
+  if (!items.length) {
+    box.append(el("p", "hint", "None set."));
+    return;
+  }
+  for (const item of items) {
+    const block = el("div", "workflow-block");
+    block.append(el("p", "workflow-title", workflowUseName(kind, item.id)));
+    block.append(el("p", "workflow-note", kind === "tool" ? (toolDetail(item.id) || "KIKI writes this tool into the launch prompt.") : (item.description || "No note is saved.")));
+    box.append(block);
+  }
+}
+
+function paintUseWorkflow(box, kind, id) {
+  box.append(el("p", "workflow-kicker", kind === "mcp" ? "MCP Servers" : "Tool"));
+  box.append(el("h3", "", workflowUseName(kind, id)));
+  box.append(el("p", "id", id));
+  box.append(el("h4", "", "Used by"));
+  const users = (state.data.agents || []).filter((agent) => {
+    const items = kind === "mcp" ? configuredUses("mcp", agent.mcps) : agent.tools;
+    return (items || []).some((item) => item.id === id);
+  });
+  if (!users.length) {
+    box.append(el("p", "hint", "No agent lists this."));
+    return;
+  }
+  for (const agent of users) {
+    const items = kind === "mcp" ? configuredUses("mcp", agent.mcps) : agent.tools;
+    const item = (items || []).find((entry) => entry.id === id);
+    const block = el("div", "workflow-block");
+    block.append(el("p", "workflow-title", agent.title));
+    const note = kind === "tool" ? toolDetail(id) : (item && item.description);
+    block.append(el("p", "workflow-note", note || (kind === "tool" ? "KIKI writes this tool into the launch prompt." : "No note is saved.")));
     box.append(block);
   }
 }
@@ -2095,7 +3179,7 @@ function paintIndexWorkflow(box, id) {
 }
 
 document.querySelector("#panel-workflow").addEventListener("click", (event) => {
-  if (event.target.closest("[data-prompt], .index-tool-link")) return;
+  if (event.target.closest("[data-prompt], [data-guardrail-view], [data-flow-about], .index-tool-link")) return;
   const edge = event.target.closest(".workflow-hit");
   if (edge) {
     selectWorkflow({ kind: "edge", id: Number(edge.dataset.edge) });
@@ -2111,14 +3195,14 @@ document.querySelector("#panel-workflow").addEventListener("click", (event) => {
 });
 
 function unlockNavigation() {
-  for (const button of document.querySelectorAll("[data-tab='repos'], [data-tab='indexes'], [data-tab='workflow'], #open-settings, #start-feature")) {
+  for (const button of document.querySelectorAll("[data-tab='repos'], [data-tab='workflow'], #open-settings, #start-feature")) {
     button.disabled = false;
   }
 }
 
 function showTab(name) {
   if (!state.data && name !== "agents") return;
-  const enterIndexes = name === "indexes" && state.tab !== "indexes";
+  const enterRepos = name === "repos" && state.tab !== "repos";
   const enterWorkflow = name === "workflow" && state.tab !== "workflow";
   const enterAgents = name === "agents" && state.tab !== "agents";
   state.tab = name;
@@ -2127,9 +3211,8 @@ function showTab(name) {
   }
   document.querySelector("#panel-agents").hidden = name !== "agents";
   document.querySelector("#panel-repos").hidden = name !== "repos";
-  document.querySelector("#panel-indexes").hidden = name !== "indexes";
   document.querySelector("#panel-workflow").hidden = name !== "workflow";
-  if (enterIndexes) checkIndexes();
+  if (enterRepos) checkIndexes();
   if (enterAgents) refreshTeamShare();
   if (name === "workflow") requestAnimationFrame(layoutWorkflow);
   if (enterWorkflow) refreshWorkflow();
@@ -2148,10 +3231,9 @@ async function refreshWorkflow() {
 }
 
 function collect() {
-  return {
+  const body = {
     workspaceId: document.querySelector("#workspace-id").value,
     orchestrator: document.querySelector("#orchestrator").value,
-    orcaAgent: state.data ? state.data.orcaAgent : "cursor",
     generateTool: document.querySelector("#generate-tool").value,
     generateModel: document.querySelector("#generate-model").value,
     repos: state.data.repos.map((repo) => ({
@@ -2162,6 +3244,14 @@ function collect() {
         : [...document.querySelectorAll(`[data-services="${repo.kind}"] button[aria-pressed="true"]`)].map((item) => item.dataset.name),
     })),
   };
+  const dialog = document.querySelector("#settings-dialog");
+  if (dialog && dialog.open) {
+    const atlassian = collectAtlassian();
+    if (atlassian) body.atlassian = atlassian;
+    const tools = collectTools();
+    if (tools) body.tools = tools;
+  }
+  return body;
 }
 
 function agentById(id) {
@@ -2207,7 +3297,6 @@ function installedTools() {
 function usableTool(tool) {
   const tools = installedTools();
   if (tools.includes(tool)) return tool;
-  if (tools.includes(state.data.orcaAgent)) return state.data.orcaAgent;
   return tools[0] || "";
 }
 
@@ -2236,7 +3325,7 @@ function toolGroup(label, names, selected, disabled) {
 
 function choiceFor(agentId) {
   const agent = agentById(agentId);
-  const tool = usableTool(agent && agent.tool ? agent.tool : state.data.orcaAgent);
+  const tool = usableTool(agent && agent.tool);
   let model = agent && agent.model ? agent.model : "";
   if (!modelsFor(tool).some((item) => item.id === model)) model = defaultModel(tool);
   return { tool, model };
@@ -2587,6 +3676,101 @@ function renderPrompt(command, prompt) {
   return '<p class="prompt-label">Command</p><pre class="command">' + escapeHtml(command) + "</pre>" + renderMarkdown(prompt);
 }
 
+function guardrailText() {
+  return [
+    "The hook runs before a prompt is sent to the model and after the model output. That covers a tool, an MCP server, a shell command, a file read or edit, and another agent.",
+    "",
+    "KIKI decides while it is running. A folder outside this workspace's repositories is allowed. Turning Guardrails off in Settings removes the hooks from Cursor, Claude, Codex, and Gemini.",
+    "",
+    "## Which agent",
+    "",
+    "KIKI uses the agent named for the hook when that agent may use the folder. Otherwise it uses the agent it started in this worktree. Otherwise it uses the only enabled agent whose repositories include the folder.",
+    "",
+    "A KIKI repository with no agent set up for it is blocked. When more than one agent includes the folder and KIKI cannot tell which one is running, the action stays blocked until that agent is started from KIKI.",
+    "",
+    "## What it allows",
+    "",
+    "For that agent, each interaction has to match the agent setup.",
+    "",
+    "- **MCP.** Only the MCP servers set on that agent. Jira and Confluence are checked on their own.",
+    "- **Tools.** Only the tools set on that agent and turned on in Settings. `gh` is GitHub CLI. `rtk` is allowed for every agent while RTK is on, and blocked while RTK is off.",
+    "- **Agents.** The agent may continue as itself, and may start an agent listed under Agents Coordination.",
+    "- **Repositories.** A path stays inside a repository set for that agent, including a worktree KIKI started for it. A repository marked Readonly may be read and must not be changed. File edits, commits, and other writes in that folder or its worktree are blocked. Reads stay allowed. Another repository on the same agent stays writable when it is not marked Readonly.",
+    "- **Prompt and reply.** A prompt or model message with no MCP server, tool, repository path, or other agent is allowed.",
+  ].join("\n");
+}
+
+function openGuardrail() {
+  document.querySelector("#prompt-reader-title").textContent = "KIKI guardrail";
+  document.querySelector("#prompt-reader-body").innerHTML = renderMarkdown(guardrailText());
+  document.querySelector("#prompt-reader").showModal();
+}
+
+function flowAbout(kind, id) {
+  if (kind === "mcp") return mcpAbout(id);
+  if (kind === "tool") return toolAbout(id);
+  if (kind === "repo") return repoAbout(id);
+  return indexAbout(id);
+}
+
+function mcpAbout(id) {
+  const name = workflowUseName("mcp", id);
+  const text = {
+    atlassian_jira: "This MCP server is how an agent works with Jira. The agent searches, reads, and updates issues on the site saved in Settings. KIKI adds the Atlassian server to the agent's AI tool before a run when that tool does not already have one. An agent can call Jira only when Jira is turned on for that agent.",
+    atlassian_confluence: "This MCP server is how an agent works with Confluence. The agent reads pages in the space saved in Settings. KIKI adds the Atlassian server to the agent's AI tool before a run when that tool does not already have one. An agent can call Confluence only when Confluence is turned on for that agent.",
+  }[id] || "This is an MCP server an agent can call. KIKI adds it to the agent's AI tool before a run when that tool does not already have one.";
+  return { title: name, text };
+}
+
+function toolAbout(id) {
+  const choice = ((state.data && state.data.toolChoices) || []).find((item) => item.id === id);
+  const name = (choice && choice.name) || workflowUseName("tool", id);
+  const lines = [];
+  if (choice && choice.detail) lines.push(choice.detail);
+  if (choice && choice.command) lines.push("", "Command: `" + choice.command + "`.");
+  if (choice && choice.global) lines.push("", "This tool applies to every agent when it is on in Settings.");
+  else lines.push("", "An agent uses this tool when it is chosen for that agent and turned on in Settings. The launch prompt includes this description.");
+  return { title: name, text: lines.join("\n"), url: choice && choice.page };
+}
+
+function repoAbout(kind) {
+  const name = repoLabel[kind] || kind;
+  const repo = workflowRepo(kind);
+  const folder = repo && repo.folder ? repo.folder : "The folder is not set.";
+  const index = repo && repo.index ? indexLabel(repo.index) : "not set";
+  let purpose = "This repository is a folder agents can open. Each agent that lists it receives the folder in the launch prompt.";
+  if (kind === "document") purpose = "The Document repository is the folder for notes and requirement files. Agents that list it may read and write here. When the index is Obsidian, the launch prompt tells the agent to search that vault before opening files.";
+  else if (kind === "backend" || kind === "website" || kind === "mobile") purpose = "The " + name + " repository is the folder for that part of the app. Agents that list it may read and change code here. When the index is CodeGraph, the launch prompt tells the agent to query that index before reading the repository.";
+  return { title: name, text: [purpose, "", "Folder: `" + folder + "`", "", "Index: " + index].join("\n") };
+}
+
+function indexAbout(id) {
+  if (id === "obsidian") {
+    return {
+      title: "Obsidian",
+      text: "Obsidian indexes a document repository. The launch prompt tells the agent to search the vault and to read a note when search, backlinks, or links name it. The agent does not create the vault.",
+      url: indexToolURL.obsidian,
+    };
+  }
+  if (id === "codegraph") {
+    return {
+      title: "CodeGraph",
+      text: "CodeGraph indexes a code repository. The launch prompt tells the agent to query this index before grep, find, or reading the repository. The agent does not run codegraph init.",
+      url: indexToolURL.codegraph,
+    };
+  }
+  return { title: "Not set", text: "No index is saved. The launch prompt does not tell the agent to query Obsidian or CodeGraph for the repositories on this card." };
+}
+
+function openFlowAbout(kind, id) {
+  const about = flowAbout(kind, id);
+  document.querySelector("#prompt-reader-title").textContent = about.title;
+  const body = document.querySelector("#prompt-reader-body");
+  body.innerHTML = renderMarkdown(about.text);
+  if (about.url) body.append(workflowIndexLink(about.url, "index-tool-link"));
+  document.querySelector("#prompt-reader").showModal();
+}
+
 async function openAgentPrompt(id) {
   const agent = agentById(id);
   const choice = choiceFor(id);
@@ -2691,8 +3875,156 @@ function syncTeamName() {
   if (member) member.setAttribute("aria-invalid", missing && mode === "existing" ? "true" : "false");
   const target = choices || user.closest(".field");
   if (target) target.classList.toggle("is-invalid", missing);
-  note.textContent = mode === "existing" ? "Choose a folder name." : "Enter your name.";
+  note.textContent = settingsFieldRequiredMsg;
   note.hidden = !missing;
+}
+
+function settingsFieldWrap(input) {
+  if (!input) return null;
+  return input.closest(".field") || input.closest(".team-name") || input.closest(".choice-block");
+}
+
+function ensureFieldError(wrap) {
+  if (!wrap) return null;
+  let note = wrap.querySelector(":scope > .field-error");
+  if (!note && wrap.classList.contains("team-name")) note = wrap.querySelector(".field-error");
+  if (!note) {
+    note = el("p", "field-error", "");
+    wrap.append(note);
+  }
+  return note;
+}
+
+function markFieldInvalid(input, message) {
+  if (!input) return;
+  const wrap = settingsFieldWrap(input);
+  if (wrap) wrap.classList.add("is-invalid");
+  input.setAttribute("aria-invalid", "true");
+  const note = ensureFieldError(wrap);
+  if (note) {
+    note.textContent = message || settingsFieldRequiredMsg;
+    note.hidden = false;
+  }
+}
+
+function clearFieldValidation(input) {
+  if (!input || !input.isConnected) return;
+  input.setAttribute("aria-invalid", "false");
+  const wrap = settingsFieldWrap(input);
+  if (!wrap || !wrap.classList.contains("is-invalid")) return;
+  wrap.classList.remove("is-invalid");
+  const note = wrap.querySelector(":scope > .field-error") || (wrap.classList.contains("team-name") ? wrap.querySelector(".field-error") : null);
+  if (note) note.hidden = true;
+}
+
+function clearSettingsValidation() {
+  const root = document.querySelector("#settings-fields");
+  if (!root) return;
+  for (const wrap of root.querySelectorAll(".is-invalid")) wrap.classList.remove("is-invalid");
+  for (const note of root.querySelectorAll(".field-error")) note.hidden = true;
+  for (const input of root.querySelectorAll("[aria-invalid='true']")) input.setAttribute("aria-invalid", "false");
+}
+
+function mcpCredentialReady(username, token, tokenSaved) {
+  return username !== "" && (token !== "" || tokenSaved);
+}
+
+function validHttpUrl(raw) {
+  try {
+    const parsed = new URL(raw);
+    if (parsed.username || parsed.password) return false;
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.host !== "";
+  } catch {
+    return false;
+  }
+}
+
+function validateSettingsForm() {
+  clearSettingsValidation();
+  let ok = true;
+  let focusEl = null;
+
+  const workspace = document.querySelector("#workspace-id");
+  const workspaceValue = workspace ? workspace.value.trim() : "";
+  if (!workspacePattern.test(workspaceValue)) {
+    markFieldInvalid(workspace, workspaceValue ? "Use lowercase letters, digits, hyphens, or underscores." : settingsFieldRequiredMsg);
+    ok = false;
+    focusEl = workspace;
+  }
+
+  const teamPathInput = document.querySelector("#team-path");
+  const teamPath = teamPathInput ? teamPathInput.value.trim() : "";
+  if (teamPath && !currentTeamUser()) {
+    syncTeamName();
+    ok = false;
+    const choosingExisting = teamNameMode() === "existing";
+    focusEl = focusEl || document.querySelector(choosingExisting ? "#team-member-name" : "#team-user");
+  }
+
+  if (mcpPressed("#mcp-atlassian")) {
+    const saved = (state.data && state.data.atlassian) || {};
+    const jiraOn = mcpPressed("#mcp-jira");
+    const confluenceOn = mcpPressed("#mcp-confluence");
+    if (!jiraOn && !confluenceOn) {
+      const card = document.querySelector("#settings-fields .mcp-card");
+      if (card) {
+        const note = ensureFieldError(card);
+        note.textContent = "Turn on Jira or Confluence.";
+        note.hidden = false;
+      }
+      ok = false;
+    }
+    const sharedNeeded = (jiraOn && !mcpChecked("#mcp-jira-own")) || (confluenceOn && !mcpChecked("#mcp-confluence-own"));
+    const sharedUser = fieldValue("#mcp-username");
+    const sharedToken = fieldValue("#mcp-api-token");
+    if (sharedNeeded && !mcpCredentialReady(sharedUser, sharedToken, !!saved.apiTokenSet)) {
+      if (!sharedUser) {
+        markFieldInvalid(document.querySelector("#mcp-username"));
+        ok = false;
+        focusEl = focusEl || document.querySelector("#mcp-username");
+      }
+      if (!sharedToken && !saved.apiTokenSet) {
+        markFieldInvalid(document.querySelector("#mcp-api-token"));
+        ok = false;
+        focusEl = focusEl || document.querySelector("#mcp-api-token");
+      }
+    }
+    for (const name of ["jira", "confluence"]) {
+      if (!mcpPressed("#mcp-" + name)) continue;
+      const savedService = saved[name] || {};
+      const urlInput = document.querySelector("#mcp-" + name + "-url");
+      const url = urlInput ? urlInput.value.trim() : "";
+      if (!url) {
+        markFieldInvalid(urlInput);
+        ok = false;
+        focusEl = focusEl || urlInput;
+      } else if (!validHttpUrl(url)) {
+        markFieldInvalid(urlInput, "Use an http or https URL.");
+        ok = false;
+        focusEl = focusEl || urlInput;
+      }
+      if (!mcpChecked("#mcp-" + name + "-own")) continue;
+      const userInput = document.querySelector("#mcp-" + name + "-username");
+      const tokenInput = document.querySelector("#mcp-" + name + "-api-token");
+      const user = userInput ? userInput.value.trim() : "";
+      const token = tokenInput ? tokenInput.value.trim() : "";
+      if (!mcpCredentialReady(user, token, !!savedService.apiTokenSet)) {
+        if (!user) {
+          markFieldInvalid(userInput);
+          ok = false;
+          focusEl = focusEl || userInput;
+        }
+        if (!token && !savedService.apiTokenSet) {
+          markFieldInvalid(tokenInput);
+          ok = false;
+          focusEl = focusEl || tokenInput;
+        }
+      }
+    }
+  }
+
+  if (!ok && focusEl) focusEl.focus();
+  return ok;
 }
 
 async function saveSettings() {
@@ -2714,15 +4046,12 @@ async function saveSettings() {
     const pathInput = document.querySelector("#team-path");
     teamPath = pathInput ? pathInput.value.trim() : "";
   }
-  const choosingExisting = teamNameMode() === "existing";
-  const teamUser = currentTeamUser();
-  if (teamPath && !teamUser) {
-    syncTeamName();
-    const control = document.querySelector(choosingExisting ? "#team-member-name" : "#team-user");
-    if (control) control.focus();
-    banner(choosingExisting ? "Choose a folder name." : "Enter your name.", true);
+  if (!validateSettingsForm()) {
+    syncSave();
     return;
   }
+  const choosingExisting = teamNameMode() === "existing";
+  const teamUser = currentTeamUser();
   const savedTeam = (state.data && state.data.teamFolder) || {};
   const payload = collect();
   const selected = document.querySelector("[data-tab][aria-selected='true']");
@@ -3047,20 +4376,18 @@ function watchJob(id, which) {
       settled = true;
       clearInterval(timer);
       timer = 0;
-      state.busySetup = "";
-      markSetupBusy(which, false);
       const failed = job.status !== "ok";
       try {
         const data = await api("/api/indexes/check", { method: "POST" });
         if (generation !== watchGeneration) return;
         state.data = data;
-        renderIndexes(data);
         paintRepoIndexes();
       } catch (error) {
         if (generation !== watchGeneration) return;
         banner(error.message, true);
       }
       if (generation !== watchGeneration) return;
+      markSetupBusy(which, false);
       const message = job.status === "cancelled" ? "Setup cancelled." : failed ? "Setup failed." : "Setup finished.";
       banner(message, failed);
     } catch (error) {
@@ -3076,16 +4403,14 @@ function watchJob(id, which) {
   timer = setInterval(tick, 1000);
 }
 
-function markSetupBusy(which, busy, label) {
+function markSetupBusy(which, busy) {
   if (busy) state.busySetup = which;
-  else if (state.busySetup === which) state.busySetup = "";
-  const button = document.querySelector(`[data-setup="${CSS.escape(which)}"]`);
-  if (!button) return;
-  if (!button.dataset.label) button.dataset.label = button.textContent;
-  button.disabled = busy;
-  button.classList.toggle("busy", busy);
-  button.setAttribute("aria-busy", busy ? "true" : "false");
-  button.textContent = busy ? (label || "Setting up…") : button.dataset.label;
+  else if (state.busySetup === which) {
+    state.busySetup = "";
+    state.busyKind = "";
+  }
+  paintRepoSetupButtons();
+  paintRepoIndexes();
 }
 
 const indexCheckGeneration = {};
@@ -3096,33 +4421,29 @@ function allIndexKeys() {
     .map((item) => item.kind);
 }
 
-function indexKeys(tool) {
-  return ((state.data && state.data.indexes) || [])
-    .filter((item) => item.index === tool)
-    .map((item) => item.kind);
+function markIndexCardChecking(card) {
+  for (const button of card.querySelectorAll("[data-clear-index]")) button.disabled = true;
+  const badge = card.querySelector(".badge");
+  if (!badge) return;
+  badge.className = "badge checking";
+  badge.replaceChildren();
+  badge.setAttribute("aria-label", "Checking");
+  const spin = el("span", "spinner");
+  spin.setAttribute("aria-hidden", "true");
+  badge.append(spin);
 }
 
 function markIndexesChecking() {
-  const panel = document.querySelector("#panel-indexes");
-  if (!panel) return;
-  for (const card of panel.querySelectorAll("[data-index]")) {
-    if (!state.checkingIndexes.has(card.dataset.index)) continue;
-    for (const button of card.querySelectorAll("[data-clear-index]")) button.disabled = true;
-    const badge = card.querySelector(".repo-head .badge");
-    if (!badge) continue;
-    badge.className = "badge checking";
-    badge.replaceChildren();
-    badge.setAttribute("aria-label", "Checking");
-    const spin = el("span", "spinner");
-    spin.setAttribute("aria-hidden", "true");
-    badge.append(spin);
-  }
-  for (const button of panel.querySelectorAll("[data-refresh-index]")) {
-    const keys = indexKeys(button.dataset.refreshIndex);
-    const busy = keys.some((key) => state.checkingIndexes.has(key));
-    button.disabled = busy || keys.length === 0;
-    button.classList.toggle("spin", busy);
-    button.setAttribute("aria-busy", busy ? "true" : "false");
+  const repos = document.querySelector("#panel-repos");
+  if (!repos) return;
+  for (const card of repos.querySelectorAll("[data-repo-index]")) {
+    if (!state.checkingIndexes.has(card.dataset.repoIndex)) continue;
+    markIndexCardChecking(card);
+    const refresh = card.querySelector("[data-refresh-repo]");
+    if (!refresh) continue;
+    refresh.disabled = true;
+    refresh.classList.add("spin");
+    refresh.setAttribute("aria-busy", "true");
   }
 }
 
@@ -3168,12 +4489,11 @@ async function checkIndexKeys(keys, options = {}) {
     const data = await api(checkPath(keys), { method: "POST" });
     if (!finishIndexCheck(keys, generation)) return false;
     applyCheckedIndexes(data, keys);
-    renderIndexes(state.data);
     if (options.announce) banner(keys.length === 1 ? "Index checked." : "Indexes checked.");
     return true;
   } catch (error) {
     if (!finishIndexCheck(keys, generation)) return false;
-    if (state.data) renderIndexes(state.data);
+    if (state.data) paintRepoIndexes();
     banner(error.message, true);
     return false;
   }
@@ -3197,12 +4517,11 @@ async function checkAllIndexes(options = {}) {
     if (keys.length && !finishIndexCheck(keys, generation)) return false;
     state.data = data;
     paintRepoIndexes();
-    renderIndexes(state.data);
     if (options.announce) banner("Indexes checked.");
     return true;
   } catch (error) {
     if (keys.length && !finishIndexCheck(keys, generation)) return false;
-    if (state.data) renderIndexes(state.data);
+    if (state.data) paintRepoIndexes();
     banner(error.message, true);
     return false;
   }
@@ -3218,85 +4537,6 @@ async function openIndexPage(url) {
   } catch (error) {
     banner(error.message, true);
   }
-}
-
-function refreshIndex(tool) {
-  const keys = indexKeys(tool);
-  if (!keys.length || keys.some((key) => state.checkingIndexes.has(key))) return Promise.resolve(false);
-  return refreshIndexFolders(tool, keys);
-}
-
-async function refreshIndexFolders(tool, keys) {
-  const generation = {};
-  for (const key of keys) {
-    indexCheckGeneration[key] = (indexCheckGeneration[key] || 0) + 1;
-    generation[key] = indexCheckGeneration[key];
-    state.checkingIndexes.add(key);
-  }
-  markIndexesChecking();
-  try {
-    const data = await api("/api/indexes/refresh/" + encodeURIComponent(tool), { method: "POST" });
-    if (!finishIndexCheck(keys, generation)) return false;
-    state.data = data;
-    paintRepoIndexes();
-    renderIndexes(state.data);
-    const missing = (data.indexes || []).filter((item) => keys.includes(item.kind) && !item.dirExists);
-    const folder = tool === "obsidian" ? ".obsidian" : ".codegraph";
-    if (!missing.length) banner(indexLabel(tool) + " folders are still there.");
-    else banner(missing.map((item) => (repoLabel[item.kind] || item.kind) + " is missing " + folder).join(". ") + ".", true);
-    return true;
-  } catch (error) {
-    if (!finishIndexCheck(keys, generation)) return false;
-    if (state.data) renderIndexes(state.data);
-    banner(error.message, true);
-    return false;
-  }
-}
-
-function openIndexSetup(tool) {
-  if (state.busySetup || !state.data) return;
-  const dialog = document.querySelector("#index-dialog");
-  dialog.dataset.tool = tool;
-  document.querySelector("#index-title").textContent = tool === "obsidian" ? "Set up Obsidian" : "Set up CodeGraph";
-  const select = document.querySelector("#index-repo");
-  select.replaceChildren();
-  for (const repo of state.data.repos || []) {
-    const option = el("option", "", (repoLabel[repo.kind] || repo.kind) + " — " + indexLabel(repo.index));
-    option.value = repo.kind;
-    select.append(option);
-  }
-  syncIndexChoice();
-  const error = document.querySelector("#index-error");
-  error.hidden = true;
-  error.textContent = "";
-  dialog.showModal();
-}
-
-function syncIndexChoice() {
-  const kind = document.querySelector("#index-repo").value;
-  const repo = ((state.data && state.data.repos) || []).find((item) => item.kind === kind);
-  const path = document.querySelector("#index-repo-path");
-  if (!repo) {
-    path.textContent = "";
-    return;
-  }
-  const folder = repo.folder || "Folder is not set";
-  path.textContent = folder + ". Current index: " + indexLabel(repo.index) + ".";
-}
-
-async function confirmIndexSetup() {
-  const dialog = document.querySelector("#index-dialog");
-  const tool = dialog.dataset.tool;
-  const kind = document.querySelector("#index-repo").value;
-  const error = document.querySelector("#index-error");
-  if (!kind) {
-    error.hidden = false;
-    error.textContent = "Choose a repository.";
-    return;
-  }
-  error.hidden = true;
-  dialog.close();
-  await startSetup(tool, kind);
 }
 
 function openRemoveIndex(kind) {
@@ -3337,8 +4577,8 @@ async function confirmRemoveIndex() {
 
 async function clearIndex(kind, deleteFolder) {
   if (!kind || state.busySetup || state.checkingIndexes.has(kind)) return;
-  const button = document.querySelector(`[data-clear-index="${CSS.escape(kind)}"]`);
-  if (button) {
+  const buttons = [...document.querySelectorAll(`[data-clear-index="${CSS.escape(kind)}"]`)];
+  for (const button of buttons) {
     button.disabled = true;
     button.classList.add("busy");
   }
@@ -3349,38 +4589,63 @@ async function clearIndex(kind, deleteFolder) {
       body: JSON.stringify({ deleteFolder: !!deleteFolder }),
     });
     state.data = data;
-    renderIndexes(data);
     paintRepoIndexes();
     const label = repoLabel[kind] || kind;
     banner(deleteFolder ? "Removed the index from " + label + " and deleted its index folder." : "Removed the index from " + label + ".");
   } catch (error) {
     banner(error.message, true);
-    if (button && button.isConnected) {
+    for (const button of buttons) {
+      if (!button.isConnected) continue;
       button.disabled = false;
       button.classList.remove("busy");
     }
   }
 }
 
+function setupRepoIndex(kind, tool) {
+  if (!kind || state.busySetup) return;
+  if (tool !== "obsidian" && tool !== "codegraph") return;
+  return startSetup(tool, kind);
+}
+
+function refreshRepoIndex(kind, options = {}) {
+  if (!kind || state.checkingIndexes.has(kind)) return;
+  const item = indexItem(kind);
+  if (!indexAssigned(item)) return;
+  return checkIndexKeys([kind], { announce: options.announce !== false });
+}
+
+function refreshAssignedRepoIndexes() {
+  for (const kind of allIndexKeys()) refreshRepoIndex(kind, { announce: false });
+}
+
 async function startSetup(tool, kind) {
   if (state.busySetup || !kind) return;
+  state.busyKind = kind;
   markSetupBusy(tool, true);
-  showTab("indexes");
   try {
     const path = tool === "obsidian" ? "/api/indexes/obsidian" : "/api/indexes/codegraph";
-    const job = await api(path, {
+    const result = await api(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo: kind }),
     });
-    watchJob(job.id, tool);
+    if (!result || !result.id) {
+      if (result && Array.isArray(result.repos)) state.data = result;
+      markSetupBusy(tool, false);
+      if (result && Array.isArray(result.repos)) {
+        render(result);
+        banner("Using " + indexLabel(tool) + " already in " + (repoLabel[kind] || kind) + ".");
+      }
+      return;
+    }
+    watchJob(result.id, tool);
   } catch (error) {
     markSetupBusy(tool, false);
     banner(error.message, true);
     try {
       const data = await api("/api/state");
       state.data = data;
-      renderIndexes(data);
       paintRepoIndexes();
     } catch (reloadError) {
       banner(reloadError.message, true);
@@ -3391,11 +4656,15 @@ async function startSetup(tool, kind) {
 function repoList(value) {
   if (!Array.isArray(value)) {
     if (!value) return [];
-    return [{ kind: value, description: "" }];
+    return [{ kind: value, description: "", readonly: false }];
   }
   return value.map((item) => {
-    if (typeof item === "string") return { kind: item, description: "" };
-    return { kind: item && (item.kind || item.id), description: (item && item.description) || "" };
+    if (typeof item === "string") return { kind: item, description: "", readonly: false };
+    return {
+      kind: item && (item.kind || item.id),
+      description: (item && item.description) || "",
+      readonly: !!(item && item.readonly),
+    };
   }).filter((item) => item.kind);
 }
 
@@ -3409,9 +4678,21 @@ function repoChoices(repos) {
 
 function rememberRepoNotes() {
   if (!state.repoNotes) state.repoNotes = {};
+  if (!state.repoReadonly) state.repoReadonly = {};
   for (const area of document.querySelectorAll("#agent-repo-notes textarea")) {
     state.repoNotes[area.dataset.repo] = area.value;
   }
+  for (const box of document.querySelectorAll("#agent-repo-notes [data-repo-readonly]")) {
+    state.repoReadonly[box.dataset.repoReadonly] = box.checked;
+  }
+}
+
+function paintScopeCount(selector, countId) {
+  const node = document.querySelector(countId);
+  if (!node) return;
+  const count = document.querySelectorAll(selector + " button[aria-pressed='true']").length;
+  node.textContent = count === 0 ? "None selected" : count === 1 ? "1 selected" : count + " selected";
+  node.dataset.empty = count === 0 ? "true" : "false";
 }
 
 function renderRepoNotes() {
@@ -3442,15 +4723,23 @@ function renderRepoNotes() {
     const area = document.createElement("textarea");
     area.dataset.repo = kind;
     area.rows = 4;
-    area.placeholder = "What this agent does in the " + kind + " repository. " + orchestratorLabel() + " receives this with that repository.";
+    area.placeholder = "What this agent does in the " + kind + " repository. The AI Tool receives this with that repository.";
     area.value = state.repoNotes[kind] || "";
     const compose = el("div", "compose");
     compose.append(area, generateButton("repo", kind));
     const preview = el("div", "markdown repo-preview");
     preview.hidden = true;
-    block.append(compose, preview);
+    const readonly = el("label", "repo-readonly");
+    readonly.title = "This agent can read this repository and cannot change it.";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.dataset.repoReadonly = kind;
+    box.checked = !!(state.repoReadonly && state.repoReadonly[kind]);
+    readonly.append(box, el("span", "", "Readonly"));
+    block.append(compose, preview, readonly);
     root.append(block);
   }
+  paintScopeCount("#agent-repos", "#agent-repo-count");
 }
 
 function fillAgentCategories(selected) {
@@ -3515,7 +4804,7 @@ function renderCollaborations() {
     const area = document.createElement("textarea");
     area.dataset.peer = id;
     area.rows = 4;
-    area.placeholder = "How this agent communicates and coordinates with " + id + ". " + orchestratorLabel() + " receives this with that agent id.";
+    area.placeholder = "How this agent communicates and coordinates with " + id + ". The AI Tool receives this with that agent id.";
     area.value = state.peerNotes[id] || "";
     const compose = el("div", "compose");
     compose.append(area, generateButton("teamwork", id));
@@ -3524,6 +4813,7 @@ function renderCollaborations() {
     block.append(compose, preview);
     root.append(block);
   }
+  paintScopeCount("#agent-works-with", "#agent-peer-count");
 }
 
 function fillAgentPeers(currentId, selectedIds) {
@@ -3559,13 +4849,514 @@ function fillAgentPeers(currentId, selectedIds) {
   }
 }
 
+const useSections = {
+  mcp: {
+    root: "#agent-mcps",
+    notes: "#agent-mcp-notes",
+    state: "mcpNotes",
+    generate: "mcp",
+    count: "#agent-mcp-count",
+    empty: "No MCP servers are set up in Settings.",
+    placeholder: (name) => "What this agent does with " + name + ". The AI Tool receives this with that MCP server.",
+  },
+  tool: {
+    root: "#agent-tools",
+    state: "toolNotes",
+    count: "#agent-tool-count",
+    empty: "No tools are enabled in Settings.",
+  },
+};
+
+function useList(value) {
+  if (!Array.isArray(value)) {
+    if (!value) return [];
+    return [{ id: value, description: "" }];
+  }
+  return value.map((item) => {
+    if (typeof item === "string") return { id: item, description: "" };
+    return Object.assign(placeFields(item), {
+      id: item && item.id,
+      description: (item && item.description) || "",
+    });
+  }).filter((item) => item.id);
+}
+
+function globalTool(id) {
+  const choice = ((state.data && state.data.toolChoices) || []).find((item) => item.id === id);
+  return !!(choice && choice.global) || id === "rtk";
+}
+
+function configuredChoices(key) {
+  const list = (state.data && state.data[key]) || [];
+  return list
+    .filter((item) => item && item.id && item.enabled !== false && !item.global)
+    .map((item) => ({ id: item.id, name: item.name || item.id }));
+}
+
+function fillUses(kind, selected) {
+  const spec = useSections[kind];
+  const root = document.querySelector(spec.root);
+  const notes = spec.notes ? document.querySelector(spec.notes) : null;
+  root.replaceChildren();
+  if (notes) notes.replaceChildren();
+  const choices = configuredChoices(kind === "mcp" ? "mcps" : "toolChoices");
+  const items = (kind === "mcp" ? expandLegacyAtlassian(useList(selected), choices) : useList(selected))
+    .filter((item) => kind !== "tool" || !globalTool(item.id));
+  state[spec.state] = {};
+  for (const item of items) state[spec.state][item.id] = item.description;
+  const chosen = new Set(items.map((item) => item.id));
+  const offered = new Set(choices.map((item) => item.id));
+  if (kind === "mcp") {
+    state.mcpPlaces = {};
+    state.hiddenMcpNotes = {};
+    for (const item of items) {
+      state.mcpPlaces[item.id] = placeFields(item);
+      if (!offered.has(item.id)) state.hiddenMcpNotes[item.id] = Object.assign({ description: item.description || "" }, placeFields(item));
+    }
+  }
+  for (const id of chosen) {
+    if (offered.has(id) || kind === "mcp") continue;
+    choices.push({ id, name: id, missing: true });
+  }
+  if (!choices.length) {
+    root.classList.remove("tool-switches");
+    root.append(el("p", "hint", spec.empty));
+    return;
+  }
+  if (kind === "tool") {
+    root.classList.add("tool-switches");
+    for (const choice of choices) root.append(toolSwitchRow(choice, chosen.has(choice.id)));
+    return;
+  }
+  root.classList.remove("tool-switches");
+  for (const choice of choices) {
+    const button = el("button", choice.missing ? "tag missing" : "tag", choice.name);
+    button.type = "button";
+    button.dataset.use = choice.id;
+    button.setAttribute("aria-pressed", chosen.has(choice.id) ? "true" : "false");
+    root.append(button);
+  }
+}
+
+function toolSwitchRow(choice, on) {
+  const row = el("div", "agent-tool" + (choice.missing ? " missing" : ""));
+  const copy = el("div", "agent-tool-copy");
+  copy.append(el("strong", "", choice.name));
+  const meta = ((state.data && state.data.toolChoices) || []).find((item) => item.id === choice.id) || {};
+  if (meta.detail) copy.append(el("span", "hint", meta.detail));
+  if (choice.missing) copy.append(el("span", "hint", "Not enabled in Settings."));
+  const button = el("button", "switch");
+  button.type = "button";
+  button.dataset.use = choice.id;
+  button.setAttribute("aria-pressed", on ? "true" : "false");
+  button.setAttribute("aria-label", choice.name);
+  button.append(el("span", "switch-knob"));
+  row.append(copy, button);
+  return row;
+}
+
+function rememberUseNotes(kind) {
+  const spec = useSections[kind];
+  if (!state[spec.state]) state[spec.state] = {};
+  for (const area of document.querySelectorAll(spec.notes + " textarea")) {
+    state[spec.state][area.dataset.use] = area.value;
+  }
+}
+
+function renderUseNotes(kind) {
+  const spec = useSections[kind];
+  if (!spec.notes) {
+    paintScopeCount(spec.root, spec.count);
+    return;
+  }
+  rememberUseNotes(kind);
+  const root = document.querySelector(spec.notes);
+  root.replaceChildren();
+  const selected = [...document.querySelectorAll(spec.root + " button[aria-pressed='true']")];
+  for (const button of selected) {
+    const id = button.dataset.use;
+    const block = el("div", "field");
+    const bar = el("div", "prompt-bar");
+    const names = el("span", "collab-names");
+    names.append(el("span", "collab-title", button.textContent));
+    names.append(el("span", "peer-id", id));
+    bar.append(names);
+    const toggleWrap = el("span", "preview-toggle");
+    toggleWrap.append(el("span", "", "Preview"));
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "switch";
+    toggle.dataset.usePreview = kind;
+    toggle.setAttribute("aria-pressed", "false");
+    toggle.setAttribute("aria-label", "Preview");
+    toggle.append(el("span", "switch-knob"));
+    toggleWrap.append(toggle);
+    bar.append(toggleWrap);
+    block.append(bar);
+    const fields = kind === "mcp" ? mcpPlaceFields(id) : [];
+    for (const field of fields) block.append(field);
+    const area = document.createElement("textarea");
+    area.dataset.use = id;
+    area.rows = 4;
+    area.placeholder = spec.placeholder(button.textContent);
+    area.value = state[spec.state][id] || "";
+    const compose = el("div", "compose");
+    compose.append(area, generateButton(spec.generate, button.textContent));
+    const preview = el("div", "markdown repo-preview");
+    preview.hidden = true;
+    block.append(compose, preview);
+    if (fields.length) {
+      const row = useSettingsRow(id, fields);
+      for (const field of fields) field.syncSettings = () => row.sync();
+      block.append(row);
+    }
+    root.append(block);
+  }
+  paintScopeCount(spec.root, spec.count);
+}
+
+function expandLegacyAtlassian(items, choices) {
+  const legacy = items.find((item) => item.id === "atlassian");
+  if (!legacy) return items;
+  const rest = items.filter((item) => item.id !== "atlassian");
+  const have = new Set(rest.map((item) => item.id));
+  let absorbed = false;
+  for (const choice of choices) {
+    if (choice.id !== "atlassian_jira" && choice.id !== "atlassian_confluence") continue;
+    absorbed = true;
+    if (have.has(choice.id)) continue;
+    rest.push({ id: choice.id, description: legacy.description || "" });
+    have.add(choice.id);
+  }
+  return absorbed ? rest : items;
+}
+
+function selectedUses(kind) {
+  const spec = useSections[kind];
+  if (spec.notes) rememberUseNotes(kind);
+  const picked = [...document.querySelectorAll(spec.root + " button[aria-pressed='true']")].map((button) => {
+    const id = button.dataset.use;
+    const description = spec.notes ? (state[spec.state][id] || "").trim() : "";
+    if (kind !== "mcp") return { id, description };
+    return mcpPayload(id, description, state.mcpPlaces && state.mcpPlaces[id]);
+  });
+  if (kind !== "mcp") return picked;
+  const seen = new Set(picked.map((item) => item.id));
+  for (const [id, saved] of Object.entries(state.hiddenMcpNotes || {})) {
+    if (!id || seen.has(id)) continue;
+    const record = saved && typeof saved === "object" ? saved : { description: saved };
+    picked.push(mcpPayload(id, record.description, record));
+  }
+  return picked;
+}
+
+const placeKeys = ["boardId", "boardName", "spaceId", "spaceKey", "spaceName", "parentId", "parentTitle"];
+
+function placeFields(item) {
+  const source = item || {};
+  const place = {};
+  for (const key of placeKeys) place[key] = source[key] || "";
+  return place;
+}
+
+function mcpPayload(id, description, place) {
+  return Object.assign({ id, description: String(description || "").trim() }, placeFields(place));
+}
+
+async function fetchPlaces(url) {
+  const data = await api(url);
+  return data.items || [];
+}
+
+function sharedPlace(id) {
+  const cfg = (state.data && state.data.atlassian) || {};
+  if (id === "atlassian_jira") return placeFields(cfg.jira);
+  if (id === "atlassian_confluence") return placeFields(cfg.confluence);
+  return placeFields();
+}
+
+function mcpOverrideLabels(agent) {
+  const labels = [];
+  for (const item of (agent && agent.mcps) || []) labels.push(...placeOverrideLabels(item));
+  return labels;
+}
+
+function placeOverrideLabels(item) {
+  if (!item) return [];
+  const own = placeFields(item);
+  const shared = sharedPlace(item.id);
+  if (item.id === "atlassian_jira") {
+    if (!jiraDiffers(own, shared)) return [];
+    return [{ text: "Diff Jira", title: "This agent's Jira board differs from Settings." }];
+  }
+  if (item.id !== "atlassian_confluence" || !confluenceDiffers(own, shared)) return [];
+  return [{ text: "Diff Confluence", title: "This agent's Confluence space or parent page differs from Settings." }];
+}
+
+function jiraDiffers(own, shared) {
+  if (!own.boardId && !own.boardName) return false;
+  return !samePlaceValue(own.boardId, own.boardName, shared.boardId, shared.boardName);
+}
+
+function confluenceSpaceDiffers(own, shared) {
+  if (!own.spaceId && !own.spaceName) return false;
+  return !samePlaceValue(own.spaceId, own.spaceName, shared.spaceId, shared.spaceName);
+}
+
+function confluenceParentDiffers(own, shared) {
+  if (!own.spaceId && !own.spaceName) return false;
+  return !samePlaceValue(own.parentId, own.parentTitle, shared.parentId, shared.parentTitle);
+}
+
+function confluenceDiffers(own, shared) {
+  return confluenceSpaceDiffers(own, shared) || confluenceParentDiffers(own, shared);
+}
+
+function samePlaceValue(id, name, sharedId, sharedName) {
+  const left = String(id || "").trim();
+  const right = String(sharedId || "").trim();
+  if (left || right) return left === right;
+  return String(name || "").trim() === String(sharedName || "").trim();
+}
+
+function shownPlace(id) {
+  const own = placeFields(state.mcpPlaces && state.mcpPlaces[id]);
+  const shared = sharedPlace(id);
+  if (id === "atlassian_jira") {
+    if (own.boardId || own.boardName) return Object.assign(placeFields(), own, { source: "agent" });
+    return Object.assign(placeFields(), { boardId: shared.boardId, boardName: shared.boardName, source: shared.boardId || shared.boardName ? "settings" : "" });
+  }
+  if (own.spaceId || own.spaceName) return Object.assign(placeFields(), own, { source: "agent" });
+  return Object.assign(placeFields(), {
+    spaceId: shared.spaceId,
+    spaceKey: shared.spaceKey,
+    spaceName: shared.spaceName,
+    parentId: shared.parentId,
+    parentTitle: shared.parentTitle,
+    source: shared.spaceId || shared.spaceName ? "settings" : "",
+  });
+}
+
+function placeDiffers(id) {
+  const own = placeFields(state.mcpPlaces && state.mcpPlaces[id]);
+  const shared = sharedPlace(id);
+  if (id === "atlassian_jira") return jiraDiffers(own, shared);
+  if (id === "atlassian_confluence") return confluenceDiffers(own, shared);
+  return false;
+}
+
+function useSettingsRow(id, fields) {
+  const row = el("div", "use-settings-row");
+  const button = el("button", "text-button", "Use from settings");
+  button.type = "button";
+  button.addEventListener("click", () => {
+    if (!state.mcpPlaces) state.mcpPlaces = {};
+    state.mcpPlaces[id] = placeFields();
+    for (const field of fields) if (field.refresh) field.refresh();
+    sync();
+  });
+  row.append(button);
+  const sync = () => { row.hidden = !placeDiffers(id); };
+  sync();
+  row.sync = sync;
+  return row;
+}
+
+function placeNote(source, label) {
+  if (source === "agent") return "This agent uses its own " + label + ".";
+  if (source === "settings") return "From Settings. Choose another " + label + " for this agent.";
+  return "";
+}
+
+function mcpPlaceFields(id) {
+  if (!state.mcpPlaces) state.mcpPlaces = {};
+  if (!state.mcpPlaces[id]) state.mcpPlaces[id] = placeFields();
+  const place = () => state.mcpPlaces[id];
+  if (id === "atlassian_jira") {
+    return [searchSelect({
+      label: "Board",
+      placeholder: "Search Jira boards",
+      value: () => shownPlace(id).boardName || "",
+      warn: () => jiraDiffers(placeFields(place()), sharedPlace(id)),
+      warnText: "Diff Jira",
+      note: () => placeNote(shownPlace(id).source, "board"),
+      clearLabel: () => sharedPlace(id).boardId || sharedPlace(id).boardName ? "Use Settings" : "Clear",
+      load: (query) => fetchPlaces("/api/atlassian/jira/boards?q=" + encodeURIComponent(query)),
+      onChoose: (item) => {
+        const shared = sharedPlace(id);
+        const same = item && item.id === shared.boardId && (item.name || "") === shared.boardName;
+        place().boardId = !item || same ? "" : item.id;
+        place().boardName = !item || same ? "" : (item.name || "");
+      },
+    })];
+  }
+  if (id !== "atlassian_confluence") return [];
+  let parentField;
+  const space = searchSelect({
+    label: "Space",
+    placeholder: "Search Confluence spaces",
+    value: () => shownPlace(id).spaceName || "",
+    warn: () => confluenceSpaceDiffers(placeFields(place()), sharedPlace(id)),
+    warnText: "Diff Confluence",
+    note: () => placeNote(shownPlace(id).source, "space"),
+    clearLabel: () => sharedPlace(id).spaceId || sharedPlace(id).spaceName ? "Use Settings" : "Clear",
+    load: (query) => fetchPlaces("/api/atlassian/confluence/spaces?q=" + encodeURIComponent(query)),
+    onChoose: (item) => {
+      const current = place();
+      const shared = sharedPlace(id);
+      const same = item && item.id === shared.spaceId;
+      current.spaceId = !item || same ? "" : item.id;
+      current.spaceKey = !item || same ? "" : (item.key || "");
+      current.spaceName = !item || same ? "" : (item.name || "");
+      current.parentId = "";
+      current.parentTitle = "";
+      if (parentField) parentField.refresh();
+    },
+  });
+  parentField = searchSelect({
+    label: "Parent page",
+    placeholder: () => shownPlace(id).spaceId ? "Search pages" : "Choose a space first.",
+    value: () => shownPlace(id).parentTitle || "",
+    warn: () => confluenceParentDiffers(placeFields(place()), sharedPlace(id)),
+    warnText: "Diff Confluence",
+    note: () => placeNote(place().parentId || place().parentTitle ? "agent" : (shownPlace(id).parentTitle ? shownPlace(id).source : ""), "parent page"),
+    clearLabel: () => {
+      const shared = sharedPlace(id);
+      const shown = shownPlace(id);
+      return shared.parentId && shown.spaceId === shared.spaceId ? "Use Settings" : "Clear";
+    },
+    disabled: () => !shownPlace(id).spaceId,
+    load: (query) => {
+      const current = shownPlace(id);
+      const params = new URLSearchParams({ space: current.spaceId || "", key: current.spaceKey || "", q: query });
+      return fetchPlaces("/api/atlassian/confluence/pages?" + params.toString());
+    },
+    onChoose: (item) => {
+      const current = place();
+      const shared = sharedPlace(id);
+      const shown = shownPlace(id);
+      if (!current.spaceId && !current.spaceName && shown.spaceId) {
+        current.spaceId = shown.spaceId;
+        current.spaceKey = shown.spaceKey;
+        current.spaceName = shown.spaceName;
+      }
+      current.parentId = item ? item.id : "";
+      current.parentTitle = item ? (item.name || "") : "";
+      const backToSettings = (!item && !current.spaceId) || (current.spaceId === shared.spaceId && current.parentId === shared.parentId && current.parentTitle === shared.parentTitle);
+      if (backToSettings || (!item && current.spaceId === shared.spaceId && current.spaceName === shared.spaceName)) {
+        current.spaceId = "";
+        current.spaceKey = "";
+        current.spaceName = "";
+        current.parentId = "";
+        current.parentTitle = "";
+      }
+      space.refresh();
+    },
+  });
+  return [space, parentField];
+}
+
+function searchSelect(options) {
+  const field = el("label", "place-field");
+  const heading = el("span", "place-label");
+  heading.append(document.createTextNode(options.label));
+  const warn = options.warn ? el("span", "badge warn", options.warnText || "Diff") : null;
+  if (warn) {
+    warn.hidden = true;
+    warn.title = "Different from Settings.";
+    heading.append(warn);
+  }
+  field.append(heading);
+  const box = el("div", "place-box");
+  const input = document.createElement("input");
+  input.type = "search";
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  const menu = el("div", "place-menu");
+  menu.hidden = true;
+  menu.addEventListener("mousedown", (event) => event.preventDefault());
+  box.append(input, menu);
+  field.append(box);
+  const note = options.note ? el("p", "place-note", "") : null;
+  if (note) field.append(note);
+  const refresh = () => {
+    input.value = options.value() || "";
+    input.placeholder = typeof options.placeholder === "function" ? options.placeholder() : options.placeholder;
+    input.disabled = options.disabled ? options.disabled() : false;
+    if (warn) warn.hidden = !options.warn();
+    if (!note) return;
+    const text = options.note() || "";
+    note.textContent = text;
+    note.hidden = !text;
+  };
+  refresh();
+  let timer = 0;
+  let request = 0;
+  const choose = (item) => {
+    menu.hidden = true;
+    options.onChoose(item);
+    refresh();
+    if (field.syncSettings) field.syncSettings();
+  };
+  const open = async () => {
+    if (input.disabled) return;
+    const token = ++request;
+    menu.hidden = false;
+    menu.replaceChildren(el("p", "place-empty", "Loading…"));
+    let items = [];
+    try {
+      items = await options.load(input.value.trim());
+    } catch (error) {
+      if (token !== request) return;
+      menu.replaceChildren(el("p", "place-empty", error.message || "Could not load the list."));
+      return;
+    }
+    if (token !== request) return;
+    menu.replaceChildren();
+    if (options.value()) {
+      const label = options.clearLabel ? options.clearLabel() : "Clear";
+      if (label !== "Use Settings") {
+        const clear = el("button", "place-option", label);
+        clear.type = "button";
+        clear.addEventListener("click", () => choose(null));
+        menu.append(clear);
+      }
+    }
+    if (!items.length) menu.append(el("p", "place-empty", "No matches."));
+    for (const item of items) {
+      const option = el("button", "place-option", item.key ? item.name + " (" + item.key + ")" : item.name);
+      option.type = "button";
+      option.addEventListener("click", () => choose(item));
+      menu.append(option);
+    }
+  };
+  input.addEventListener("focus", () => open());
+  input.addEventListener("input", () => {
+    window.clearTimeout(timer);
+    timer = window.setTimeout(open, 250);
+  });
+  input.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      menu.hidden = true;
+      refresh();
+    }, 120);
+  });
+  field.input = input;
+  field.refresh = refresh;
+  return field;
+}
+
 function fillAgentRepos(selected) {
   const repos = document.querySelector("#agent-repos");
   repos.replaceChildren();
   document.querySelector("#agent-repo-notes").replaceChildren();
   const items = repoList(selected);
   state.repoNotes = {};
-  for (const repo of items) state.repoNotes[repo.kind] = repo.description;
+  state.repoReadonly = {};
+  for (const repo of items) {
+    state.repoNotes[repo.kind] = repo.description;
+    state.repoReadonly[repo.kind] = !!repo.readonly;
+  }
   const chosen = new Set(items.map((repo) => repo.kind));
   for (const kind of repoChoices([...chosen])) {
     const button = el("button", "tag", repoLabel[kind] || kind);
@@ -3586,6 +5377,7 @@ function showMarkdownPreview(area, preview, on) {
     preview.hidden = true;
     preview.replaceChildren();
     compose.hidden = false;
+    placeGenerateButtons();
   }
 }
 
@@ -3601,7 +5393,7 @@ function showAgentPromptPreview(on) {
 async function openAgentEditor(id) {
   const data = await api("/api/agents/" + encodeURIComponent(id));
   state.editingAgentId = data.id;
-  document.querySelector("#agent-dialog-title").textContent = data.name || data.id;
+  document.querySelector("#agent-dialog-title").textContent = "Agent: " + (data.name || data.id);
   document.querySelector("#agent-enabled").setAttribute("aria-pressed", data.enabled !== false ? "true" : "false");
   document.querySelector("#agent-name").value = data.name || "";
   document.querySelector("#agent-id").value = data.id || "";
@@ -3615,6 +5407,10 @@ async function openAgentEditor(id) {
   showAgentPromptPreview(false);
   fillAgentRepos(data.repos);
   renderRepoNotes();
+  fillUses("mcp", data.mcps);
+  renderUseNotes("mcp");
+  fillUses("tool", data.tools);
+  renderUseNotes("tool");
   const tool = document.querySelector("#agent-tool");
   const toolName = usableTool(data.tool);
   fillToolSelect(tool, toolName);
@@ -3627,6 +5423,7 @@ async function openAgentEditor(id) {
   save.textContent = "Save";
   document.querySelector("#agent-dialog").showModal();
   document.querySelector("#agent-name").focus();
+  requestAnimationFrame(placeGenerateButtons);
 }
 
 async function saveAgent() {
@@ -3639,12 +5436,15 @@ async function saveAgent() {
   const repos = [...document.querySelectorAll("#agent-repos button[aria-pressed='true']")].map((button) => ({
     kind: button.dataset.repo,
     description: (state.repoNotes[button.dataset.repo] || "").trim(),
+    readonly: !!(state.repoReadonly && state.repoReadonly[button.dataset.repo]),
   }));
   rememberCollaborations();
   const worksWith = [...document.querySelectorAll("#agent-works-with button[aria-pressed='true']")].map((button) => ({
     id: button.dataset.peer,
     collaboration: (state.peerNotes[button.dataset.peer] || "").trim(),
   }));
+  const mcps = selectedUses("mcp");
+  const tools = selectedUses("tool");
   const name = document.querySelector("#agent-name").value.trim();
   try {
     const data = await api("/api/agents/" + encodeURIComponent(state.editingAgentId), {
@@ -3660,6 +5460,8 @@ async function saveAgent() {
         model: document.querySelector("#agent-model").value,
         repos,
         worksWith,
+        mcps,
+        tools,
         prompt: document.querySelector("#agent-prompt").value,
       }),
     });
@@ -3678,6 +5480,18 @@ async function saveAgent() {
 }
 
 document.body.addEventListener("click", (event) => {
+  const reveal = event.target.closest("[data-secret-toggle]");
+  if (reveal) {
+    event.preventDefault();
+    const input = document.getElementById(reveal.dataset.secretToggle);
+    if (!input) return;
+    const show = input.type === "password";
+    input.type = show ? "text" : "password";
+    reveal.setAttribute("aria-pressed", show ? "true" : "false");
+    reveal.setAttribute("aria-label", show ? "Hide API token" : "Show API token");
+    reveal.replaceChildren(eyeIcon(show));
+    return;
+  }
   const indexLink = event.target.closest(".index-tool-link");
   if (indexLink) {
     event.preventDefault();
@@ -3699,6 +5513,16 @@ document.body.addEventListener("click", (event) => {
     openAgentPrompt(promptButton.dataset.prompt).catch((error) => banner(error.message, true));
     return;
   }
+  const guardrailView = event.target.closest("[data-guardrail-view]");
+  if (guardrailView) {
+    openGuardrail();
+    return;
+  }
+  const flowAboutButton = event.target.closest("[data-flow-about]");
+  if (flowAboutButton) {
+    openFlowAbout(flowAboutButton.dataset.flowAbout, flowAboutButton.dataset.flowId);
+    return;
+  }
   const run = event.target.closest("[data-run]");
   if (run) {
     openLaunch(run.dataset.run);
@@ -3712,6 +5536,30 @@ document.body.addEventListener("click", (event) => {
   const featurePrompt = event.target.closest("[data-feature-prompt]");
   if (featurePrompt) {
     openFeaturePrompt(featurePrompt.dataset.featurePrompt).catch((error) => featureError(error.message));
+    return;
+  }
+  const toolToggle = event.target.closest("[data-tool-toggle]");
+  if (toolToggle) {
+    const on = toolToggle.getAttribute("aria-pressed") !== "true";
+    toolToggle.setAttribute("aria-pressed", on ? "true" : "false");
+    syncSave();
+    return;
+  }
+  const guardrailsToggle = event.target.closest("[data-guardrails-toggle]");
+  if (guardrailsToggle) {
+    const on = guardrailsToggle.getAttribute("aria-pressed") !== "true";
+    guardrailsToggle.setAttribute("aria-pressed", on ? "true" : "false");
+    syncSave();
+    return;
+  }
+  const mcpToggle = event.target.closest("[data-mcp-toggle]");
+  if (mcpToggle) {
+    const on = mcpToggle.getAttribute("aria-pressed") !== "true";
+    mcpToggle.setAttribute("aria-pressed", on ? "true" : "false");
+    const cardNote = document.querySelector("#settings-fields .mcp-card > .field-error");
+    if (cardNote) cardNote.hidden = true;
+    syncMCP();
+    syncSave();
     return;
   }
   const featureAgent = event.target.closest("[data-feature-agent]");
@@ -3737,6 +5585,14 @@ document.body.addEventListener("click", (event) => {
     if (repoTag.closest("#agent-repos")) renderRepoNotes();
     return;
   }
+  const useTag = event.target.closest("#agent-mcps button, #agent-tools button, #agent-tools .agent-tool");
+  if (useTag) {
+    const button = useTag.matches("button") ? useTag : useTag.querySelector("button");
+    if (!button) return;
+    button.setAttribute("aria-pressed", button.getAttribute("aria-pressed") === "true" ? "false" : "true");
+    renderUseNotes(button.closest("#agent-mcps") ? "mcp" : "tool");
+    return;
+  }
   const generate = event.target.closest("[data-generate]");
   if (generate) {
     prepareGenerate(generate);
@@ -3756,6 +5612,19 @@ document.body.addEventListener("click", (event) => {
     if (on) state.repoNotes[area.dataset.repo] = area.value;
     showMarkdownPreview(area, preview, on);
     repoToggle.setAttribute("aria-pressed", on ? "true" : "false");
+    return;
+  }
+  const useToggle = event.target.closest("[data-use-preview]");
+  if (useToggle) {
+    const kind = useToggle.dataset.usePreview;
+    const spec = useSections[kind];
+    const block = useToggle.closest(".field");
+    const area = block.querySelector("textarea");
+    const preview = block.querySelector(".repo-preview");
+    const on = useToggle.getAttribute("aria-pressed") !== "true";
+    if (on) state[spec.state][area.dataset.use] = area.value;
+    showMarkdownPreview(area, preview, on);
+    useToggle.setAttribute("aria-pressed", on ? "true" : "false");
     return;
   }
   const collabToggle = event.target.closest("[data-collab-preview]");
@@ -3779,14 +5648,19 @@ document.body.addEventListener("click", (event) => {
     save();
     return;
   }
-  const refresh = event.target.closest("[data-refresh-index]");
-  if (refresh) {
-    refreshIndex(refresh.dataset.refreshIndex);
+  const refreshRepo = event.target.closest("[data-refresh-repo]");
+  if (refreshRepo) {
+    refreshRepoIndex(refreshRepo.dataset.refreshRepo);
     return;
   }
-  const setup = event.target.closest("[data-setup]");
-  if (setup) {
-    openIndexSetup(setup.dataset.setup);
+  const indexUse = event.target.closest("[data-repo-index-use]");
+  if (indexUse) {
+    toggleRepoIndex(indexUse);
+    return;
+  }
+  const browseFolder = event.target.closest("[data-browse-folder]");
+  if (browseFolder) {
+    browseRepoFolder(browseFolder.dataset.browseFolder);
     return;
   }
   const clear = event.target.closest("[data-clear-index]");
@@ -3796,8 +5670,10 @@ document.body.addEventListener("click", (event) => {
 });
 
 document.body.addEventListener("input", (event) => {
+  if (event.target.closest("#settings-fields")) clearFieldValidation(event.target);
   if (event.target.id === "team-path" || event.target.id === "team-user") syncTeamName();
   if (event.target.id === "workspace-id" || event.target.id === "team-path" || event.target.id === "team-user") syncSave();
+  if (event.target.id && event.target.id.startsWith("mcp-")) syncSave();
   if (event.target.id === "team-path") {
     if (!event.target.value.trim()) cancelTeamStage();
     refreshTeamNameChoices(event.target);
@@ -3805,7 +5681,16 @@ document.body.addEventListener("input", (event) => {
   if (event.target.id === "feature-name") refreshFeatureFolder();
 });
 
+document.body.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" || !event.target.dataset || !event.target.dataset.repoFolder) return;
+  event.preventDefault();
+  applyRepoFolder(event.target.dataset.repoFolder, event.target.value);
+});
+
 document.body.addEventListener("focusout", (event) => {
+  if (event.target.dataset && event.target.dataset.repoFolder && event.target.isConnected) {
+    applyRepoFolder(event.target.dataset.repoFolder, event.target.value);
+  }
   if (event.target.id !== "team-path" || !event.target.isConnected) return;
   const path = event.target.value.trim();
   if (!path) return;
@@ -3814,6 +5699,15 @@ document.body.addEventListener("focusout", (event) => {
 });
 
 document.body.addEventListener("change", (event) => {
+  if (event.target.id === "appearance") {
+    applyTheme(event.target.value);
+    return;
+  }
+  const repoIndexChoice = event.target.closest("[data-repo-index-choice]");
+  if (repoIndexChoice) {
+    requestRepoIndex(repoIndexChoice);
+    return;
+  }
   if (event.target.name === "team-name-mode") {
     syncTeamName();
     syncSave();
@@ -3822,12 +5716,18 @@ document.body.addEventListener("change", (event) => {
     return;
   }
   if (event.target.id === "team-member-name") {
+    clearFieldValidation(event.target);
     syncTeamName();
     syncSave();
     return;
   }
   if (event.target.id === "agent-member") {
     chooseMember(event.target).catch((error) => banner(error.message, true));
+    return;
+  }
+  if (event.target.id === "mcp-jira-own" || event.target.id === "mcp-confluence-own") {
+    syncMCP();
+    syncSave();
     return;
   }
   if (event.target.id === "orchestrator") syncSave();
@@ -4208,10 +6108,35 @@ document.querySelector("#clone-form").addEventListener("submit", (event) => {
   cloneRepo();
 });
 
-document.querySelector("#index-form").addEventListener("submit", (event) => {
+document.querySelector("#repo-index-form").addEventListener("submit", (event) => {
+  const dialog = document.querySelector("#repo-index-dialog");
   if (event.submitter && event.submitter.value === "cancel") return;
   event.preventDefault();
-  confirmIndexSetup();
+  const kind = dialog.dataset.kind;
+  const tool = dialog.dataset.tool;
+  dialog.close("setup");
+  setupRepoIndex(kind, tool);
+});
+
+document.querySelector("#repo-index-dialog").addEventListener("close", () => {
+  const dialog = document.querySelector("#repo-index-dialog");
+  if (dialog.returnValue === "setup") return;
+  revertRepoIndexChoice(dialog.dataset.kind, dialog.dataset.previous || "");
+});
+
+document.querySelector("#repo-index-choose-tool").addEventListener("change", (event) => {
+  const dialog = document.querySelector("#repo-index-choose-dialog");
+  syncRepoIndexChoiceNote(dialog.dataset.kind, event.target.value);
+});
+
+document.querySelector("#repo-index-choose-form").addEventListener("submit", (event) => {
+  const dialog = document.querySelector("#repo-index-choose-dialog");
+  if (event.submitter && event.submitter.value === "cancel") return;
+  event.preventDefault();
+  const kind = dialog.dataset.kind;
+  const tool = document.querySelector("#repo-index-choose-tool").value;
+  dialog.close("use");
+  applyRepoIndexChoice(kind, tool);
 });
 
 document.querySelector("#index-remove-form").addEventListener("submit", (event) => {
@@ -4219,8 +6144,6 @@ document.querySelector("#index-remove-form").addEventListener("submit", (event) 
   event.preventDefault();
   confirmRemoveIndex();
 });
-
-document.querySelector("#index-repo").addEventListener("change", syncIndexChoice);
 
 document.querySelector("#launch-go").addEventListener("click", launch);
 document.querySelector("#prompt-toggle").addEventListener("click", () => {
@@ -4267,6 +6190,9 @@ document.querySelector("#agent-dialog").addEventListener("cancel", (event) => {
   if (document.querySelector("#agent-generate").hidden) return;
   event.preventDefault();
   leaveGenerate();
+});
+document.querySelector("#agent-dialog").addEventListener("input", (event) => {
+  if (event.target.closest(".compose textarea")) placeGenerateButtons();
 });
 document.querySelector("#agent-dialog").addEventListener("close", () => {
   generatePending = null;
@@ -4322,11 +6248,13 @@ document.querySelector("#run-delete").addEventListener("click", () => {
   deleteRun(id).catch((error) => banner(error.message, true));
 });
 
-const promptGenerateIcon = document.querySelector("#agent-prompt")?.closest(".compose")?.querySelector("[data-generate]");
-if (promptGenerateIcon && !promptGenerateIcon.querySelector("svg")) promptGenerateIcon.append(generateIcon());
+paintGenerateIcons();
 
 api("/api/state")
-  .then(render)
+  .then((data) => {
+    render(data);
+    refreshAssignedRepoIndexes();
+  })
   .catch((error) => {
     document.querySelector("#panel-agents").replaceChildren();
     banner(error.message, true);

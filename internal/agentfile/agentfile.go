@@ -34,20 +34,39 @@ type File struct {
 	Model       string
 	Repos       []Repository
 	WorksWith   []Collaborator
+	MCPs        []Use
+	Tools       []Use
 	Prompt      string
 	Path        string
 }
 
 // Repository is one repository this agent uses, and what it does there.
+// Readonly means the agent may read that repository and must not change it.
 type Repository struct {
 	Kind        string
 	Description string
+	Readonly    bool
 }
 
 // Collaborator is one agent this agent works with, and how they coordinate.
 type Collaborator struct {
 	ID            string
 	Collaboration string
+}
+
+// Use is one MCP server or tool this agent uses, and what it does with it.
+// Board and space fields are the Jira board or Confluence space and parent page
+// chosen for that MCP server. Tools leave them empty.
+type Use struct {
+	ID          string
+	Description string
+	BoardID     string
+	BoardName   string
+	SpaceID     string
+	SpaceKey    string
+	SpaceName   string
+	ParentID    string
+	ParentTitle string
 }
 
 // repoList accepts a kind, a list of kinds, or a list of kind and description notes.
@@ -80,6 +99,7 @@ func (r *repoList) UnmarshalYAML(value *yaml.Node) error {
 				ID          string `yaml:"id"`
 				Kind        string `yaml:"kind"`
 				Description string `yaml:"description"`
+				Readonly    bool   `yaml:"readonly"`
 			}
 			if err := item.Decode(&row); err != nil {
 				return err
@@ -91,7 +111,11 @@ func (r *repoList) UnmarshalYAML(value *yaml.Node) error {
 			if kind == "" {
 				continue
 			}
-			out = append(out, Repository{Kind: kind, Description: strings.TrimSpace(row.Description)})
+			out = append(out, Repository{
+				Kind:        kind,
+				Description: strings.TrimSpace(row.Description),
+				Readonly:    row.Readonly,
+			})
 		default:
 			return fmt.Errorf("repos must be a repository kind or a list")
 		}
@@ -106,7 +130,7 @@ func (r repoList) MarshalYAML() (any, error) {
 	}
 	noted := false
 	for _, item := range r {
-		if strings.TrimSpace(item.Description) != "" {
+		if strings.TrimSpace(item.Description) != "" || item.Readonly {
 			noted = true
 			break
 		}
@@ -121,10 +145,11 @@ func (r repoList) MarshalYAML() (any, error) {
 	type row struct {
 		ID          string `yaml:"id"`
 		Description string `yaml:"description,omitempty"`
+		Readonly    bool   `yaml:"readonly,omitempty"`
 	}
 	rows := make([]row, len(r))
 	for i, item := range r {
-		rows[i] = row{ID: item.Kind, Description: strings.TrimSpace(item.Description)}
+		rows[i] = row{ID: item.Kind, Description: strings.TrimSpace(item.Description), Readonly: item.Readonly}
 	}
 	return rows, nil
 }
@@ -144,7 +169,7 @@ func (p *peers) UnmarshalYAML(value *yaml.Node) error {
 		return nil
 	}
 	if value.Kind != yaml.SequenceNode {
-		return fmt.Errorf("teamwork must be an agent id or a list")
+		return fmt.Errorf("Agents Coordination must be an agent id or a list")
 	}
 	out := make(peers, 0, len(value.Content))
 	for _, item := range value.Content {
@@ -174,7 +199,7 @@ func (p *peers) UnmarshalYAML(value *yaml.Node) error {
 			}
 			out = append(out, Collaborator{ID: id, Collaboration: note})
 		default:
-			return fmt.Errorf("teamwork must be an agent id or a list")
+			return fmt.Errorf("Agents Coordination must be an agent id or a list")
 		}
 	}
 	*p = out
@@ -210,6 +235,122 @@ func (p peers) MarshalYAML() (any, error) {
 	return rows, nil
 }
 
+// useList accepts an id, a list of ids, or a list of id and description notes.
+type useList []Use
+
+func (u *useList) UnmarshalYAML(value *yaml.Node) error {
+	if value.Kind == yaml.ScalarNode {
+		id := strings.TrimSpace(value.Value)
+		if id == "" {
+			*u = nil
+			return nil
+		}
+		*u = useList{{ID: id}}
+		return nil
+	}
+	if value.Kind != yaml.SequenceNode {
+		return fmt.Errorf("mcps and tools must be an id or a list")
+	}
+	out := make(useList, 0, len(value.Content))
+	for _, item := range value.Content {
+		switch item.Kind {
+		case yaml.ScalarNode:
+			id := strings.TrimSpace(item.Value)
+			if id == "" {
+				continue
+			}
+			out = append(out, Use{ID: id})
+		case yaml.MappingNode:
+			var row struct {
+				ID          string `yaml:"id"`
+				Description string `yaml:"description"`
+				BoardID     string `yaml:"board_id"`
+				BoardName   string `yaml:"board_name"`
+				SpaceID     string `yaml:"space_id"`
+				SpaceKey    string `yaml:"space_key"`
+				SpaceName   string `yaml:"space_name"`
+				ParentID    string `yaml:"parent_id"`
+				ParentTitle string `yaml:"parent_title"`
+			}
+			if err := item.Decode(&row); err != nil {
+				return err
+			}
+			id := strings.TrimSpace(row.ID)
+			if id == "" {
+				continue
+			}
+			out = append(out, Use{
+				ID:          id,
+				Description: strings.TrimSpace(row.Description),
+				BoardID:     strings.TrimSpace(row.BoardID),
+				BoardName:   strings.TrimSpace(row.BoardName),
+				SpaceID:     strings.TrimSpace(row.SpaceID),
+				SpaceKey:    strings.TrimSpace(row.SpaceKey),
+				SpaceName:   strings.TrimSpace(row.SpaceName),
+				ParentID:    strings.TrimSpace(row.ParentID),
+				ParentTitle: strings.TrimSpace(row.ParentTitle),
+			})
+		default:
+			return fmt.Errorf("mcps and tools must be an id or a list")
+		}
+	}
+	*u = out
+	return nil
+}
+
+func (u useList) MarshalYAML() (any, error) {
+	if len(u) == 0 {
+		return []string{}, nil
+	}
+	noted := false
+	for _, item := range u {
+		if item.detailed() {
+			noted = true
+			break
+		}
+	}
+	if !noted {
+		ids := make([]string, len(u))
+		for i, item := range u {
+			ids[i] = item.ID
+		}
+		return ids, nil
+	}
+	type row struct {
+		ID          string `yaml:"id"`
+		Description string `yaml:"description,omitempty"`
+		BoardID     string `yaml:"board_id,omitempty"`
+		BoardName   string `yaml:"board_name,omitempty"`
+		SpaceID     string `yaml:"space_id,omitempty"`
+		SpaceKey    string `yaml:"space_key,omitempty"`
+		SpaceName   string `yaml:"space_name,omitempty"`
+		ParentID    string `yaml:"parent_id,omitempty"`
+		ParentTitle string `yaml:"parent_title,omitempty"`
+	}
+	rows := make([]row, len(u))
+	for i, item := range u {
+		rows[i] = row{
+			ID:          item.ID,
+			Description: strings.TrimSpace(item.Description),
+			BoardID:     strings.TrimSpace(item.BoardID),
+			BoardName:   strings.TrimSpace(item.BoardName),
+			SpaceID:     strings.TrimSpace(item.SpaceID),
+			SpaceKey:    strings.TrimSpace(item.SpaceKey),
+			SpaceName:   strings.TrimSpace(item.SpaceName),
+			ParentID:    strings.TrimSpace(item.ParentID),
+			ParentTitle: strings.TrimSpace(item.ParentTitle),
+		}
+	}
+	return rows, nil
+}
+
+func (item Use) detailed() bool {
+	return strings.TrimSpace(item.Description) != "" ||
+		strings.TrimSpace(item.BoardID) != "" || strings.TrimSpace(item.BoardName) != "" ||
+		strings.TrimSpace(item.SpaceID) != "" || strings.TrimSpace(item.SpaceName) != "" ||
+		strings.TrimSpace(item.ParentID) != "" || strings.TrimSpace(item.ParentTitle) != ""
+}
+
 type header struct {
 	ID              string   `yaml:"id"`
 	Name            string   `yaml:"name"`
@@ -218,8 +359,11 @@ type header struct {
 	AITool          string   `yaml:"ai_tool"`
 	Model           string   `yaml:"model"`
 	Repos           repoList `yaml:"repos"`
-	WorksWith       peers    `yaml:"teamwork,omitempty"`
+	WorksWith       peers    `yaml:"agents_coordination,omitempty"`
+	LegacyTeamwork  peers    `yaml:"teamwork,omitempty"`
 	LegacyWorksWith peers    `yaml:"works_with,omitempty"`
+	MCPs            useList  `yaml:"mcps,omitempty"`
+	Tools           useList  `yaml:"tools,omitempty"`
 }
 
 var slugPattern = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
@@ -520,6 +664,17 @@ func writeNew(path string, agent agentdef.Agent, tool, model string) error {
 			Description: strings.TrimSpace(repo.Description),
 		})
 	}
+	mcps := make(useList, 0, len(agent.MCPs))
+	for _, item := range agent.MCPs {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		mcps = append(mcps, Use{
+			ID:          id,
+			Description: strings.TrimSpace(item.Description),
+		})
+	}
 	meta := header{
 		ID:          agent.ID,
 		Name:        agent.Title,
@@ -529,6 +684,7 @@ func writeNew(path string, agent agentdef.Agent, tool, model string) error {
 		Model:       model,
 		Repos:       repos,
 		WorksWith:   with,
+		MCPs:        mcps,
 	}
 	return writeFile(path, meta, body)
 }
@@ -548,6 +704,8 @@ func headerOf(file File) header {
 		Model:       file.Model,
 		Repos:       append(repoList(nil), file.Repos...),
 		WorksWith:   append(peers(nil), file.WorksWith...),
+		MCPs:        append(useList(nil), file.MCPs...),
+		Tools:       append(useList(nil), file.Tools...),
 	}
 }
 
@@ -582,6 +740,16 @@ func normalizeFile(file File) (File, error) {
 		with = append(with, Collaborator{ID: id, Collaboration: strings.TrimSpace(peer.Collaboration)})
 	}
 	file.WorksWith = with
+	mcps, err := normalizeUses(file.MCPs, "MCP servers")
+	if err != nil {
+		return File{}, err
+	}
+	file.MCPs = mcps
+	tools, err := normalizeUses(file.Tools, "tools")
+	if err != nil {
+		return File{}, err
+	}
+	file.Tools = tools
 	if !containsTool(file.AITool) {
 		return File{}, fmt.Errorf("choose an AI tool")
 	}
@@ -599,7 +767,11 @@ func normalizeFile(file File) (File, error) {
 			return File{}, fmt.Errorf("repos must use folder-safe names")
 		}
 		seen[kind] = true
-		repos = append(repos, Repository{Kind: kind, Description: strings.TrimSpace(repo.Description)})
+			repos = append(repos, Repository{
+				Kind:        kind,
+				Description: strings.TrimSpace(repo.Description),
+				Readonly:    repo.Readonly,
+			})
 	}
 	if len(repos) == 0 {
 		return File{}, fmt.Errorf("choose at least one repo")
@@ -645,9 +817,41 @@ func readFile(root, path string) (File, error) {
 		Model:       strings.TrimSpace(meta.Model),
 		Repos:       append([]Repository(nil), meta.Repos...),
 		WorksWith:   append([]Collaborator(nil), meta.WorksWith...),
+		MCPs:        append([]Use(nil), meta.MCPs...),
+		Tools:       append([]Use(nil), meta.Tools...),
 		Prompt:      body,
 		Path:        path,
 	}, nil
+}
+
+func normalizeUses(list []Use, label string) ([]Use, error) {
+	out := make([]Use, 0, len(list))
+	seen := map[string]bool{}
+	for _, item := range list {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || seen[id] {
+			continue
+		}
+		if !slugPattern.MatchString(id) {
+			return nil, fmt.Errorf("%s must use ids that start with a letter and use only letters, digits, and underscores", label)
+		}
+		seen[id] = true
+		out = append(out, Use{
+			ID:          id,
+			Description: strings.TrimSpace(item.Description),
+			BoardID:     strings.TrimSpace(item.BoardID),
+			BoardName:   strings.TrimSpace(item.BoardName),
+			SpaceID:     strings.TrimSpace(item.SpaceID),
+			SpaceKey:    strings.TrimSpace(item.SpaceKey),
+			SpaceName:   strings.TrimSpace(item.SpaceName),
+			ParentID:    strings.TrimSpace(item.ParentID),
+			ParentTitle: strings.TrimSpace(item.ParentTitle),
+		})
+	}
+	if len(out) == 0 {
+		return nil, nil
+	}
+	return out, nil
 }
 
 func categoryFiles(dir string) ([]string, error) {
@@ -780,8 +984,12 @@ func parse(text string) (header, string, error) {
 		return header{}, "", err
 	}
 	if len(meta.WorksWith) == 0 {
+		meta.WorksWith = meta.LegacyTeamwork
+	}
+	if len(meta.WorksWith) == 0 {
 		meta.WorksWith = meta.LegacyWorksWith
 	}
+	meta.LegacyTeamwork = nil
 	meta.LegacyWorksWith = nil
 	return meta, body, nil
 }

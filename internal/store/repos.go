@@ -73,6 +73,54 @@ func (s *Store) SaveRepoIndex(snap console.Snapshot, kind, index string) error {
 	return writeRepoFiles(s.path, reposForFiles(snap))
 }
 
+// SaveRepoFolder points one repository at an existing directory.
+// The other repositories keep the folder already saved for them.
+func (s *Store) SaveRepoFolder(snap console.Snapshot, kind, folder string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !toolchain.RepoID(kind) {
+		return fmt.Errorf("unknown repository")
+	}
+	folder = filepath.Clean(strings.TrimSpace(folder))
+	if !filepath.IsAbs(folder) {
+		return fmt.Errorf("folder must be an absolute path")
+	}
+	info, err := os.Stat(folder)
+	if err != nil || !info.IsDir() {
+		return fmt.Errorf("folder %s does not exist", folder)
+	}
+	found := false
+	for i := range snap.Repos {
+		if snap.Repos[i].Kind != kind {
+			continue
+		}
+		snap.Repos[i].Folder = folder
+		found = true
+	}
+	if !found {
+		return fmt.Errorf("unknown repository")
+	}
+	if err := writeRepoFiles(s.path, reposForFiles(snap)); err != nil {
+		return err
+	}
+	doc, err := s.read()
+	if err != nil {
+		return err
+	}
+	updated := false
+	for i := range doc.Repos {
+		if doc.Repos[i].Kind != kind {
+			continue
+		}
+		doc.Repos[i].Folder = folder
+		updated = true
+	}
+	if !updated {
+		doc.Repos = append(doc.Repos, repoDoc{Kind: kind, Folder: folder, Services: []string{}})
+	}
+	return s.write(doc)
+}
+
 // SaveRepoSparse records the sparse-checkout folder on one repository file.
 // An empty path clears it. The other repositories keep the path already on them.
 func (s *Store) SaveRepoSparse(snap console.Snapshot, kind, sparse string) error {
@@ -197,6 +245,9 @@ func mergeRepoFiles(setupPath string, snap console.Snapshot) (console.Snapshot, 
 			continue
 		}
 		snap.Repos[i].Index = file.Index
+		if folder := strings.TrimSpace(file.Folder); folder != "" && filepath.IsAbs(folder) {
+			snap.Repos[i].Folder = filepath.Clean(folder)
+		}
 		if sparse, err := console.SparsePath(file.Sparse); err == nil {
 			snap.Repos[i].Sparse = sparse
 		}

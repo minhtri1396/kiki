@@ -4,9 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>KIKI</title>
+  <script>
+    try {
+      const theme = localStorage.getItem("kiki-theme");
+      if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
+    } catch (error) {}
+  </script>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
+  <div class="app-chrome">
   <header class="top">
     <div class="title-row">
         <h1>KIKI</h1>
@@ -23,10 +30,10 @@
     <nav class="tabs" aria-label="Sections">
       <button type="button" data-tab="agents" aria-selected="true">Agents</button>
       <button type="button" data-tab="repos" aria-selected="false" disabled>Repositories</button>
-      <button type="button" data-tab="indexes" aria-selected="false" disabled>Indexes</button>
       <button type="button" data-tab="workflow" aria-selected="false" disabled>Topology</button>
     </nav>
     <button type="button" id="start-feature" class="primary" disabled>Start Feature</button>
+  </div>
   </div>
   <div id="banners" class="banner-stack"></div>
   <main>
@@ -37,7 +44,6 @@
       </p>
     </section>
     <section id="panel-repos" hidden></section>
-    <section id="panel-indexes" hidden></section>
     <section id="panel-workflow" hidden></section>
   </main>
   <dialog id="launch-dialog">
@@ -95,21 +101,35 @@
       </div>
     </form>
   </dialog>
-  <dialog id="index-dialog">
-    <form method="dialog" id="index-form">
+  <dialog id="repo-index-dialog">
+    <form method="dialog" id="repo-index-form">
       <div class="dialog-body">
-        <h2 id="index-title">Set up index</h2>
-        <p class="hint">Choose the repository to set up. KIKI saves the choice in .kiki/repos for that repository and uses it in the launch prompt. Setting a new index replaces the one already saved for that repository.</p>
-        <label class="field">
-          <span>Repository</span>
-          <select id="index-repo"></select>
-        </label>
-        <p id="index-repo-path" class="hint"></p>
+        <h2 id="repo-index-dialog-title">Set up index</h2>
+        <p id="repo-index-dialog-text" class="hint"></p>
       </div>
-      <p id="index-error" class="result error" hidden></p>
       <div class="actions">
         <button type="submit" value="cancel">Cancel</button>
-        <button type="submit" id="index-go" class="primary" value="setup">Set up</button>
+        <button type="submit" id="repo-index-go" class="primary" value="setup">Set up</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="repo-index-choose-dialog">
+    <form method="dialog" id="repo-index-choose-form">
+      <div class="dialog-body">
+        <h2 id="repo-index-choose-title">Use an index</h2>
+        <p id="repo-index-choose-text" class="hint"></p>
+        <label class="field">
+          <span>Index tool</span>
+          <select id="repo-index-choose-tool">
+            <option value="obsidian">Obsidian</option>
+            <option value="codegraph">CodeGraph</option>
+          </select>
+        </label>
+        <p id="repo-index-choose-note" class="hint"></p>
+      </div>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" class="primary" value="use">Use</button>
       </div>
     </form>
   </dialog>
@@ -193,7 +213,6 @@
   <dialog id="team-share-dialog">
     <div id="team-share-bar" class="reader-bar">
       <h2>Team Sharing</h2>
-      <button type="button" id="team-share-close">Close</button>
     </div>
     <div id="team-share-diff-bar" class="reader-bar generate-bar" hidden>
       <button type="button" id="team-share-back" class="icon-button" aria-label="Back">
@@ -206,6 +225,9 @@
     <div id="team-share-body" class="dialog-body"></div>
     <div id="team-share-diff" class="dialog-body" hidden>
       <div id="team-share-diff-grid" class="compare-grid"></div>
+    </div>
+    <div class="actions">
+      <button type="button" id="team-share-close">Close</button>
     </div>
   </dialog>
   <dialog id="team-member-dialog">
@@ -259,6 +281,16 @@
         </label>
         <div class="agent-grid">
           <label class="field">
+            <span>AI Tool</span>
+            <select id="agent-tool"></select>
+          </label>
+          <label class="field">
+            <span>Model</span>
+            <select id="agent-model"></select>
+          </label>
+        </div>
+        <div class="agent-grid">
+          <label class="field">
             <span>Name</span>
             <input id="agent-name" type="text" autocomplete="off">
           </label>
@@ -271,16 +303,6 @@
           <span>Description</span>
           <textarea id="agent-description" rows="4"></textarea>
         </label>
-        <div class="agent-grid">
-          <label class="field">
-            <span>AI Tool</span>
-            <select id="agent-tool"></select>
-          </label>
-          <label class="field">
-            <span>Model</span>
-            <select id="agent-model"></select>
-          </label>
-        </div>
         <div class="field">
           <div class="prompt-bar">
             <span>Prompt</span>
@@ -292,21 +314,54 @@
             </span>
           </div>
           <div class="compose">
-            <textarea id="agent-prompt" rows="16" spellcheck="false"></textarea>
-            <button type="button" class="icon-button field-generate" data-generate="prompt" aria-label="Generate"></button>
+            <textarea id="agent-prompt" rows="24" spellcheck="false"></textarea>
+            <button type="button" class="field-generate" data-generate="prompt" aria-label="Rewrite by AI">Rewrite by AI</button>
           </div>
           <div id="agent-prompt-preview" class="markdown" hidden></div>
         </div>
-        <div class="field section-gap">
-          <span>Repositories</span>
+        <section class="agent-scope" data-scope="repos" aria-labelledby="agent-repos-title">
+          <div class="agent-scope-head">
+            <div class="agent-scope-copy">
+              <h3 id="agent-repos-title">Repositories</h3>
+              <p>Folders this agent can open. Turn a folder on, then write what the agent does there. Readonly keeps that folder read-only for this agent.</p>
+            </div>
+            <span class="agent-scope-count" id="agent-repo-count" data-empty="true" aria-live="polite">None selected</span>
+          </div>
           <div id="agent-repos" class="service-tags"></div>
           <div id="agent-repo-notes" class="repo-notes"></div>
-        </div>
-        <div class="field section-gap">
-          <span>Teamwork</span>
+        </section>
+        <section class="agent-scope" data-scope="agents" aria-labelledby="agent-peers-title">
+          <div class="agent-scope-head">
+            <div class="agent-scope-copy">
+              <h3 id="agent-peers-title">Agents Coordination</h3>
+              <p>Other agents this one works with. Turn an agent on, then write how they coordinate.</p>
+            </div>
+            <span class="agent-scope-count" id="agent-peer-count" data-empty="true" aria-live="polite">None selected</span>
+          </div>
           <div id="agent-works-with" class="peer-groups"></div>
           <div id="agent-collaborations" class="collaborations"></div>
-        </div>
+        </section>
+        <section class="agent-scope" data-scope="mcp" aria-labelledby="agent-mcps-title">
+          <div class="agent-scope-head">
+            <div class="agent-scope-copy">
+              <h3 id="agent-mcps-title">MCP Servers</h3>
+              <p>Servers this agent can call. Turn a server on, then write how the agent uses it.</p>
+            </div>
+            <span class="agent-scope-count" id="agent-mcp-count" data-empty="true" aria-live="polite">None selected</span>
+          </div>
+          <div id="agent-mcps" class="service-tags"></div>
+          <div id="agent-mcp-notes" class="repo-notes"></div>
+        </section>
+        <section class="agent-scope" data-scope="tools" aria-labelledby="agent-tools-title">
+          <div class="agent-scope-head">
+            <div class="agent-scope-copy">
+              <h3 id="agent-tools-title">Tools</h3>
+              <p>Tools this agent can run. KIKI writes what each tool does into the launch prompt.</p>
+            </div>
+            <span class="agent-scope-count" id="agent-tool-count" data-empty="true" aria-live="polite">None selected</span>
+          </div>
+          <div id="agent-tools" class="service-tags"></div>
+        </section>
       </div>
       <p id="agent-error" class="result error" hidden></p>
       <div class="actions">
@@ -327,7 +382,10 @@
             <path d="M14.5 5.5 8 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
           </svg>
         </button>
-        <h2 id="generate-dialog-title">Generate</h2>
+        <div class="generate-heading">
+          <h2 id="generate-dialog-title">Rewrite by AI</h2>
+          <p id="generate-dialog-agent" class="generate-agent"></p>
+        </div>
       </div>
       <div class="dialog-body generate-layout">
         <section class="generate-output">

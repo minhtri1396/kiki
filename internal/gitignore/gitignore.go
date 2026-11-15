@@ -25,6 +25,12 @@ func AppEntries(root, agentDir, setupPath, logPath string) []Entry {
 	entries := []Entry{
 		{Path: setupPath},
 		{Path: setupPath + ".tmp"},
+		{Path: filepath.Join(filepath.Dir(setupPath), "mcp.yaml")},
+		{Path: filepath.Join(filepath.Dir(setupPath), "mcp.yaml.tmp")},
+		{Path: filepath.Join(filepath.Dir(setupPath), "tools.yaml")},
+		{Path: filepath.Join(filepath.Dir(setupPath), "tools.yaml.tmp")},
+		{Path: filepath.Join(filepath.Dir(setupPath), "atlassian.yaml")},
+		{Path: filepath.Join(filepath.Dir(setupPath), "atlassian.yaml.tmp")},
 		{Path: logPath},
 		{Path: logPath + "-shm"},
 		{Path: logPath + "-wal"},

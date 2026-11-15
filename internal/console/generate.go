@@ -50,8 +50,18 @@ func RewritePrompt(kind, subject, text string) (string, error) {
 			return "", InputError{Message: "Choose an agent first."}
 		}
 		what = "This says how the agent communicates and coordinates with " + subject + "."
+	case "mcp":
+		if subject == "" {
+			return "", InputError{Message: "Choose an MCP server first."}
+		}
+		what = "This says what the agent does with the " + subject + " MCP server."
+	case "tool":
+		if subject == "" {
+			return "", InputError{Message: "Choose a tool first."}
+		}
+		what = "This says what the agent does with the " + subject + " tool."
 	default:
-		return "", InputError{Message: "Choose a prompt, repository note, or teamwork note."}
+		return "", InputError{Message: "Choose a prompt, repository note, Agents Coordination note, MCP note, or tool note."}
 	}
 	return what + "\n\nRewrite the text below in English. Another AI model will read it and must do exactly what it describes, so make the text concise, complete, and clear. Keep the same meaning, names, ids, and paths. Return only the rewritten text.\n\n" + text, nil
 }

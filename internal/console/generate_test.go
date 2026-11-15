@@ -23,6 +23,14 @@ func TestRewritePromptKinds(t *testing.T) {
 	if err != nil || !strings.Contains(note, "requirement_designer") {
 		t.Fatalf("note = %q err = %v", note, err)
 	}
+	mcp, err := RewritePrompt("mcp", "Atlassian - Jira", "Read the ticket.")
+	if err != nil || !strings.Contains(mcp, "Atlassian - Jira MCP server") {
+		t.Fatalf("mcp = %q err = %v", mcp, err)
+	}
+	tool, err := RewritePrompt("tool", "github", "Open the pull request.")
+	if err != nil || !strings.Contains(tool, "github tool") {
+		t.Fatalf("tool = %q err = %v", tool, err)
+	}
 	if _, err := RewritePrompt("prompt", "", "   "); err == nil {
 		t.Fatal("empty text was accepted")
 	}

@@ -56,6 +56,12 @@ func TestEnsureAddsOnlyMissingAppFiles(t *testing.T) {
 	}
 	want := existing + "\n" + headerComment + `
 /kiki.yaml.tmp
+/mcp.yaml
+/mcp.yaml.tmp
+/tools.yaml
+/tools.yaml.tmp
+/atlassian.yaml
+/atlassian.yaml.tmp
 /kiki.db
 /kiki.db-shm
 /kiki.db-wal

@@ -86,7 +86,6 @@ type Snapshot struct {
 	Worktree      string
 	WorkspaceID   string
 	Orchestrator  string
-	OrcaAgent     string
 	AgentPath     string
 	GenerateTool  string
 	GenerateModel string
@@ -110,9 +109,6 @@ func Validate(snap Snapshot) error {
 	}
 	if !KnownOrchestrator(snap.Orchestrator) {
 		return fmt.Errorf("Agent Orchestration tool is not supported")
-	}
-	if !contains(OrcaAgents, snap.OrcaAgent) {
-		return fmt.Errorf("Default AI Tool is not supported")
 	}
 	if snap.GenerateTool != "" && !contains(OrcaAgents, snap.GenerateTool) {
 		return fmt.Errorf("Generate AI Tool is not supported")
@@ -207,8 +203,9 @@ func validateFolder(raw string) error {
 	return nil
 }
 
-// ApplyRoot pins every repository to a directory under the app root and creates
-// any of those directories that are missing. Saved service names are kept.
+// ApplyRoot gives every repository a folder and creates any folder that is missing.
+// A saved absolute path stays. An empty path uses the directory under the app root.
+// Saved service names are kept.
 func ApplyRoot(root string, snap Snapshot) (Snapshot, error) {
 	root = strings.TrimSpace(root)
 	if root == "" || !filepath.IsAbs(root) {
@@ -224,7 +221,7 @@ func ApplyRoot(root string, snap Snapshot) (Snapshot, error) {
 	for _, kind := range toolchain.Kinds {
 		repo := byKind[kind]
 		repo.Kind = kind
-		repo.Folder = toolchain.Folder(root, kind)
+		repo.Folder = repoFolder(root, kind, repo.Folder)
 		if kind == "document" {
 			repo.Services = nil
 		}
@@ -244,13 +241,24 @@ func ApplyRoot(root string, snap Snapshot) (Snapshot, error) {
 	for _, kind := range extras {
 		repo := byKind[kind]
 		repo.Kind = kind
-		repo.Folder = filepath.Join(root, kind)
+		repo.Folder = repoFolder(root, kind, repo.Folder)
 		if err := os.MkdirAll(repo.Folder, 0o755); err != nil {
 			return Snapshot{}, err
 		}
 		snap.Repos = append(snap.Repos, repo)
 	}
 	return snap, nil
+}
+
+func repoFolder(root, kind, saved string) string {
+	saved = strings.TrimSpace(saved)
+	if saved != "" && filepath.IsAbs(saved) {
+		return filepath.Clean(saved)
+	}
+	if toolchain.Known(kind) {
+		return toolchain.Folder(root, kind)
+	}
+	return filepath.Join(root, kind)
 }
 
 // Fill cleans the saved folder paths.
@@ -364,7 +372,7 @@ func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string, peers
 	fmt.Fprintf(&b, "Setup file: %s\n", snap.SetupFile)
 	fmt.Fprintf(&b, "Workspace id: %s\n", snap.WorkspaceID)
 	b.WriteString("\nThe setup file is .kiki/kiki.yaml next to the app. The app folder is the repository root. Its absolute path is the Setup file line above. Read that file in Step 0. It is the only setup file. Do not read .kiki/agents/config.local.yaml. The workspace id is workspace_id in that file. Do not invent values that are missing, and do not assume the workspace id is kiki. Folder paths and service names below are the saved setup.\n\n")
-	fmt.Fprintf(&b, "You were started in the %s worktree. That folder is the repository for this launch. Run git, gh, and project commands in the repository folder from the setup file. Do not create, edit, commit, or run project commands in a repository that is not listed. A repository with no folder is not set up.\n\n", OrchestratorLabel(snap.Orchestrator))
+	fmt.Fprintf(&b, "You were started in the %s worktree. That folder is the repository for this launch. Run git and project commands in the repository folder from the setup file. Do not create, edit, commit, or run project commands in a repository that is not listed. A repository with no folder is not set up.\n\n", OrchestratorLabel(snap.Orchestrator))
 	b.WriteString("Service names are the Nx project names in a code repository. Use them when you choose a project and its AGENTS.md. The document repository has a folder and no service names.\n\n")
 	b.WriteString("Repositories for this agent:\n")
 	for _, item := range agent.Repos {
@@ -381,7 +389,13 @@ func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string, peers
 		}
 		if repo.Sparse != "" {
 			fmt.Fprintf(&b, "  checkout: %s\n", repo.Sparse)
-			fmt.Fprintf(&b, "  This repository is a sparse checkout of %s. The working tree contains that folder and files at the repository root. Other folders are not checked out. Do not disable sparse checkout or add another path. Read and change files only inside %s. Run git commit, git push, and git pull in the repository folder. Pull updates this checkout. A commit keeps every other path on the remote as it already is.\n", repo.Sparse, repo.Sparse)
+			if item.Readonly {
+				fmt.Fprintf(&b, "  This repository is a sparse checkout of %s. The working tree contains that folder and files at the repository root. Other folders are not checked out. Do not disable sparse checkout or add another path. This repository is readonly for this agent. Read files only inside %s. Do not create, edit, delete, rename, commit, or push.\n", repo.Sparse, repo.Sparse)
+			} else {
+				fmt.Fprintf(&b, "  This repository is a sparse checkout of %s. The working tree contains that folder and files at the repository root. Other folders are not checked out. Do not disable sparse checkout or add another path. Read and change files only inside %s. Run git commit, git push, and git pull in the repository folder. Pull updates this checkout. A commit keeps every other path on the remote as it already is.\n", repo.Sparse, repo.Sparse)
+			}
+		} else if item.Readonly {
+			b.WriteString("  Readonly: this agent can only read this repository. Do not create, edit, delete, rename, commit, or push.\n")
 		}
 		if kind != "document" {
 			if len(repo.Services) == 0 {
@@ -402,6 +416,8 @@ func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string, peers
 	b.WriteString("\n")
 	writeIndexes(&b, agent.Repos, snap)
 	writePeers(&b, agent.ID, peers)
+	writeUses(&b, "MCP servers for this agent:", "Use this MCP server:", agent.MCPs)
+	writeUses(&b, "Tools for this agent:", "", agent.Tools)
 	note = strings.TrimSpace(note)
 	if note == "" {
 		b.WriteString("The user did not send a ticket, a requirement folder, or any other instruction. Follow the Startup behavior in the agent document and wait.\n\n")
@@ -442,7 +458,7 @@ func writePeers(b *strings.Builder, self string, peers []Peer) {
 		b.WriteString("\n")
 		return
 	}
-	b.WriteString("Teamwork with these agents. When you communicate or hand work to one of them, use that agent id.\n")
+	b.WriteString("Agents Coordination with these agents. When you communicate or hand work to one of them, use that agent id.\n")
 	for _, peer := range list {
 		fmt.Fprintf(b, "- agent id: %s\n", peer.ID)
 		if peer.Note == "" {
@@ -450,6 +466,77 @@ func writePeers(b *strings.Builder, self string, peers []Peer) {
 		}
 		b.WriteString("  Coordination:\n")
 		for _, line := range strings.Split(peer.Note, "\n") {
+			fmt.Fprintf(b, "  %s\n", line)
+		}
+	}
+	b.WriteString("\n")
+}
+
+func writePlace(b *strings.Builder, item agentdef.Use) {
+	if line := placeLine(item.BoardName, item.BoardID); line != "" {
+		fmt.Fprintf(b, "  Board: %s\n", line)
+	}
+	if line := placeLine(item.SpaceName, item.SpaceKey); line != "" {
+		fmt.Fprintf(b, "  Space: %s\n", line)
+	} else if line := placeLine("", item.SpaceID); line != "" {
+		fmt.Fprintf(b, "  Space: %s\n", line)
+	}
+	if line := placeLine(item.ParentTitle, item.ParentID); line != "" {
+		fmt.Fprintf(b, "  Parent page: %s\n", line)
+	}
+}
+
+func placeLine(name, id string) string {
+	name = strings.TrimSpace(name)
+	id = strings.TrimSpace(id)
+	if name == "" {
+		return id
+	}
+	if id == "" || id == name {
+		return name
+	}
+	return name + " (" + id + ")"
+}
+
+func writeUses(b *strings.Builder, heading, label string, items []agentdef.Use) {
+	list := make([]agentdef.Use, 0, len(items))
+	for _, item := range items {
+		id := strings.TrimSpace(item.ID)
+		if id == "" {
+			continue
+		}
+		list = append(list, agentdef.Use{
+			ID:          id,
+			Name:        strings.TrimSpace(item.Name),
+			Description: strings.TrimSpace(item.Description),
+			BoardID:     strings.TrimSpace(item.BoardID),
+			BoardName:   strings.TrimSpace(item.BoardName),
+			SpaceID:     strings.TrimSpace(item.SpaceID),
+			SpaceKey:    strings.TrimSpace(item.SpaceKey),
+			SpaceName:   strings.TrimSpace(item.SpaceName),
+			ParentID:    strings.TrimSpace(item.ParentID),
+			ParentTitle: strings.TrimSpace(item.ParentTitle),
+		})
+	}
+	if len(list) == 0 {
+		return
+	}
+	b.WriteString(heading)
+	b.WriteByte('\n')
+	for _, item := range list {
+		name := item.Name
+		if name == "" {
+			name = item.ID
+		}
+		fmt.Fprintf(b, "- %s\n", name)
+		writePlace(b, item)
+		if item.Description == "" {
+			continue
+		}
+		if label != "" {
+			fmt.Fprintf(b, "  %s\n", label)
+		}
+		for _, line := range strings.Split(item.Description, "\n") {
 			fmt.Fprintf(b, "  %s\n", line)
 		}
 	}

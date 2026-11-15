@@ -25,6 +25,28 @@ static void kikiPrepareWindow(void *window) {
 	[appMenu addItem:quit];
 	[appItem setSubmenu:appMenu];
 
+	// Standard Edit items route ⌘X/⌘C/⌘V/⌘A (and undo) to the first responder
+	// so WebKit inputs inside the webview get copy, paste, cut, and select all.
+	NSMenuItem *editItem = [[NSMenuItem alloc] init];
+	[menubar addItem:editItem];
+	NSMenu *editMenu = [[NSMenu alloc] initWithTitle:@"Edit"];
+	NSMenuItem *undo = [[NSMenuItem alloc] initWithTitle:@"Undo" action:@selector(undo:) keyEquivalent:@"z"];
+	NSMenuItem *redo = [[NSMenuItem alloc] initWithTitle:@"Redo" action:@selector(redo:) keyEquivalent:@"Z"];
+	[redo setKeyEquivalentModifierMask:NSEventModifierFlagShift | NSEventModifierFlagCommand];
+	[editMenu addItem:undo];
+	[editMenu addItem:redo];
+	[editMenu addItem:[NSMenuItem separatorItem]];
+	NSMenuItem *cut = [[NSMenuItem alloc] initWithTitle:@"Cut" action:@selector(cut:) keyEquivalent:@"x"];
+	NSMenuItem *copy = [[NSMenuItem alloc] initWithTitle:@"Copy" action:@selector(copy:) keyEquivalent:@"c"];
+	NSMenuItem *paste = [[NSMenuItem alloc] initWithTitle:@"Paste" action:@selector(paste:) keyEquivalent:@"v"];
+	[editMenu addItem:cut];
+	[editMenu addItem:copy];
+	[editMenu addItem:paste];
+	[editMenu addItem:[NSMenuItem separatorItem]];
+	NSMenuItem *selectAll = [[NSMenuItem alloc] initWithTitle:@"Select All" action:@selector(selectAll:) keyEquivalent:@"a"];
+	[editMenu addItem:selectAll];
+	[editItem setSubmenu:editMenu];
+
 	NSMenuItem *windowItem = [[NSMenuItem alloc] init];
 	[menubar addItem:windowItem];
 	NSMenu *windowMenu = [[NSMenu alloc] initWithTitle:@"Window"];

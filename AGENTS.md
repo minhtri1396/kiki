@@ -37,6 +37,16 @@ codegraph sync .
 
 Commit `.codegraph/.gitignore` only. Leave the database, sockets, and logs untracked.
 
+## AI tools
+
+Cursor, Claude, Codex, and Gemini are the AI tools an agent can run. Adding another tool means doing all of the following in code before that agent can start. Do not enforce any of it by telling the model in the launch prompt.
+
+1. MCP. Write every MCP that agent selected into that AI tool's own MCP settings when the key is missing. The key is `mcp-<mcp name>-<workspace id>`, for example `mcp-atlassian-kiki`. One Atlassian server covers Jira and Confluence. If a selected MCP is not set up in Settings, do not start the agent.
+2. Tools. Every tool that agent selected must be turned on in Settings for that AI tool. If it is not, do not start the agent.
+3. Guardrails. Install command hooks on that AI tool for both sides of a turn: before the prompt is sent to the model, and after the model output, including before a tool, MCP, shell, file, or other agent runs. The hook calls this app. Allow or deny is Go code in `internal/guard`, using the MCP servers, tools, repositories, and agents saved for that agent. When this app is not running, the hook allows the action. When this app is running, it blocks an action the agent was not given. Do not use a prompt hook for this check.
+
+A new AI tool is not done until its MCP install, tool check, and both hook sides are implemented and covered by a test.
+
 ## Layout
 
 Go module `kiki`. `main.go` starts the desktop app. `internal/server` is the HTTP API and the web UI in `internal/server/web`. `internal/console` builds launch prompts. `internal/store` is SQLite. `internal/jobs` runs index setup. `internal/agents` holds the embedded role files. Name those packages in the query instead of walking the tree.
