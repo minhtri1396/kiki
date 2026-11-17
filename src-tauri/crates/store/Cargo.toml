@@ -1,0 +1,22 @@
+[package]
+name = "kiki-store"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_yaml.workspace = true
+rusqlite.workspace = true
+rand.workspace = true
+kiki-util = { path = "../util" }
+kiki-yaml = { path = "../yaml" }
+kiki-console = { path = "../console" }
+kiki-mcp = { path = "../mcp" }
+kiki-toolchain = { path = "../toolchain" }
+kiki-tools = { path = "../tools" }
+
+[dev-dependencies]
+tempfile.workspace = true

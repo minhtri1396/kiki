@@ -1,0 +1,17 @@
+[package]
+name = "kiki-jobs"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+kiki-util = { path = "../util" }
+kiki-gitignore = { path = "../gitignore" }
+kiki-toolchain = { path = "../toolchain" }
+
+[dev-dependencies]
+tempfile.workspace = true

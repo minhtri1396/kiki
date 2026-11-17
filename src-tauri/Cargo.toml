@@ -1,0 +1,82 @@
+[workspace]
+members = [".", "crates/aitool", "crates/yaml", "crates/util", "crates/agents", "crates/guard", "crates/mcp", "crates/orca", "crates/teamfolder", "crates/toolchain", "crates/tools", "crates/agentdef", "crates/console", "crates/gitignore", "crates/jobs", "crates/store", "crates/agentfile", "crates/server"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.100.0"
+
+[workspace.dependencies]
+anyhow = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+rusqlite = { version = "0.32", features = ["bundled"] }
+tiny_http = "0.12"
+ureq = { version = "2", features = ["json"] }
+regex = "1"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+url = "2"
+include_dir = "0.7"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+tempfile = "3"
+kiki-aitool = { path = "crates/aitool" }
+kiki-yaml = { path = "crates/yaml" }
+kiki-util = { path = "crates/util" }
+kiki-agents = { path = "crates/agents" }
+kiki-guard = { path = "crates/guard" }
+kiki-mcp = { path = "crates/mcp" }
+kiki-orca = { path = "crates/orca" }
+kiki-teamfolder = { path = "crates/teamfolder" }
+kiki-toolchain = { path = "crates/toolchain" }
+kiki-tools = { path = "crates/tools" }
+kiki-agentdef = { path = "crates/agentdef" }
+kiki-console = { path = "crates/console" }
+kiki-gitignore = { path = "crates/gitignore" }
+kiki-jobs = { path = "crates/jobs" }
+kiki-store = { path = "crates/store" }
+kiki-agentfile = { path = "crates/agentfile" }
+kiki-server = { path = "crates/server" }
+
+[package]
+name = "kiki"
+version = "0.1.0"
+description = "Desktop app for setting up and running a team of AI agents"
+edition = "2021"
+rust-version.workspace = true
+default-run = "kiki"
+
+[lib]
+name = "kiki_lib"
+crate-type = ["rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
+base64 = "0.22"
+include_dir.workspace = true
+kiki-gitignore.workspace = true
+kiki-guard.workspace = true
+kiki-jobs.workspace = true
+kiki-orca.workspace = true
+kiki-server.workspace = true
+kiki-store.workspace = true
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,35 @@
+[package]
+name = "kiki-server"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tiny_http.workspace = true
+url.workspace = true
+regex.workspace = true
+serde_yaml.workspace = true
+hex.workspace = true
+sha2.workspace = true
+kiki-util = { path = "../util" }
+kiki-aitool = { path = "../aitool" }
+kiki-yaml = { path = "../yaml" }
+kiki-agentdef = { path = "../agentdef" }
+kiki-agentfile = { path = "../agentfile" }
+kiki-console = { path = "../console" }
+kiki-gitignore = { path = "../gitignore" }
+kiki-guard = { path = "../guard" }
+kiki-jobs = { path = "../jobs" }
+kiki-mcp = { path = "../mcp" }
+kiki-orca = { path = "../orca" }
+kiki-store = { path = "../store" }
+kiki-teamfolder = { path = "../teamfolder" }
+kiki-toolchain = { path = "../toolchain" }
+kiki-tools = { path = "../tools" }
+chrono.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

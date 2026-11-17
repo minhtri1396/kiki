@@ -1,0 +1,21 @@
+[package]
+name = "kiki-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+ureq.workspace = true
+url.workspace = true
+regex.workspace = true
+base64 = "0.22"
+kiki-util = { path = "../util" }
+kiki-aitool = { path = "../aitool" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tiny_http.workspace = true
+serde_yaml.workspace = true

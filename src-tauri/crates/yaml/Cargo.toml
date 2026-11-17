@@ -1,0 +1,9 @@
+[package]
+name = "kiki-yaml"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+regex.workspace = true
+yaml-rust2 = "0.10"

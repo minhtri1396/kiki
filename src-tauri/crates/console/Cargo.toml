@@ -1,0 +1,17 @@
+[package]
+name = "kiki-console"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+regex.workspace = true
+ureq.workspace = true
+tempfile.workspace = true
+kiki-util = { path = "../util" }
+kiki-aitool = { path = "../aitool" }
+kiki-agentdef = { path = "../agentdef" }
+kiki-toolchain = { path = "../toolchain" }

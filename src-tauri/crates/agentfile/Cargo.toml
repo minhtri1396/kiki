@@ -1,0 +1,16 @@
+[package]
+name = "kiki-agentfile"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+kiki-util = { path = "../util" }
+kiki-agentdef = { path = "../agentdef" }
+kiki-aitool = { path = "../aitool" }
+kiki-console = { path = "../console" }
+kiki-yaml = { path = "../yaml" }
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -43,16 +43,20 @@ Cursor, Claude, Codex, and Gemini are the AI tools an agent can run. Adding anot
 
 1. MCP. Write every MCP that agent selected into that AI tool's own MCP settings when the key is missing. The key is `mcp-<mcp name>-<workspace id>`, for example `mcp-atlassian-kiki`. One Atlassian server covers Jira and Confluence. If a selected MCP is not set up in Settings, do not start the agent.
 2. Tools. Every tool that agent selected must be turned on in Settings for that AI tool. If it is not, do not start the agent.
-3. Guardrails. Install command hooks on that AI tool for both sides of a turn: before the prompt is sent to the model, and after the model output, including before a tool, MCP, shell, file, or other agent runs. The hook calls this app. Allow or deny is Go code in `internal/guard`, using the MCP servers, tools, repositories, and agents saved for that agent. When this app is not running, the hook allows the action. When this app is running, it blocks an action the agent was not given. Do not use a prompt hook for this check.
+3. Guardrails. Install command hooks on that AI tool for both sides of a turn: before the prompt is sent to the model, and after the model output, including before a tool, MCP, shell, file, or other agent runs. The hook calls this app. Allow or deny is Rust code in `crates/guard`, using the MCP servers, tools, repositories, and agents saved for that agent. When this app is not running, the hook allows the action. When this app is running, it blocks an action the agent was not given. Do not use a prompt hook for this check.
 
 A new AI tool is not done until its MCP install, tool check, and both hook sides are implemented and covered by a test.
 
 ## Layout
 
-Go module `kiki`. `main.go` starts the desktop app. `internal/server` is the HTTP API and the web UI in `internal/server/web`. `internal/console` builds launch prompts. `internal/store` is SQLite. `internal/jobs` runs index setup. `internal/agents` holds the embedded role files. Name those packages in the query instead of walking the tree.
+Tauri v2 project. `src/` is the web UI (`index.html`, `app.css`, `app.js`, `transport.js`). `src-tauri/` is the Rust side and a Cargo workspace: the `kiki` package (`src-tauri/src`: `cli`, `bootstrap`, `app`, `ipc` for the Tauri command, `http_adapter` for the loopback server, `menu`, `window`) and the libraries in `src-tauri/crates/`. `crates/server` is the API (`Server::handle`), `crates/console` builds launch prompts, `crates/store` is SQLite, `crates/jobs` runs index setup, `crates/guard` holds the guardrail policy and hook installers, `crates/mcp` and `crates/tools` set up MCP servers and CLI tools, `crates/aitool` is the `AiTool` enum, `crates/agents` holds the embedded role files. Name those crates in the query instead of walking the tree.
 
 ## Verify
 
+Run from `src-tauri/`:
+
 ```sh
-go test ./...
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```

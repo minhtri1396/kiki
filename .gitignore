@@ -7,8 +7,10 @@ kiki.yaml
 # Older versions wrote a separate model list. Tool and model now live in each agent file.
 models.yaml
 
-# Built binary
-/kiki
+# Build output and tooling
+/node_modules/
+/src-tauri/target/
+/src-tauri/gen/
 
 # SQLite state
 kiki.db

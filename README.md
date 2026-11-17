@@ -77,17 +77,21 @@ Settings holds the orchestrator, the team folder, guardrails, MCP servers, and t
 
 Requirements:
 
-- macOS with the Xcode command line tools (the window uses WebKit, so the build needs a C compiler)
-- [Go](https://go.dev/dl/)
+- macOS with the Xcode command line tools (the window uses WebKit, and SQLite is compiled from source, so the build needs a C compiler)
+- [Rust](https://rustup.rs/)
+- [Node.js](https://nodejs.org/) with `npm` (it only provides the Tauri CLI)
 
-From this directory:
+KIKI is a [Tauri](https://tauri.app/) app. From this directory:
 
 ```sh
-go build -o kiki .
-./kiki
+npm install
+npm run build     # builds src-tauri/target/release/bundle/macos/KIKI.app (and a .dmg)
+npm run dev       # runs the app in development mode
 ```
 
-The window opens at `http://127.0.0.1:8787/`. Closing the window stops the app. `-addr` changes the listen address. `-no-open` serves that address without a window.
+KIKI keeps its files next to the app (see "Files next to the binary"). Open `KIKI.app` and it uses the folder that holds it. In development the files go next to the debug binary, so set the folder yourself: `KIKI_ROOT=$PWD npm run dev`, or pass `--root` to the binary.
+
+Options of the binary (after `--` when you use `npm run dev -- --`): `--addr` changes the loopback address (default `127.0.0.1:8787`), `--root` sets the folder for KIKI's files, and `--no-open` serves the web UI at that address without a window.
 
 Put these on `PATH` for the features you use:
 
@@ -191,7 +195,7 @@ The **Topology** tab draws what each agent may reach. Select an agent to highlig
 
 ### Agent files
 
-Agents live in `.kiki/agents` next to the app, as `<category>/<id>.md`. The embedded roles in `internal/agents/` are copied there the first time the folder has no agent files. After that the files are yours: an update to an embedded role does not overwrite an agent you already have. To start again from the current embedded roles, move `.kiki/agents` away (keep a copy of agents you edited) and restart KIKI. The roles read their repositories, services, collaborators, MCP servers, and Jira board from the launch prompt, so they do not depend on any other config file. A file stores the id, name, description, whether the agent is on, AI tool, model, repositories (with guide file and note), `agents_coordination` (with `handoffs` as `when` and `send` pairs), MCP servers, tools, and the prompt.
+Agents live in `.kiki/agents` next to the app, as `<category>/<id>.md`. The embedded roles in `src-tauri/crates/agents/` are copied there the first time the folder has no agent files. After that the files are yours: an update to an embedded role does not overwrite an agent you already have. To start again from the current embedded roles, move `.kiki/agents` away (keep a copy of agents you edited) and restart KIKI. The roles read their repositories, services, collaborators, MCP servers, and Jira board from the launch prompt, so they do not depend on any other config file. A file stores the id, name, description, whether the agent is on, AI tool, model, repositories (with guide file and note), `agents_coordination` (with `handoffs` as `when` and `send` pairs), MCP servers, tools, and the prompt.
 
 | Group | Agents | Repository |
 | --- | --- | --- |
@@ -238,7 +242,18 @@ The AI Tool of an agent is `cursor`, `claude`, `codex`, or `gemini`. Guardrails 
 ## Development
 
 ```sh
-go test ./...
+cd src-tauri
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
 ```
 
-`main.go` starts the desktop app. `internal/server` is the HTTP API and the web UI in `internal/server/web`. `internal/console` builds launch prompts. `internal/store` is SQLite. `internal/jobs` runs index setup. `internal/guard` holds the guardrail policy. `internal/agents` holds the embedded role files. See `AGENTS.md` for how to work in this repository.
+The layout follows Tauri v2:
+
+| Path | Contents |
+| --- | --- |
+| `src/` | The web UI (`index.html`, `app.css`, `app.js`, `transport.js`). |
+| `src-tauri/` | The Rust side: `tauri.conf.json`, `capabilities/`, `icons/`, and the `kiki` package (`src/` holds the window, menu, IPC command, loopback HTTP adapter, and command line). |
+| `src-tauri/crates/` | The libraries: `server` (the API and its services), `console` (launch prompts), `store` (SQLite), `jobs` (index setup), `guard` (guardrail policy and hook installers), `mcp`, `tools`, `agents` (embedded role files), and others. |
+
+The web UI talks to the Rust core through one Tauri command, `api_request`. The same core also answers a loopback HTTP server, which the guardrail hooks use and which serves the UI in `--no-open` mode. See `AGENTS.md` for how to work in this repository.

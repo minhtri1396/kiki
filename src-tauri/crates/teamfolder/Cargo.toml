@@ -1,0 +1,15 @@
+[package]
+name = "kiki-teamfolder"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tempfile.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+kiki-util = { path = "../util" }
+
+[dev-dependencies]
+tempfile.workspace = true
