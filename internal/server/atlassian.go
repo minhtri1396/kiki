@@ -147,7 +147,7 @@ func (s *Server) ensureAtlassianMCP(prep launchPrep) error {
 		}
 	}
 	worktree := prep.worktree
-	if prep.stamp != "" {
+	if prep.taskID != "" {
 		// A feature run starts in a new checkout. Only the AI Tool's own
 		// settings are sure to be there.
 		worktree = ""

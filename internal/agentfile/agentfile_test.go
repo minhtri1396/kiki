@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -84,8 +85,8 @@ func TestEnsureCreatesFolderAndAgentFiles(t *testing.T) {
 		t.Fatalf("planner works with = %#v", planner.WorksWith)
 	}
 	for _, peer := range planner.WorksWith {
-		if strings.TrimSpace(peer.Collaboration) == "" {
-			t.Fatalf("planner peer %s has no collaboration note", peer.ID)
+		if len(peer.Handoffs) == 0 || strings.TrimSpace(peer.Handoffs[0].Send) == "" {
+			t.Fatalf("planner peer %s has no message", peer.ID)
 		}
 	}
 	if len(planner.Repos) != 4 {
@@ -110,7 +111,7 @@ func TestEnsureCreatesFolderAndAgentFiles(t *testing.T) {
 	if err != nil || !ok || len(runner.WorksWith) != 1 {
 		t.Fatal(err, ok)
 	}
-	if runner.WorksWith[0].ID != "backend_reviewer" || !strings.Contains(runner.WorksWith[0].Collaboration, "[backend_runner -> backend_reviewer]") {
+	if runner.WorksWith[0].ID != "backend_reviewer" || len(runner.WorksWith[0].Handoffs) != 1 || !strings.Contains(runner.WorksWith[0].Handoffs[0].Send, "[backend_runner -> backend_reviewer]") {
 		t.Fatalf("runner collaboration = %#v", runner.WorksWith[0])
 	}
 	if len(runner.MCPs) != 2 || runner.MCPs[0].ID != "atlassian_jira" || runner.MCPs[1].ID != "atlassian_confluence" || !strings.Contains(runner.MCPs[0].Description, "Do not search Jira for work.") || !strings.Contains(runner.MCPs[1].Description, "when the ticket or the user names it") {
@@ -155,7 +156,7 @@ func TestEnsureMovesFlatFileAndLeavesPrompt(t *testing.T) {
 	if len(files) != 1 || files[0].Category != "backend" || files[0].ID != "backend_runner" {
 		t.Fatalf("files = %+v", files)
 	}
-	if len(files[0].WorksWith) != 1 || files[0].WorksWith[0].ID != "backend_reviewer" || files[0].WorksWith[0].Collaboration != "" {
+	if len(files[0].WorksWith) != 1 || files[0].WorksWith[0].ID != "backend_reviewer" || len(files[0].WorksWith[0].Handoffs) != 0 {
 		t.Fatalf("works with = %#v", files[0].WorksWith)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "requirement", "requirement_document.md")); !os.IsNotExist(err) {
@@ -217,7 +218,7 @@ func TestSaveRewritesFileAndMovesCategory(t *testing.T) {
 	}
 }
 
-func TestSaveKeepsCollaborationNote(t *testing.T) {
+func TestSaveKeepsHandoffs(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "agents")
 	if err := Ensure(dir, "cursor"); err != nil {
 		t.Fatal(err)
@@ -228,8 +229,12 @@ func TestSaveKeepsCollaborationNote(t *testing.T) {
 	}
 	next := current
 	next.WorksWith = []Collaborator{{
-		ID:            "requirement_designer",
-		Collaboration: "Hand over the requirement folder.\nWait for design.html.",
+		ID: "requirement_designer",
+		Handoffs: []Handoff{
+			{When: "business_requirement.md and product_requirement.md are ready", Send: "Hand over the requirement folder.\nWait for design.html.", Reply: " The design path. ", MaxLoops: 3},
+			{When: "  ", Send: "Answer the designer questions.", MaxLoops: 5},
+			{When: "", Send: "  "},
+		},
 	}}
 	if err := Save(dir, "requirement_document", next); err != nil {
 		t.Fatal(err)
@@ -241,15 +246,19 @@ func TestSaveKeepsCollaborationNote(t *testing.T) {
 	if len(saved.WorksWith) != 1 || saved.WorksWith[0].ID != "requirement_designer" {
 		t.Fatalf("works with = %#v", saved.WorksWith)
 	}
-	if saved.WorksWith[0].Collaboration != "Hand over the requirement folder.\nWait for design.html." {
-		t.Fatalf("collaboration = %q", saved.WorksWith[0].Collaboration)
+	want := []Handoff{
+		{When: "business_requirement.md and product_requirement.md are ready", Send: "Hand over the requirement folder.\nWait for design.html.", Reply: "The design path.", MaxLoops: 3},
+		{Send: "Answer the designer questions."},
+	}
+	if !reflect.DeepEqual(saved.WorksWith[0].Handoffs, want) {
+		t.Fatalf("handoffs = %#v", saved.WorksWith[0].Handoffs)
 	}
 	raw, err := os.ReadFile(saved.Path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	text := string(raw)
-	if !strings.Contains(text, "agents_coordination:\n") || !strings.Contains(text, "id: requirement_designer\n") || !strings.Contains(text, "description:") || strings.Contains(text, "\nteamwork:") || strings.Contains(text, "works_with:") || strings.Contains(text, "collaboration:") {
+	if !strings.Contains(text, "agents_coordination:\n") || !strings.Contains(text, "id: requirement_designer\n") || !strings.Contains(text, "handoffs:\n") || !strings.Contains(text, "when: business_requirement.md") || !strings.Contains(text, "send:") || !strings.Contains(text, "max_loops: 3") || !strings.Contains(text, "reply: The design path.") || strings.Contains(text, "max_loops: 5") || strings.Contains(text, "description: Hand over") || strings.Contains(text, "\nteamwork:") || strings.Contains(text, "works_with:") || strings.Contains(text, "collaboration:") {
 		t.Fatalf("front matter = %s", text)
 	}
 }
@@ -341,7 +350,7 @@ func TestParseAcceptsLegacyTeamworkKeys(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatal(err, ok)
 	}
-	if len(file.WorksWith) != 1 || file.WorksWith[0].ID != "backend_reviewer" || file.WorksWith[0].Collaboration != "Hand the pull request over." {
+	if len(file.WorksWith) != 1 || file.WorksWith[0].ID != "backend_reviewer" || !reflect.DeepEqual(file.WorksWith[0].Handoffs, []Handoff{{Send: "Hand the pull request over."}}) {
 		t.Fatalf("works with = %#v", file.WorksWith)
 	}
 }
@@ -359,7 +368,7 @@ func TestParseAcceptsPreviousTeamworkKey(t *testing.T) {
 	if err != nil || !ok {
 		t.Fatal(err, ok)
 	}
-	if len(file.WorksWith) != 1 || file.WorksWith[0].ID != "backend_reviewer" || file.WorksWith[0].Collaboration != "Hand the pull request over." {
+	if len(file.WorksWith) != 1 || file.WorksWith[0].ID != "backend_reviewer" || !reflect.DeepEqual(file.WorksWith[0].Handoffs, []Handoff{{Send: "Hand the pull request over."}}) {
 		t.Fatalf("works with = %#v", file.WorksWith)
 	}
 }
@@ -396,5 +405,110 @@ func TestSaveKeepsReadonlyRepository(t *testing.T) {
 	text := string(raw)
 	if !strings.Contains(text, "readonly: true") || strings.Count(text, "readonly: true") != 2 {
 		t.Fatalf("readonly was not stored on the two chosen repositories:\n%s", text)
+	}
+}
+
+func TestSaveRejectsConditionWithoutMessage(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agents")
+	if err := Ensure(dir, "cursor"); err != nil {
+		t.Fatal(err)
+	}
+	current, ok, err := Find(dir, "requirement_document")
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	next := current
+	next.WorksWith = []Collaborator{{ID: "requirement_designer", Handoffs: []Handoff{{When: "the files are ready"}}}}
+	if err := Save(dir, "requirement_document", next); err == nil {
+		t.Fatal("a condition with nothing to send was saved")
+	}
+}
+
+func TestSaveKeepsRepositoryGuide(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agents")
+	if err := Ensure(dir, "cursor"); err != nil {
+		t.Fatal(err)
+	}
+	current, ok, err := Find(dir, "requirement_document")
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	next := current
+	next.Repos = []Repository{{Kind: "document", Guide: " RULES.md ", Description: "Write the requirement."}}
+	if err := Save(dir, "requirement_document", next); err != nil {
+		t.Fatal(err)
+	}
+	saved, _, err := Find(dir, "requirement_document")
+	if err != nil || len(saved.Repos) != 1 || saved.Repos[0].Guide != "RULES.md" {
+		t.Fatalf("repos = %#v err = %v", saved.Repos, err)
+	}
+	raw, err := os.ReadFile(saved.Path)
+	if err != nil || !strings.Contains(string(raw), "guide: RULES.md") {
+		t.Fatalf("front matter = %s err = %v", raw, err)
+	}
+
+	next.Repos = []Repository{{Kind: "document", Guide: "AGENTS.md", Description: "Write the requirement."}}
+	if err := Save(dir, "requirement_document", next); err != nil {
+		t.Fatal(err)
+	}
+	saved, _, err = Find(dir, "requirement_document")
+	if err != nil || saved.Repos[0].Guide != "" {
+		t.Fatalf("default guide was stored: %#v err = %v", saved.Repos, err)
+	}
+	raw, _ = os.ReadFile(saved.Path)
+	if strings.Contains(string(raw), "guide:") {
+		t.Fatalf("default guide was written:\n%s", raw)
+	}
+
+	for _, bad := range []string{"docs/AGENTS.md", "../AGENTS.md", "AGENTS.txt", ".md", "a\\b.md"} {
+		next.Repos = []Repository{{Kind: "document", Guide: bad}}
+		if err := Save(dir, "requirement_document", next); err == nil {
+			t.Fatalf("guide %q was accepted", bad)
+		}
+	}
+}
+
+func TestSaveRejectsLoopLimitOutsideRange(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agents")
+	if err := Ensure(dir, "cursor"); err != nil {
+		t.Fatal(err)
+	}
+	current, ok, err := Find(dir, "requirement_document")
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	next := current
+	for _, limit := range []int{-1, MaxHandoffLoops + 1} {
+		next.WorksWith = []Collaborator{{ID: "requirement_designer", Handoffs: []Handoff{{Send: "Design it.", Reply: "The design path.", MaxLoops: limit}}}}
+		if err := Save(dir, "requirement_document", next); err == nil {
+			t.Fatalf("loop limit %d was saved", limit)
+		}
+	}
+	next.WorksWith = []Collaborator{{ID: "requirement_designer", Handoffs: []Handoff{{Send: "Design it.", Reply: "The design path.", MaxLoops: MaxHandoffLoops}}}}
+	if err := Save(dir, "requirement_document", next); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestHandoffWithoutReplyDoesNotReportBack(t *testing.T) {
+	dir := filepath.Join(t.TempDir(), "agents")
+	if err := Ensure(dir, "cursor"); err != nil {
+		t.Fatal(err)
+	}
+	current, ok, err := Find(dir, "requirement_document")
+	if err != nil || !ok {
+		t.Fatal(err, ok)
+	}
+	next := current
+	next.WorksWith = []Collaborator{{ID: "requirement_designer", Handoffs: []Handoff{{Send: "Design it.", Reply: "   ", MaxLoops: 4}}}}
+	if err := Save(dir, "requirement_document", next); err != nil {
+		t.Fatal(err)
+	}
+	saved, _, err := Find(dir, "requirement_document")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := saved.WorksWith[0].Handoffs; len(got) != 1 || got[0].Reply != "" || got[0].MaxLoops != 0 {
+		t.Fatalf("handoffs = %#v", got)
 	}
 }

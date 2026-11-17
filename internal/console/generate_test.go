@@ -23,6 +23,14 @@ func TestRewritePromptKinds(t *testing.T) {
 	if err != nil || !strings.Contains(note, "requirement_designer") {
 		t.Fatalf("note = %q err = %v", note, err)
 	}
+	when, err := RewritePrompt("teamwork_when", "requirement_designer", "files ready")
+	if err != nil || !strings.Contains(when, "condition under which the agent sends a message to agent requirement_designer") || !strings.HasSuffix(when, "files ready") {
+		t.Fatalf("when = %q err = %v", when, err)
+	}
+	reply, err := RewritePrompt("teamwork_reply", "requirement_designer", "design path")
+	if err != nil || !strings.Contains(reply, "agent requirement_designer sends back to the agent that gave it work") || !strings.HasSuffix(reply, "design path") {
+		t.Fatalf("reply = %q err = %v", reply, err)
+	}
 	mcp, err := RewritePrompt("mcp", "Atlassian - Jira", "Read the ticket.")
 	if err != nil || !strings.Contains(mcp, "Atlassian - Jira MCP server") {
 		t.Fatalf("mcp = %q err = %v", mcp, err)
@@ -33,6 +41,18 @@ func TestRewritePromptKinds(t *testing.T) {
 	}
 	if _, err := RewritePrompt("prompt", "", "   "); err == nil {
 		t.Fatal("empty text was accepted")
+	}
+	task, err := RewritePrompt("task", "", "Thêm giỏ hàng.")
+	if err != nil || !strings.Contains(task, "task description") || !strings.Contains(task, "4000 characters") || !strings.HasSuffix(task, "Thêm giỏ hàng.") {
+		t.Fatalf("task = %q err = %v", task, err)
+	}
+	name, err := RewritePrompt("task-name", "", "Thêm giỏ hàng")
+	if err != nil || !strings.Contains(name, "task name") || !strings.Contains(name, "200 characters") || !strings.HasSuffix(name, "Thêm giỏ hàng") {
+		t.Fatalf("name = %q err = %v", name, err)
+	}
+	branch, err := RewritePrompt("branch", "", "GE-12 thêm giỏ hàng")
+	if err != nil || !strings.Contains(branch, "git branch") || !strings.Contains(branch, "short English name") || !strings.HasSuffix(branch, "GE-12 thêm giỏ hàng") {
+		t.Fatalf("branch = %q err = %v", branch, err)
 	}
 	if _, err := RewritePrompt("other", "", "text"); err == nil {
 		t.Fatal("unknown kind was accepted")

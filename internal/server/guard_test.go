@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,7 +117,7 @@ func TestGuardrailBlocksWhatTheAgentDidNotSelect(t *testing.T) {
 	if ambiguous.allow || !strings.Contains(ambiguous.message, "requirement_document") {
 		t.Fatalf("ambiguous = %+v", ambiguous)
 	}
-	app.bindGuard(reader.ID, doc, false)
+	app.bindGuard(reader.ID, doc, false, nil)
 	started := askGuard(t, app, doc, "", "beforeMCPExecution", `{"server":"mcp-atlassian-kiki","tool_name":"jira_search"}`)
 	if !started.allow {
 		t.Fatalf("started = %+v", started)
@@ -195,6 +196,97 @@ func TestGuardrailBlocksWritesWhenTheRepositoryIsReadonly(t *testing.T) {
 	change := askGuard(t, app, backend, reader.ID, "preToolUse", `{"tool_name":"Edit","tool_input":`+string(code)+`}`)
 	if !change.allow {
 		t.Fatalf("backend edit = %+v", change)
+	}
+}
+
+func TestGuardrailBlocksAnNxProjectTheRepositoryDidNotSelect(t *testing.T) {
+	app := newTeamTestServer(t)
+	if err := app.Store.EnsureLayout(app.Root); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := EnsureAgentFiles(app.Root); err != nil {
+		t.Fatal(err)
+	}
+	dir, err := agentfile.Resolve(app.Root, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	files, err := agentfile.List(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var runner agentfile.File
+	for _, file := range files {
+		if file.ID == "backend_runner" {
+			file.Enabled = true
+			file.Repos = []agentfile.Repository{{Kind: "backend"}}
+			file.MCPs = nil
+			file.Tools = nil
+			file.WorksWith = nil
+			runner = file
+		} else {
+			file.Enabled = false
+		}
+		if err := agentfile.Save(dir, file.ID, file); err != nil {
+			t.Fatalf("save %s: %v", file.ID, err)
+		}
+	}
+	if runner.ID == "" {
+		t.Fatal("missing agent")
+	}
+	snap, err := app.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := snap.Repo("backend").Folder
+	if backend == "" {
+		t.Fatal("backend folder is not set")
+	}
+	for i := range snap.Repos {
+		if snap.Repos[i].Kind == "backend" {
+			snap.Repos[i].Services = []string{"api"}
+		}
+	}
+	if err := app.Store.Save(snap); err != nil {
+		t.Fatal(err)
+	}
+	writeGuardProject(t, backend, "apps/api", "api")
+	writeGuardProject(t, backend, "apps/billing", "billing")
+	if err := os.WriteFile(filepath.Join(backend, "README.md"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	api, err := json.Marshal(map[string]string{"file_path": filepath.Join(backend, "apps", "api", "main.go")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	billing, err := json.Marshal(map[string]string{"file_path": filepath.Join(backend, "apps", "billing", "main.go")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	readme, err := json.Marshal(map[string]string{"file_path": filepath.Join(backend, "README.md")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := askGuard(t, app, backend, runner.ID, "beforeReadFile", string(api)); !got.allow {
+		t.Fatalf("api = %+v", got)
+	}
+	blocked := askGuard(t, app, backend, runner.ID, "beforeReadFile", string(billing))
+	if blocked.allow || !strings.Contains(blocked.message, "service billing") || !strings.Contains(blocked.message, "api") {
+		t.Fatalf("billing = %+v", blocked)
+	}
+	if got := askGuard(t, app, backend, runner.ID, "beforeReadFile", string(readme)); !got.allow {
+		t.Fatalf("readme = %+v", got)
+	}
+}
+
+func writeGuardProject(t *testing.T, root, rel, name string) {
+	t.Helper()
+	dir := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "project.json"), []byte(`{"name":"`+name+`"}`), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 

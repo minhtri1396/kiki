@@ -172,3 +172,135 @@ func serve(t *testing.T, handler http.Handler, method, path string, body []byte)
 	}
 	return rec.Body.String()
 }
+
+func TestAgentHandoffsReachThePrompt(t *testing.T) {
+	app := newTeamTestServer(t)
+	if _, err := EnsureAgentFiles(app.Root); err != nil {
+		t.Fatal(err)
+	}
+	handler := app.Handler()
+	raw := serve(t, handler, http.MethodGet, "/api/agents/requirement_document", nil)
+	var agent map[string]any
+	if err := json.Unmarshal([]byte(raw), &agent); err != nil {
+		t.Fatal(err)
+	}
+	agent["worksWith"] = []map[string]any{{
+		"id": "requirement_designer",
+		"handoffs": []map[string]any{
+			{"when": "The requirement files are ready.", "send": "Design the folder.", "reply": "The design path.", "maxLoops": 2},
+			{"when": "The user changes the scope.", "send": "Update the design."},
+		},
+	}}
+	body, err := json.Marshal(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serve(t, handler, http.MethodPut, "/api/agents/requirement_document", body)
+	saved := serve(t, handler, http.MethodGet, "/api/agents/requirement_document", nil)
+	if !strings.Contains(saved, `"send":"Design the folder.","when":"The requirement files are ready."`) || !strings.Contains(saved, `"send":"Update the design.","when":"The user changes the scope."`) {
+		t.Fatalf("saved handoffs are missing from the agent")
+	}
+	preview := serve(t, handler, http.MethodPost, "/api/agents/requirement_document/preview", []byte(`{}`))
+	for _, want := range []string{
+		"- agent id: requirement_designer",
+		"Message 1 to requirement_designer:",
+		"The requirement files are ready.",
+		"Design the folder.",
+		"Message 2 to requirement_designer:",
+		"The user changes the scope.",
+		"Update the design.",
+	} {
+		if !strings.Contains(preview, want) {
+			t.Fatalf("missing %q in\n%s", want, preview)
+		}
+	}
+	if !strings.Contains(preview, "ask requirement_designer to report back to you, agent id requirement_document") || !strings.Contains(preview, "Report back: no.") {
+		t.Fatalf("report back choice is missing:\n%s", preview)
+	}
+	if !strings.Contains(saved, `"maxLoops":2`) || !strings.Contains(saved, `"reply":"The design path."`) || !strings.Contains(preview, "Allow at most 2 loops.") || !strings.Contains(preview, "The design path.") {
+		t.Fatalf("reply and loop limit are missing:\n%s", preview)
+	}
+	if strings.Contains(preview, "Message 3 to") {
+		t.Fatalf("an empty message was written:\n%s", preview)
+	}
+}
+
+func TestAgentRepositoryGuideReachesThePrompt(t *testing.T) {
+	app := newTeamTestServer(t)
+	if _, err := EnsureAgentFiles(app.Root); err != nil {
+		t.Fatal(err)
+	}
+	handler := app.Handler()
+	raw := serve(t, handler, http.MethodGet, "/api/agents/requirement_document", nil)
+	var agent map[string]any
+	if err := json.Unmarshal([]byte(raw), &agent); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(raw, `"guide":"AGENTS.md"`) {
+		t.Fatalf("a repository without a guide did not report the default: %s", raw)
+	}
+	agent["repos"] = []map[string]any{{"kind": "document", "guide": "RULES.md", "description": "Write the requirements.", "readonly": false}}
+	body, err := json.Marshal(agent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	serve(t, handler, http.MethodPut, "/api/agents/requirement_document", body)
+	saved := serve(t, handler, http.MethodGet, "/api/agents/requirement_document", nil)
+	if !strings.Contains(saved, `"guide":"RULES.md"`) {
+		t.Fatal("saved guide file is missing from the agent")
+	}
+	preview := serve(t, handler, http.MethodPost, "/api/agents/requirement_document/preview", []byte(`{}`))
+	if !strings.Contains(preview, "RULES.md (read it and follow it") || !strings.Contains(preview, "Write the requirements.") {
+		t.Fatalf("preview does not name the guide file:\n%s", preview)
+	}
+}
+
+func TestLaunchWaitForReachesThePrompt(t *testing.T) {
+	app := newTeamTestServer(t)
+	if _, err := EnsureAgentFiles(app.Root); err != nil {
+		t.Fatal(err)
+	}
+	handler := app.Handler()
+	plain := serve(t, handler, http.MethodPost, "/api/agents/requirement_designer/preview", []byte(`{"note":"Add a cart."}`))
+	if strings.Contains(plain, "WAIT FOR A REQUEST.") {
+		t.Fatalf("an agent turned on by the user was told to wait:\n%s", plain)
+	}
+	waiting := serve(t, handler, http.MethodPost, "/api/agents/requirement_designer/preview", []byte(`{"note":"Add a cart.","waitFor":["requirement_document","no_such_agent","requirement_designer"]}`))
+	for _, want := range []string{"WAIT FOR A REQUEST.", "requirement_document (Document Writer)"} {
+		if !strings.Contains(waiting, want) {
+			t.Fatalf("missing %q in\n%s", want, waiting)
+		}
+	}
+	if strings.Contains(waiting, "no_such_agent") {
+		t.Fatalf("an unknown agent was named:\n%s", waiting)
+	}
+}
+
+func TestAgentHandoffsRequireWhenAndSend(t *testing.T) {
+	app := newTeamTestServer(t)
+	if _, err := EnsureAgentFiles(app.Root); err != nil {
+		t.Fatal(err)
+	}
+	handler := app.Handler()
+	raw := serve(t, handler, http.MethodGet, "/api/agents/requirement_document", nil)
+	var agent map[string]any
+	if err := json.Unmarshal([]byte(raw), &agent); err != nil {
+		t.Fatal(err)
+	}
+	for name, pair := range map[string]map[string]any{
+		"Send when":    {"when": "", "send": "Design it."},
+		"What to send": {"when": "The files are ready.", "send": "  "},
+	} {
+		agent["worksWith"] = []map[string]any{{"id": "requirement_designer", "handoffs": []map[string]any{pair}}}
+		body, err := json.Marshal(agent)
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPut, "/api/agents/requirement_document", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), name) {
+			t.Fatalf("%s: got %d %s", name, rec.Code, rec.Body.String())
+		}
+	}
+}

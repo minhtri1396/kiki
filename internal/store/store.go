@@ -1,4 +1,4 @@
-// Package store keeps the console setup in a YAML file and run history in SQLite.
+// Package store keeps the console setup in a YAML file and run history and tasks in SQLite.
 package store
 
 import (
@@ -97,6 +97,26 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	if err := s.migrateLaunches(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.initTasks(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.initGroups(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.migrateTaskGroups(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.initRuns(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.migrateTaskIDs(); err != nil {
 		_ = db.Close()
 		return nil, err
 	}

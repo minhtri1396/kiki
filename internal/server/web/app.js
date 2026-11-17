@@ -1,4 +1,4 @@
-const state = { data: null, agentId: null, editingAgentId: "", busySetup: "", busyKind: "", pendingRepoIndex: null, checkingIndexes: new Set(), tab: "agents", workflowSelection: null, indexChoice: {} };
+const state = { data: null, agentId: null, editingAgentId: "", busySetup: "", busyKind: "", pendingRepoIndex: null, checkingIndexes: new Set(), tab: "tasks", taskView: "board", workflowSelection: null, indexChoice: {}, taskId: "", taskQuery: "", taskDoneFrom: "", taskDoneTo: "" };
 let pageScrollLock = null;
 
 function lockPageScroll() {
@@ -187,7 +187,8 @@ function render(data) {
   renderRepos(data);
   renderConfig(data);
   renderWorkflow(data);
-  renderHistory(data);
+  renderTasks();
+  watchTaskRuns();
   syncSave();
   paintGenerateIcons();
 }
@@ -367,101 +368,6 @@ function renderAgents(data) {
     section.append(cards);
     panel.append(section);
   }
-  const history = el("section", "history");
-  history.id = "history";
-  panel.append(history);
-}
-
-function renderHistory(data) {
-  const history = document.querySelector("#history");
-  if (!history) return;
-  const launches = data.launches || [];
-  const head = el("div", "history-head");
-  head.append(el("h2", "", "Recent runs"));
-  if (launches.length) {
-    const clear = el("button", "danger", "Clear");
-    clear.type = "button";
-    clear.dataset.clearRuns = "true";
-    head.append(clear);
-  }
-  history.replaceChildren(head);
-  const list = el("ul");
-  if (!launches.length) {
-    list.append(el("li", "hint", "No agent has been started."));
-  }
-  for (const item of launches) {
-    const row = el("li");
-    const open = el("button", "run-open");
-    open.type = "button";
-    open.dataset.run = String(item.id);
-    open.append(el("span", "id", item.agentId));
-    const note = el("span", "note", runPreview(item.note));
-    open.append(note);
-    open.append(el("span", "when", runTime(item.createdAt)));
-    open.append(el("span", "badge " + (item.status === "ok" ? "ok" : "bad"), item.status));
-    row.append(open);
-    const remove = el("button", "danger run-delete", "Delete");
-    remove.type = "button";
-    remove.dataset.deleteRun = String(item.id);
-    row.append(remove);
-    list.append(row);
-  }
-  history.append(list);
-}
-
-function runPreview(note) {
-  const text = String(note || "").replace(/\s+/g, " ").trim();
-  return text || "No message";
-}
-
-function runTime(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value || "";
-  return date.toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
-}
-
-function formatDetail(text) {
-  const trimmed = String(text || "").trim();
-  if (!trimmed) return "No detail.";
-  try {
-    return JSON.stringify(JSON.parse(trimmed), null, 2);
-  } catch (error) {
-    return String(text);
-  }
-}
-
-function openRun(id) {
-  const item = ((state.data && state.data.launches) || []).find((row) => String(row.id) === String(id));
-  if (!item) return;
-  const dialog = document.querySelector("#run-dialog");
-  dialog.dataset.id = String(item.id);
-  document.querySelector("#run-meta").textContent =
-    item.agentId + " · " + (item.runtime || "") + " · " + item.status + " · " + runTime(item.createdAt);
-  document.querySelector("#run-note").textContent = item.note || "No message";
-  document.querySelector("#run-detail").textContent = formatDetail(item.detail);
-  dialog.showModal();
-}
-
-async function reloadHistory() {
-  const fresh = await api("/api/state");
-  state.data = fresh;
-  renderHistory(fresh);
-}
-
-async function deleteRun(id) {
-  await api("/api/launches/" + encodeURIComponent(id), { method: "DELETE" });
-  const dialog = document.querySelector("#run-dialog");
-  if (dialog.open && dialog.dataset.id === String(id)) dialog.close();
-  await reloadHistory();
-  banner("Deleted the run.");
-}
-
-async function clearRuns() {
-  await api("/api/launches", { method: "DELETE" });
-  const dialog = document.querySelector("#run-dialog");
-  if (dialog.open) dialog.close();
-  await reloadHistory();
-  banner("Cleared runs.");
 }
 
 function renderRepos(data) {
@@ -625,7 +531,7 @@ function renderGuardrails(on) {
   button.append(el("span", "switch-knob"));
   head.append(button);
   card.append(head);
-  card.append(el("p", "hint", "The hook checks each command, file, MCP server, and agent before it runs."));
+	card.append(el("p", "hint", "The hook checks each command, file, MCP server, and agent before it runs. When a repository has services selected, a file in another Nx project is blocked."));
   section.append(card);
   return section;
 }
@@ -1362,7 +1268,7 @@ function paintShareBadge(matched, ready) {
 }
 
 function saveButton() {
-  const actions = el("div", "actions");
+  const actions = el("div", "actions repo-save-bar");
   actions.hidden = true;
   const save = el("button", "", "Save");
   save.type = "button";
@@ -1417,14 +1323,8 @@ function syncSave() {
   if (config && !config.classList.contains("busy")) config.disabled = !configDirty();
 }
 
-function paintGenerateIcon(button) {
-  if (!button || button.classList.contains("busy")) return;
-  button.textContent = "Rewrite by AI";
-  button.setAttribute("aria-label", "Rewrite by AI");
-}
-
 function paintGenerateIcons() {
-  for (const button of document.querySelectorAll(".field-generate")) paintGenerateIcon(button);
+  for (const button of document.querySelectorAll(".field-generate")) paintGenerateButton(button);
 }
 
 function generateButton(kind, subject) {
@@ -1437,29 +1337,15 @@ function generateButton(kind, subject) {
 }
 
 function placeGenerateButtons() {
-  for (const area of document.querySelectorAll("#agent-dialog .compose textarea")) {
+  for (const area of document.querySelectorAll("#agent-dialog .compose textarea, #task-dialog .compose textarea, #task-start-dialog .compose textarea")) {
     const compose = area.closest(".compose");
     if (!compose) continue;
     compose.classList.toggle("has-scroll", area.scrollHeight > area.clientHeight + 1);
   }
 }
 
-let generateAbort = null;
-let generatePreviewAbort = null;
-let generatePending = null;
-let generateDraft = null;
-let generateSawThink = false;
-
-function generateTitle(button) {
-  const subject = button.dataset.generateSubject || "";
-  let what = subject;
-  if (button.dataset.generate === "prompt") what = "prompt";
-  else if (!what && button.dataset.generate === "repo") what = "repository";
-  else if (!what && button.dataset.generate === "mcp") what = "MCP Servers";
-  else if (!what && button.dataset.generate === "tool") what = "tool";
-  else if (!what) what = "Agents Coordination";
-  return "Rewrite " + what + " by AI";
-}
+const generateRuns = new Map();
+const generateUndo = new WeakMap();
 
 function compareCell(text, kind) {
   const cell = el("div", "diff-line " + (kind || "same"));
@@ -1575,101 +1461,12 @@ function modelLabel(tool, id) {
   return id || "default";
 }
 
-function showGenerateCommand(command) {
-  const node = document.querySelector("#generate-command");
-  const text = document.querySelector("#generate-command-text");
-  text.textContent = String(command || "");
-  node.hidden = !command;
-}
-
-function showGenerateChoice(tool, model) {
-  const node = document.querySelector("#generate-choice");
-  if (!tool && !model) {
-    node.textContent = "";
-    return;
-  }
-  node.textContent = toolLabel(tool) + " · " + modelLabel(tool, model);
-}
-
-function savedGenerateChoice() {
-  const data = state.data || {};
-  const tool = data.generateTool || "";
-  return { tool, model: data.generateModel || defaultModel(tool) };
-}
-
-function resetGenerateOutput() {
-  generateSawThink = false;
-  generateDraft = null;
-  const thinking = document.querySelector("#generate-thinking");
-  const answer = document.querySelector("#generate-answer");
-  const spinner = document.querySelector("#generate-spinner");
-  const use = document.querySelector("#generate-use");
-  thinking.textContent = "";
-  answer.textContent = "";
-  answer.hidden = true;
-  spinner.hidden = true;
-  document.querySelector("#generate-thinking-label").hidden = true;
-  const run = document.querySelector("#generate-run");
-  run.hidden = false;
-  run.disabled = true;
-  use.disabled = true;
-  const command = document.querySelector("#generate-command");
-  command.hidden = false;
-  document.querySelector("#generate-command-text").replaceChildren();
-  const compare = document.querySelector(".generate-compare");
-  compare.hidden = true;
-  document.querySelector("#generate-compare").replaceChildren();
-}
-
-function showAgentForm() {
-  document.querySelector("#agent-generate").hidden = true;
-  document.querySelector("#agent-form").hidden = false;
-  document.querySelector("#agent-dialog").classList.remove("generating");
-}
-
-function generateAgentLabel() {
-  const name = (document.querySelector("#agent-name").value || "").trim();
-  const id = (document.querySelector("#agent-id").value || "").trim();
-  if (name && id && name !== id) return name + " · " + id;
-  return name || id;
-}
-
-function openGenerateDialog(title) {
-  document.querySelector("#generate-dialog-title").textContent = title;
-  document.querySelector("#generate-dialog-agent").textContent = generateAgentLabel();
-  const choice = savedGenerateChoice();
-  showGenerateChoice(choice.tool, choice.model);
-  resetGenerateOutput();
-  const error = document.querySelector("#generate-error");
-  error.hidden = true;
-  error.textContent = "";
-  document.querySelector("#agent-form").hidden = true;
-  document.querySelector("#agent-generate").hidden = false;
-  document.querySelector("#agent-dialog").classList.add("generating");
-}
-
-function appendGenerateLog(channel, text) {
-  const log = document.querySelector("#generate-log");
-  const thinking = document.querySelector("#generate-thinking");
-  const answer = document.querySelector("#generate-answer");
-  if (channel === "think") {
-    if (!String(text).trim() && !generateSawThink) return;
-    generateSawThink = true;
-    thinking.textContent += text;
-  } else {
-    answer.hidden = false;
-    answer.textContent += text;
-  }
-  log.scrollTop = log.scrollHeight;
-}
-
-function finishGenerateSpinner() {
-  document.querySelector("#generate-spinner").hidden = true;
-}
-
 function storeGeneratedText(button, value) {
   if (button.dataset.generate === "repo") state.repoNotes[button.dataset.generateSubject] = value;
-  if (button.dataset.generate === "teamwork") state.peerNotes[button.dataset.generateSubject] = value;
+  if (["teamwork", "teamwork_when", "teamwork_reply"].includes(button.dataset.generate)) {
+    rememberCollaborations();
+    syncHandoffRows();
+  }
   const spec = useSections[button.dataset.generate];
   if (!spec) return;
   if (!state[spec.state]) state[spec.state] = {};
@@ -1678,72 +1475,75 @@ function storeGeneratedText(button, value) {
   state[spec.state][id] = value;
 }
 
+function paintGenerateButton(button) {
+  if (button.classList.contains("busy")) return;
+  const step = generateUndo.get(button);
+  const label = step ? (step.applied ? "Undo" : "Redo") : "Rewrite by AI";
+  button.textContent = label;
+  button.setAttribute("aria-label", label);
+  button.classList.toggle("undo", !!step);
+}
+
+function setGenerateValue(button, area, value) {
+  area.value = value;
+  storeGeneratedText(button, value);
+  placeGenerateButtons();
+}
+
+function resetGenerateUndo(target) {
+  const block = target.closest && target.closest(".field");
+  const button = block && block.querySelector(".field-generate");
+  const step = button && generateUndo.get(button);
+  if (!step) return;
+  const current = step.applied ? step.rewritten : step.previous;
+  if (target.value === current) return;
+  generateUndo.delete(button);
+  paintGenerateButton(button);
+}
+
 function prepareGenerate(button) {
+  if (button.classList.contains("busy")) return;
   const block = button.closest(".field");
-  const area = block.querySelector("textarea");
-  const error = document.querySelector("#agent-error");
-  const text = area.value.trim();
-  if (!text) {
-    error.hidden = false;
-    error.textContent = "Enter some text first.";
+  const area = block && block.querySelector("textarea, input");
+  if (!area) return;
+  const host = button.closest("dialog");
+  const error = host ? host.querySelector(".result.error") : null;
+  const step = generateUndo.get(button);
+  if (step) {
+    step.applied = !step.applied;
+    setGenerateValue(button, area, step.applied ? step.rewritten : step.previous);
+    paintGenerateButton(button);
+    area.focus();
     return;
   }
-  error.hidden = true;
-  error.textContent = "";
-  generatePending = { button, area, text };
-  openGenerateDialog(generateTitle(button));
-  loadGeneratePreview();
-}
-
-function stopGeneratePreview() {
-  if (!generatePreviewAbort) return;
-  generatePreviewAbort.abort();
-  generatePreviewAbort = null;
-}
-
-async function loadGeneratePreview() {
-  const pending = generatePending;
-  if (!pending) return;
-  stopGeneratePreview();
-  const controller = new AbortController();
-  generatePreviewAbort = controller;
-  try {
-    const data = await api("/api/generate/preview", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        kind: pending.button.dataset.generate,
-        subject: pending.button.dataset.generateSubject || "",
-        text: pending.text,
-      }),
-    });
-    if (generatePreviewAbort !== controller) return;
-    showGenerateChoice(data.tool, data.model);
-    showGenerateCommand(data.command);
-    document.querySelector("#generate-run").disabled = false;
-  } catch (err) {
-    if (err.name === "AbortError") return;
-    const node = document.querySelector("#generate-error");
-    if (!node) return;
-    node.hidden = false;
-    node.textContent = err.message;
-  } finally {
-    if (generatePreviewAbort === controller) generatePreviewAbort = null;
+  const text = area.value.trim();
+  if (!text) {
+    if (error) {
+      error.hidden = false;
+      error.textContent = "Enter some text first.";
+    }
+    return;
   }
+  if (error) {
+    error.hidden = true;
+    error.textContent = "";
+  }
+  rewriteText(button, area, text, error);
 }
 
-async function rewriteText(button) {
-  const pending = generatePending;
-  const area = pending ? pending.area : button.closest(".field").querySelector("textarea");
-  const error = document.querySelector("#agent-error");
-  const text = pending ? pending.text : area.value.trim();
-  if (generateAbort) generateAbort.abort();
+function stopGenerateRuns() {
+  for (const controller of [...generateRuns.values()]) controller.abort();
+}
+
+async function rewriteText(button, area, text, error) {
   const controller = new AbortController();
-  generateAbort = controller;
-  document.querySelector("#generate-run").hidden = true;
-  document.querySelector("#generate-thinking-label").hidden = false;
-  document.querySelector("#generate-spinner").hidden = false;
+  generateRuns.set(button, controller);
+  const wasReadOnly = area.readOnly;
+  const compose = area.closest(".compose") || area;
+  const previous = area.value;
+  area.readOnly = true;
+  area.setAttribute("aria-busy", "true");
+  compose.classList.add("ai-rewriting");
   button.disabled = true;
   button.classList.add("busy");
   try {
@@ -1764,8 +1564,8 @@ async function rewriteText(button) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
-    let finished = false;
-    while (!finished) {
+    let result = null;
+    while (result === null) {
       const chunk = await reader.read();
       if (chunk.done) break;
       buffer += decoder.decode(chunk.value, { stream: true });
@@ -1774,40 +1574,35 @@ async function rewriteText(button) {
       for (const line of lines) {
         if (!line.trim()) continue;
         const event = JSON.parse(line);
-        if (event.type === "meta") showGenerateChoice(event.tool, event.model);
-        if (event.type === "command") showGenerateCommand(event.command);
-        if (event.type === "log") appendGenerateLog(event.channel, event.text || "");
         if (event.type === "error") throw new Error(event.error || "Generate failed.");
         if (event.type === "done") {
-          const value = event.text || "";
-          generateDraft = { area, button, text: value };
-          if (!document.querySelector("#generate-answer").textContent) {
-            appendGenerateLog("text", value);
-          }
-          document.querySelector("#generate-use").disabled = false;
-          document.querySelector(".generate-compare").hidden = false;
-          finishGenerateSpinner();
-          showSideBySideDiff(event.diff || []);
-          finished = true;
+          result = event.text || "";
+          break;
         }
       }
     }
+    if (result === null) throw new Error("Generate failed.");
+    if (area.isConnected) {
+      let value = result;
+      if (area.tagName === "INPUT") value = value.replace(/\s+/g, " ").trim();
+      generateUndo.set(button, { previous, rewritten: value, applied: true });
+      setGenerateValue(button, area, value);
+    }
   } catch (err) {
     if (err.name === "AbortError") return;
-    finishGenerateSpinner();
-    const generateError = document.querySelector("#generate-error");
-    if (generateError && !document.querySelector("#agent-generate").hidden) {
-      generateError.hidden = false;
-      generateError.textContent = err.message;
-    } else if (error.isConnected) {
+    if (error && error.isConnected) {
       error.hidden = false;
       error.textContent = err.message;
     }
   } finally {
-    if (generateAbort === controller) generateAbort = null;
+    if (generateRuns.get(button) === controller) generateRuns.delete(button);
+    area.readOnly = wasReadOnly;
+    area.removeAttribute("aria-busy");
+    compose.classList.remove("ai-rewriting");
     if (button.isConnected) {
       button.disabled = false;
       button.classList.remove("busy");
+      paintGenerateButton(button);
     }
   }
 }
@@ -2371,7 +2166,26 @@ const workflowObserver = new ResizeObserver(() => layoutWorkflow());
 
 function agentTeamwork(agent) {
   if (Array.isArray(agent.teamwork)) return agent.teamwork;
-  return (agent.worksWith || []).map((id) => ({ id, collaboration: "" }));
+  return (agent.worksWith || []).map((id) => ({ id, handoffs: [] }));
+}
+
+function repoNoteText(use) {
+  const lines = ["Guide file: " + (use.guide || defaultGuideFile)];
+  if (use.description) lines.push(use.description);
+  return lines.join("\n");
+}
+
+function handoffsText(peer) {
+  const pairs = (peer && peer.handoffs) || [];
+  return pairs.map((pair, index) => {
+    const lines = [];
+    if (pairs.length > 1) lines.push("Message " + (index + 1));
+    lines.push("Send when: " + (pair.when || "(no condition set)"));
+    lines.push("Send: " + (pair.send || ""));
+    lines.push(pair.reply ? "Reports back with: " + pair.reply : "Reports back: no");
+    if (pair.reply && pair.maxLoops > 0) lines.push("Loops: up to " + pair.maxLoops);
+    return lines.join("\n");
+  }).join("\n\n");
 }
 
 function agentRepositoryUses(agent) {
@@ -2565,7 +2379,7 @@ function workflowAgentColumn(data) {
           toSide: "left",
           kicker: "Agents Coordination",
           title: agent.title + " → " + agentTitle(peer.id),
-          note: peer.collaboration || "",
+          note: handoffsText(peer),
         });
       }
       for (const use of agentRepositoryUses(agent)) {
@@ -2582,7 +2396,7 @@ function workflowAgentColumn(data) {
           toSide: "left",
           kicker: "Repository",
           title: agent.title + " → " + (repoLabel[use.kind] || use.kind),
-          note: use.description || "",
+          note: repoNoteText(use),
         });
       }
       pushWorkflowUses(agent, "mcp", configuredUses("mcp", agent.mcps || []));
@@ -3112,7 +2926,7 @@ function paintAgentWorkflow(box, id) {
   for (const peer of teamwork) {
     const block = el("div", "workflow-block");
     block.append(el("p", "workflow-title", agent.title + " → " + agentTitle(peer.id)));
-    block.append(el("p", "workflow-note", peer.collaboration || "No note is saved."));
+    block.append(el("p", "workflow-note", handoffsText(peer) || "No message is saved."));
     box.append(block);
   }
   box.append(el("h4", "", "Repositories"));
@@ -3122,7 +2936,7 @@ function paintAgentWorkflow(box, id) {
     const index = repo && repo.index ? indexLabel(repo.index) : "not set";
     const block = el("div", "workflow-block");
     block.append(el("p", "workflow-title", (repoLabel[use.kind] || use.kind) + " · " + index));
-    block.append(el("p", "workflow-note", use.description || "No note is saved."));
+    block.append(el("p", "workflow-note", repoNoteText(use) || "No note is saved."));
     box.append(block);
   }
 }
@@ -3180,7 +2994,7 @@ function paintRepoWorkflow(box, kind) {
     const use = agentRepositoryUses(agent).find((item) => item.kind === kind);
     const block = el("div", "workflow-block");
     block.append(el("p", "workflow-title", agent.title));
-    block.append(el("p", "workflow-note", (use && use.description) || "No note is saved."));
+    block.append(el("p", "workflow-note", (use && repoNoteText(use)) || "No note is saved."));
     box.append(block);
   }
 }
@@ -3224,13 +3038,13 @@ document.querySelector("#panel-workflow").addEventListener("click", (event) => {
 });
 
 function unlockNavigation() {
-  for (const button of document.querySelectorAll("[data-tab='repos'], [data-tab='workflow'], #open-settings, #start-feature")) {
+  for (const button of document.querySelectorAll("[data-tab='repos'], [data-tab='workflow'], #open-settings")) {
     button.disabled = false;
   }
 }
 
 function showTab(name) {
-  if (!state.data && name !== "agents") return;
+  if (!state.data && name !== "agents" && name !== "tasks") return;
   const enterRepos = name === "repos" && state.tab !== "repos";
   const enterWorkflow = name === "workflow" && state.tab !== "workflow";
   const enterAgents = name === "agents" && state.tab !== "agents";
@@ -3238,6 +3052,7 @@ function showTab(name) {
   for (const button of document.querySelectorAll("[data-tab]")) {
     button.setAttribute("aria-selected", button.dataset.tab === name ? "true" : "false");
   }
+  document.querySelector("#panel-tasks").hidden = name !== "tasks";
   document.querySelector("#panel-agents").hidden = name !== "agents";
   document.querySelector("#panel-repos").hidden = name !== "repos";
   document.querySelector("#panel-workflow").hidden = name !== "workflow";
@@ -3487,7 +3302,7 @@ async function saveCardChoice(agentId, toolSelect, modelSelect) {
     if (cardChoiceSave[agentId] !== token) return;
     const selected = document.querySelector("[data-tab][aria-selected='true']");
     render(data);
-    showTab((selected && selected.dataset.tab) || "agents");
+    showTab((selected && selected.dataset.tab) || "tasks");
   } catch (error) {
     if (cardChoiceSave[agentId] !== token) return;
     fillToolSelect(toolSelect, previous.tool);
@@ -3855,7 +3670,8 @@ async function launch() {
       : launch.detail;
     const fresh = await api("/api/state");
     state.data = fresh;
-    renderHistory(fresh);
+    renderTasks();
+    watchTaskRuns();
   } catch (error) {
     result.classList.add("error");
     result.textContent = error.message;
@@ -3872,7 +3688,7 @@ async function save() {
       body: JSON.stringify(collect()),
     });
     const selected = document.querySelector("[data-tab][aria-selected='true']");
-    const tab = (selected && selected.dataset.tab) || "agents";
+    const tab = (selected && selected.dataset.tab) || "tasks";
     render(data);
     showTab(tab);
     banner("Saved " + data.setupFile + ".");
@@ -4084,7 +3900,7 @@ async function saveSettings() {
   const savedTeam = (state.data && state.data.teamFolder) || {};
   const payload = collect();
   const selected = document.querySelector("[data-tab][aria-selected='true']");
-  const tab = (selected && selected.dataset.tab) || "agents";
+  const tab = (selected && selected.dataset.tab) || "tasks";
   const pathChanged = teamPath !== (savedTeam.path || "");
   const userChanged = teamUser !== (savedTeam.user || "");
   button.disabled = true;
@@ -4691,15 +4507,20 @@ async function startSetup(tool, kind) {
   }
 }
 
+const defaultGuideFile = "AGENTS.md";
+const defaultMaxLoops = 3;
+const maxLoopsLimit = 20;
+
 function repoList(value) {
   if (!Array.isArray(value)) {
     if (!value) return [];
-    return [{ kind: value, description: "", readonly: false }];
+    return [{ kind: value, guide: "", description: "", readonly: false }];
   }
   return value.map((item) => {
-    if (typeof item === "string") return { kind: item, description: "", readonly: false };
+    if (typeof item === "string") return { kind: item, guide: "", description: "", readonly: false };
     return {
       kind: item && (item.kind || item.id),
+      guide: (item && item.guide) || "",
       description: (item && item.description) || "",
       readonly: !!(item && item.readonly),
     };
@@ -4717,8 +4538,12 @@ function repoChoices(repos) {
 function rememberRepoNotes() {
   if (!state.repoNotes) state.repoNotes = {};
   if (!state.repoReadonly) state.repoReadonly = {};
+  if (!state.repoGuides) state.repoGuides = {};
   for (const area of document.querySelectorAll("#agent-repo-notes textarea")) {
     state.repoNotes[area.dataset.repo] = area.value;
+  }
+  for (const input of document.querySelectorAll("#agent-repo-notes input[data-repo-guide]")) {
+    state.repoGuides[input.dataset.repoGuide] = input.value;
   }
   for (const box of document.querySelectorAll("#agent-repo-notes [data-repo-readonly]")) {
     state.repoReadonly[box.dataset.repoReadonly] = box.checked;
@@ -4740,12 +4565,26 @@ function renderRepoNotes() {
   const selected = [...document.querySelectorAll("#agent-repos button[aria-pressed='true']")];
   for (const button of selected) {
     const kind = button.dataset.repo;
+    const wrap = el("div", "repo-block");
+    const head = el("div", "collab-names");
+    head.append(el("span", "collab-title", button.textContent));
+    head.append(el("span", "peer-id", kind));
+    wrap.append(head);
+    const guideField = el("div", "field repo-guide");
+    guideField.append(el("span", "", "Guide file"));
+    const guide = document.createElement("input");
+    guide.type = "text";
+    guide.dataset.repoGuide = kind;
+    guide.placeholder = defaultGuideFile;
+    guide.spellcheck = false;
+    guide.autocomplete = "off";
+    guide.value = (state.repoGuides && state.repoGuides[kind]) || defaultGuideFile;
+    guideField.append(guide);
+    guideField.append(el("p", "hint", "The markdown file in this repository that the agent reads and follows when it works here. KIKI puts it in the launch prompt."));
+    wrap.append(guideField);
     const block = el("div", "field");
     const bar = el("div", "prompt-bar");
-    const names = el("span", "collab-names");
-    names.append(el("span", "collab-title", button.textContent));
-    names.append(el("span", "peer-id", kind));
-    bar.append(names);
+    bar.append(el("span", "", "What this agent does in this repository"));
     const toggleWrap = el("span", "preview-toggle");
     toggleWrap.append(el("span", "", "Preview"));
     const toggle = document.createElement("button");
@@ -4761,7 +4600,7 @@ function renderRepoNotes() {
     const area = document.createElement("textarea");
     area.dataset.repo = kind;
     area.rows = 4;
-    area.placeholder = "What this agent does in the " + kind + " repository. The AI Tool receives this with that repository.";
+    area.placeholder = "What this agent uses the " + kind + " repository for. The AI Tool receives this with that repository.";
     area.value = state.repoNotes[kind] || "";
     const compose = el("div", "compose");
     compose.append(area, generateButton("repo", kind));
@@ -4774,8 +4613,9 @@ function renderRepoNotes() {
     box.dataset.repoReadonly = kind;
     box.checked = !!(state.repoReadonly && state.repoReadonly[kind]);
     readonly.append(box, el("span", "", "Readonly"));
-    block.append(compose, preview, readonly);
-    root.append(block);
+    block.append(compose, preview);
+    wrap.append(block, readonly);
+    root.append(wrap);
   }
   paintScopeCount("#agent-repos", "#agent-repo-count");
 }
@@ -4799,59 +4639,221 @@ function fillAgentCategories(selected) {
 function peerList(value) {
   if (!Array.isArray(value)) {
     if (!value) return [];
-    return [{ id: value, collaboration: "" }];
+    return [{ id: value, handoffs: [] }];
   }
   return value.map((item) => {
-    if (typeof item === "string") return { id: item, collaboration: "" };
-    return { id: item && item.id, collaboration: (item && item.collaboration) || "" };
+    if (typeof item === "string") return { id: item, handoffs: [] };
+    const pairs = Array.isArray(item && item.handoffs) ? item.handoffs : [];
+    return {
+      id: item && item.id,
+      handoffs: pairs.map((pair) => ({ when: (pair && pair.when) || "", send: (pair && pair.send) || "", reply: (pair && pair.reply) || "",
+        loop: !!(pair && pair.maxLoops > 0),
+        maxLoops: (pair && pair.maxLoops > 0) ? pair.maxLoops : defaultMaxLoops,
+      })),
+    };
   }).filter((item) => item.id);
 }
 
 function rememberCollaborations() {
-  if (!state.peerNotes) state.peerNotes = {};
-  for (const area of document.querySelectorAll("#agent-collaborations textarea")) {
-    state.peerNotes[area.dataset.peer] = area.value;
+  if (!state.peerPairs) state.peerPairs = {};
+  for (const block of document.querySelectorAll("#agent-collaborations .collab-peer")) {
+    const pairs = [];
+    for (const row of block.querySelectorAll(".handoff")) {
+      const when = row.querySelector("textarea[data-part='when']");
+      const send = row.querySelector("textarea[data-part='send']");
+      const reply = row.querySelector("textarea[data-part='reply']");
+      const loop = row.querySelector("input[data-part='loop']");
+      const loops = row.querySelector("input[data-part='loops']");
+      pairs.push({
+        when: when ? when.value : "",
+        send: send ? send.value : "",
+        reply: reply ? reply.value : "",
+        loop: !!(loop && loop.checked),
+        maxLoops: loops ? loops.value : String(defaultMaxLoops),
+      });
+    }
+    state.peerPairs[block.dataset.peer] = pairs;
   }
+}
+
+function previewSwitch(id) {
+  const wrap = el("span", "preview-toggle");
+  wrap.append(el("span", "", "Preview"));
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "switch";
+  toggle.dataset.collabPreview = id;
+  toggle.setAttribute("aria-pressed", "false");
+  toggle.setAttribute("aria-label", "Preview");
+  toggle.append(el("span", "switch-knob"));
+  wrap.append(toggle);
+  return wrap;
+}
+
+// loopLimit is the loop count to save. A count that is not a whole number from 1
+// to the limit is sent as -1, so Save reports it.
+function loopLimit(value) {
+  const count = Math.trunc(Number(value));
+  return count >= 1 && count <= maxLoopsLimit ? count : -1;
+}
+
+// syncHandoffRow shows the loop options only when the message has a report to wait
+// for, and the loop limit only when the loop box is ticked.
+function syncHandoffRow(row) {
+  const reply = row.querySelector("textarea[data-part='reply']");
+  const loop = row.querySelector("input[data-part='loop']");
+  const loopLine = row.querySelector(".handoff-loop");
+  const limit = row.querySelector(".handoff-limit");
+  if (loopLine) loopLine.hidden = !(reply && reply.value.trim());
+  if (limit) limit.hidden = !(loop && loop.checked);
+}
+
+// missingHandoff finds the first message with no condition or nothing to send.
+function missingHandoff(worksWith) {
+  for (const peer of worksWith) {
+    for (let index = 0; index < peer.handoffs.length; index++) {
+      const pair = peer.handoffs[index];
+      if (!pair.when) {
+        return { id: peer.id, index, part: "when", message: "Enter Send when for message " + (index + 1) + " to " + peer.id + ", or remove the message." };
+      }
+      if (!pair.send) {
+        return { id: peer.id, index, part: "send", message: "Enter What to send for message " + (index + 1) + " to " + peer.id + ", or remove the message." };
+      }
+    }
+  }
+  return null;
+}
+
+function syncHandoffRows() {
+  for (const row of document.querySelectorAll("#agent-collaborations .handoff")) syncHandoffRow(row);
+}
+
+function handoffRow(id, index, pair) {
+  const row = el("div", "handoff");
+  const head = el("div", "prompt-bar");
+  head.append(el("span", "collab-title", "Message " + (index + 1)));
+  const remove = el("button", "text-button", "Remove");
+  remove.type = "button";
+  remove.dataset.handoffRemove = id;
+  remove.dataset.handoffIndex = String(index);
+  remove.setAttribute("aria-label", "Remove message " + (index + 1) + " to " + id);
+  head.append(remove);
+  row.append(head);
+
+  const whenField = el("div", "field handoff-when");
+  const whenBar = el("div", "prompt-bar");
+  whenBar.append(el("span", "", "Send when (required)"));
+  whenBar.append(previewSwitch(id));
+  whenField.append(whenBar);
+  const whenCompose = el("div", "compose");
+  const when = document.createElement("textarea");
+  when.dataset.peer = id;
+  when.dataset.part = "when";
+  when.rows = 2;
+  when.placeholder = "The condition that tells this agent to send the message, for example: the requirement files are ready.";
+  when.value = pair.when || "";
+  whenCompose.append(when, generateButton("teamwork_when", id));
+  const whenPreview = el("div", "markdown collab-preview");
+  whenPreview.hidden = true;
+  whenField.append(whenCompose, whenPreview);
+  row.append(whenField);
+
+  const sendField = el("div", "field");
+  const bar = el("div", "prompt-bar");
+  bar.append(el("span", "", "What to send to " + id + " (required)"));
+  bar.append(previewSwitch(id));
+  sendField.append(bar);
+  const send = document.createElement("textarea");
+  send.dataset.peer = id;
+  send.dataset.part = "send";
+  send.rows = 4;
+  send.placeholder = "The message this agent sends to " + id + " when the condition is met. KIKI puts it in the launch prompt for the Agent Orchestration tool.";
+  send.value = pair.send || "";
+  const compose = el("div", "compose");
+  compose.append(send, generateButton("teamwork", id));
+  const preview = el("div", "markdown collab-preview");
+  preview.hidden = true;
+  sendField.append(compose, preview);
+  row.append(sendField);
+  const back = el("div", "handoff-back");
+  const replyField = el("div", "field handoff-reply");
+  const replyBar = el("div", "prompt-bar");
+  replyBar.append(el("span", "", "What " + id + " reports back (empty means no report)"));
+  replyBar.append(previewSwitch(id));
+  replyField.append(replyBar);
+  const replyCompose = el("div", "compose");
+  const reply = document.createElement("textarea");
+  reply.dataset.peer = id;
+  reply.dataset.part = "reply";
+  reply.rows = 3;
+  reply.placeholder = "What " + id + " reports back to this agent when it has finished, for example: the path of the design file and any open question. Leave it empty when " + id + " does not report back.";
+  reply.value = pair.reply || "";
+  replyCompose.append(reply, generateButton("teamwork_reply", id));
+  const replyPreview = el("div", "markdown collab-preview");
+  replyPreview.hidden = true;
+  replyField.append(replyCompose, replyPreview);
+  back.append(replyField);
+
+  const loopLine = el("div", "handoff-loop");
+  const loopLabel = el("label", "repo-readonly");
+  loopLabel.title = "Tick this when this agent and " + id + " may pass work back and forth.";
+  const loopBox = document.createElement("input");
+  loopBox.type = "checkbox";
+  loopBox.dataset.part = "loop";
+  loopBox.dataset.peer = id;
+  loopBox.checked = !!pair.loop;
+  loopLabel.append(loopBox, el("span", "", "This can loop back and forth between the two agents"));
+  const limit = el("label", "handoff-limit");
+  limit.append(el("span", "", "Most loops"));
+  const loops = document.createElement("input");
+  loops.type = "number";
+  loops.min = "1";
+  loops.max = String(maxLoopsLimit);
+  loops.step = "1";
+  loops.dataset.part = "loops";
+  loops.dataset.peer = id;
+  loops.value = pair.maxLoops || defaultMaxLoops;
+  loops.setAttribute("aria-label", "Most loops between this agent and " + id);
+  limit.append(loops);
+  loopLine.append(loopLabel, limit);
+  back.append(loopLine);
+  row.append(back);
+  syncHandoffRow(row);
+  return row;
 }
 
 function renderCollaborations() {
   rememberCollaborations();
+  paintCollaborations();
+}
+
+function paintCollaborations() {
   const root = document.querySelector("#agent-collaborations");
   root.replaceChildren();
   const selected = [...document.querySelectorAll("#agent-works-with button[aria-pressed='true']")];
   for (const button of selected) {
     const id = button.dataset.peer;
-    const block = el("div", "field");
+    if (state.peerPairs[id] === undefined) state.peerPairs[id] = [{ when: "", send: "", reply: "", loop: false, maxLoops: defaultMaxLoops }];
+    const pairs = state.peerPairs[id];
+    const block = el("div", "collab-peer");
+    block.dataset.peer = id;
     const bar = el("div", "prompt-bar");
     const names = el("span", "collab-names");
     names.append(el("span", "collab-title", button.textContent));
     names.append(el("span", "peer-id", id));
     bar.append(names);
-    const toggleWrap = el("span", "preview-toggle");
-    toggleWrap.append(el("span", "", "Preview"));
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "switch";
-    toggle.dataset.collabPreview = id;
-    toggle.setAttribute("aria-pressed", "false");
-    toggle.setAttribute("aria-label", "Preview");
-    toggle.append(el("span", "switch-knob"));
-    toggleWrap.append(toggle);
-    bar.append(toggleWrap);
+    const add = el("button", "text-button", "Add message");
+    add.type = "button";
+    add.dataset.handoffAdd = id;
+    add.setAttribute("aria-label", "Add a message to " + id);
+    bar.append(add);
     block.append(bar);
-    const area = document.createElement("textarea");
-    area.dataset.peer = id;
-    area.rows = 4;
-    area.placeholder = "How this agent communicates and coordinates with " + id + ". The AI Tool receives this with that agent id.";
-    area.value = state.peerNotes[id] || "";
-    const compose = el("div", "compose");
-    compose.append(area, generateButton("teamwork", id));
-    const preview = el("div", "markdown collab-preview");
-    preview.hidden = true;
-    block.append(compose, preview);
+    if (!pairs.length) block.append(el("p", "hint", "No message is set. This agent sends nothing to " + id + "."));
+    pairs.forEach((pair, index) => block.append(handoffRow(id, index, pair)));
     root.append(block);
   }
   paintScopeCount("#agent-works-with", "#agent-peer-count");
+  placeGenerateButtons();
 }
 
 function fillAgentPeers(currentId, selectedIds) {
@@ -4859,8 +4861,8 @@ function fillAgentPeers(currentId, selectedIds) {
   root.replaceChildren();
   document.querySelector("#agent-collaborations").replaceChildren();
   const peers = peerList(selectedIds);
-  state.peerNotes = {};
-  for (const peer of peers) state.peerNotes[peer.id] = peer.collaboration;
+  state.peerPairs = {};
+  for (const peer of peers) state.peerPairs[peer.id] = peer.handoffs;
   const chosen = new Set(peers.map((peer) => peer.id));
   const others = state.data.agents.filter((agent) => agent.id !== currentId);
   for (const group of groups(others)) {
@@ -5391,7 +5393,9 @@ function fillAgentRepos(selected) {
   const items = repoList(selected);
   state.repoNotes = {};
   state.repoReadonly = {};
+  state.repoGuides = {};
   for (const repo of items) {
+    state.repoGuides[repo.kind] = repo.guide;
     state.repoNotes[repo.kind] = repo.description;
     state.repoReadonly[repo.kind] = !!repo.readonly;
   }
@@ -5434,7 +5438,7 @@ async function openAgentEditor(id) {
   document.querySelector("#agent-dialog-title").textContent = "Agent: " + (data.name || data.id);
   document.querySelector("#agent-enabled").setAttribute("aria-pressed", data.enabled !== false ? "true" : "false");
   document.querySelector("#agent-name").value = data.name || "";
-  document.querySelector("#agent-id").value = data.id || "";
+  document.querySelector("#agent-id").textContent = data.id || "";
   fillAgentCategories(data.category || "");
   fillAgentPeers(data.id, data.worksWith);
   renderCollaborations();
@@ -5473,14 +5477,36 @@ async function saveAgent() {
   rememberRepoNotes();
   const repos = [...document.querySelectorAll("#agent-repos button[aria-pressed='true']")].map((button) => ({
     kind: button.dataset.repo,
+    guide: ((state.repoGuides || {})[button.dataset.repo] || "").trim() || defaultGuideFile,
     description: (state.repoNotes[button.dataset.repo] || "").trim(),
     readonly: !!(state.repoReadonly && state.repoReadonly[button.dataset.repo]),
   }));
   rememberCollaborations();
   const worksWith = [...document.querySelectorAll("#agent-works-with button[aria-pressed='true']")].map((button) => ({
     id: button.dataset.peer,
-    collaboration: (state.peerNotes[button.dataset.peer] || "").trim(),
+    handoffs: ((state.peerPairs || {})[button.dataset.peer] || [])
+      .map((pair) => ({
+        when: (pair.when || "").trim(),
+        send: (pair.send || "").trim(),
+        reply: (pair.reply || "").trim(),
+        maxLoops: (pair.reply || "").trim() && pair.loop ? loopLimit(pair.maxLoops) : 0,
+      })),
   }));
+  const missing = missingHandoff(worksWith);
+  if (missing) {
+    error.hidden = false;
+    error.textContent = missing.message;
+    button.disabled = false;
+    button.textContent = "Save";
+    const rows = document.querySelectorAll("#agent-collaborations .collab-peer[data-peer='" + missing.id + "'] .handoff");
+    const field = rows[missing.index] && rows[missing.index].querySelector("textarea[data-part='" + missing.part + "']");
+    if (field) {
+      const preview = field.closest(".field") && field.closest(".field").querySelector("[data-collab-preview]");
+      if (preview && preview.getAttribute("aria-pressed") === "true") preview.click();
+      field.focus();
+    }
+    return;
+  }
   const mcps = selectedUses("mcp");
   const tools = selectedUses("tool");
   const name = document.querySelector("#agent-name").value.trim();
@@ -5504,7 +5530,7 @@ async function saveAgent() {
       }),
     });
     const selected = document.querySelector("[data-tab][aria-selected='true']");
-    const tab = (selected && selected.dataset.tab) || "agents";
+    const tab = (selected && selected.dataset.tab) || "tasks";
     render(data);
     showTab(tab);
     document.querySelector("#agent-dialog").close();
@@ -5561,19 +5587,9 @@ document.body.addEventListener("click", (event) => {
     openFlowAbout(flowAboutButton.dataset.flowAbout, flowAboutButton.dataset.flowId);
     return;
   }
-  const run = event.target.closest("[data-run]");
-  if (run) {
-    openLaunch(run.dataset.run);
-    return;
-  }
   const clone = event.target.closest("[data-clone]");
   if (clone) {
     openClone(clone.dataset.clone);
-    return;
-  }
-  const featurePrompt = event.target.closest("[data-feature-prompt]");
-  if (featurePrompt) {
-    openFeaturePrompt(featurePrompt.dataset.featurePrompt).catch((error) => featureError(error.message));
     return;
   }
   const toolToggle = event.target.closest("[data-tool-toggle]");
@@ -5600,14 +5616,55 @@ document.body.addEventListener("click", (event) => {
     syncSave();
     return;
   }
-  const featureAgent = event.target.closest("[data-feature-agent]");
-  if (featureAgent) {
-    const on = featureAgent.getAttribute("aria-pressed") !== "true";
-    featureAgent.setAttribute("aria-pressed", on ? "true" : "false");
-    const picks = document.querySelector(`[data-feature-picks="${CSS.escape(featureAgent.dataset.featureAgent)}"]`);
-    if (picks) picks.hidden = !on;
-    const prompt = document.querySelector(`[data-feature-prompt="${CSS.escape(featureAgent.dataset.featureAgent)}"]`);
-    if (prompt) prompt.hidden = !on;
+  const taskTab = event.target.closest("[data-task-tab]");
+  if (taskTab) {
+    event.preventDefault();
+    const id = taskTab.dataset.taskTab;
+    for (const tab of document.querySelectorAll("#task-dialog [data-task-tab]")) {
+      tab.setAttribute("aria-selected", tab.dataset.taskTab === id ? "true" : "false");
+    }
+    for (const panel of document.querySelectorAll("#task-dialog [data-task-panel]")) {
+      panel.hidden = panel.dataset.taskPanel !== id;
+    }
+    return;
+  }
+  const taskApprove = event.target.closest("[data-task-approve]");
+  if (taskApprove) {
+    event.preventDefault();
+    approveTaskAgent(taskApprove.dataset.taskApprove, taskApprove);
+    return;
+  }
+  const taskSend = event.target.closest("[data-task-send]");
+  if (taskSend) {
+    event.preventDefault();
+    const area = document.querySelector(`#task-dialog [data-task-comment="${CSS.escape(taskSend.dataset.taskSend)}"]`);
+    sendTaskAgent(taskSend.dataset.taskSend, area ? area.value : "", taskSend);
+    return;
+  }
+  const taskAnswer = event.target.closest("[data-task-ask-submit]");
+  if (taskAnswer) {
+    event.preventDefault();
+    const id = taskAnswer.dataset.taskAskSubmit;
+    sendTaskAgent(id, taskAnswerText(id), taskAnswer, true);
+    return;
+  }
+  const taskPrompt = event.target.closest("[data-task-prompt]");
+  if (taskPrompt) {
+    openTaskPrompt(taskPrompt.dataset.taskPrompt).catch((error) => taskError(error.message));
+    return;
+  }
+  const taskAgent = event.target.closest("[data-task-agent]");
+  if (taskAgent) {
+    if (taskAgent.disabled) return;
+    const id = taskAgent.dataset.taskAgent;
+    const manual = taskManualSet();
+    if (manual.has(id)) {
+      manual.delete(id);
+    } else {
+      manual.add(id);
+      for (const peer of taskReach(id)) manual.delete(peer);
+    }
+    syncTaskForced();
     return;
   }
   const agentSwitch = event.target.closest(".agent-switch");
@@ -5665,13 +5722,39 @@ document.body.addEventListener("click", (event) => {
     useToggle.setAttribute("aria-pressed", on ? "true" : "false");
     return;
   }
+  const handoffBox = event.target.closest("input[data-part='loop']");
+  if (handoffBox) {
+    const row = handoffBox.closest(".handoff");
+    if (row) syncHandoffRow(row);
+    return;
+  }
+  const handoffAdd = event.target.closest("[data-handoff-add]");
+  if (handoffAdd) {
+    rememberCollaborations();
+    const id = handoffAdd.dataset.handoffAdd;
+    state.peerPairs[id] = (state.peerPairs[id] || []).concat([{ when: "", send: "", reply: "", loop: false, maxLoops: defaultMaxLoops }]);
+    paintCollaborations();
+    const rows = document.querySelectorAll("#agent-collaborations .collab-peer[data-peer='" + id + "'] .handoff");
+    const last = rows[rows.length - 1];
+    const field = last && last.querySelector("textarea[data-part='when']");
+    if (field) field.focus();
+    return;
+  }
+  const handoffRemove = event.target.closest("[data-handoff-remove]");
+  if (handoffRemove) {
+    rememberCollaborations();
+    const id = handoffRemove.dataset.handoffRemove;
+    const index = Number(handoffRemove.dataset.handoffIndex);
+    state.peerPairs[id] = (state.peerPairs[id] || []).filter((_, i) => i !== index);
+    paintCollaborations();
+    return;
+  }
   const collabToggle = event.target.closest("[data-collab-preview]");
   if (collabToggle) {
     const block = collabToggle.closest(".field");
     const area = block.querySelector("textarea");
     const preview = block.querySelector(".collab-preview");
     const on = collabToggle.getAttribute("aria-pressed") !== "true";
-    if (on) state.peerNotes[area.dataset.peer] = area.value;
     showMarkdownPreview(area, preview, on);
     collabToggle.setAttribute("aria-pressed", on ? "true" : "false");
     return;
@@ -5708,6 +5791,18 @@ document.body.addEventListener("click", (event) => {
 });
 
 document.body.addEventListener("input", (event) => {
+  if (event.target.id === "task-search") {
+    state.taskQuery = event.target.value;
+    const start = event.target.selectionStart;
+    const end = event.target.selectionEnd;
+    renderTasks();
+    const next = document.querySelector("#task-search");
+    if (next) {
+      next.focus();
+      if (start != null && end != null) next.setSelectionRange(start, end);
+    }
+    return;
+  }
   if (event.target.closest("#settings-fields")) clearFieldValidation(event.target);
   if (event.target.id === "team-path" || event.target.id === "team-user") syncTeamName();
   if (event.target.id === "workspace-id" || event.target.id === "team-path" || event.target.id === "team-user") syncSave();
@@ -5716,7 +5811,6 @@ document.body.addEventListener("input", (event) => {
     if (!event.target.value.trim()) cancelTeamStage();
     refreshTeamNameChoices(event.target);
   }
-  if (event.target.id === "feature-name") refreshFeatureFolder();
 });
 
 document.body.addEventListener("keydown", (event) => {
@@ -5782,11 +5876,17 @@ document.body.addEventListener("change", (event) => {
     refreshModels(modelSelect, event.target.value);
     return;
   }
-  const featureTool = event.target.closest("[data-feature-tool]");
-  if (featureTool) {
-    const next = document.querySelector(`[data-feature-model="${CSS.escape(featureTool.dataset.featureTool)}"]`);
+  if (event.target.id === "task-done-from" || event.target.id === "task-done-to") {
+    state.taskDoneFrom = document.querySelector("#task-done-from").value;
+    state.taskDoneTo = document.querySelector("#task-done-to").value;
+    renderTasks();
+    return;
+  }
+  const taskTool = event.target.closest("[data-task-tool]");
+  if (taskTool) {
+    const next = document.querySelector(`[data-task-model="${CSS.escape(taskTool.dataset.taskTool)}"]`);
     next.dataset.previousModel = next.value;
-    refreshModels(next, featureTool.value);
+    refreshModels(next, taskTool.value);
     return;
   }
   const cardTool = event.target.closest(".agent-card [data-tool]");
@@ -5856,254 +5956,9 @@ async function cloneRepo() {
   }
 }
 
-function featureStamp() {
-  const now = new Date();
-  const part = (value) => String(value).padStart(2, "0");
-  return (
-    String(now.getFullYear()) +
-    part(now.getMonth() + 1) +
-    part(now.getDate()) +
-    part(now.getHours()) +
-    part(now.getMinutes()) +
-    part(now.getSeconds())
-  );
-}
-
-function snakeCase(value) {
-  return value
-    .normalize("NFKD")
-    .replace(/[\u0300-\u036f]/g, "")
-    .replace(/đ/gi, "d")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "_")
-    .replace(/^_+|_+$/g, "");
-}
-
-function featureFolder() {
-  const slug = snakeCase(document.querySelector("#feature-name").value);
-  const repo = state.data.repos.find((item) => item.kind === "document");
-  const base = repo && repo.folder ? repo.folder.replace(/\/$/, "") : "";
-  return { slug, path: slug && base ? base + "/" + slug : "" };
-}
-
-function refreshFeatureFolder() {
-  const folder = featureFolder();
-  document.querySelector("#feature-folder").textContent = folder.path
-    ? "Requirement folder: " + folder.path
-    : "The folder name is the snake_case form of the feature name.";
-}
-
-function featurePicks(agentId) {
-  const choice = choiceFor(agentId);
-  const picks = el("div", "agent-picks");
-  picks.dataset.featurePicks = agentId;
-  picks.hidden = true;
-  const toolField = el("label", "field");
-  toolField.append(el("span", "", "AI Tool"));
-  const toolSelect = el("select");
-  toolSelect.dataset.featureTool = agentId;
-  fillToolSelect(toolSelect, choice.tool);
-  toolField.append(toolSelect);
-  const modelField = el("label", "field");
-  modelField.append(el("span", "", "Model"));
-  const modelSelect = el("select");
-  modelSelect.dataset.featureModel = agentId;
-  fillModels(modelSelect, choice.tool, choice.model);
-  modelField.append(modelSelect);
-  picks.append(toolField, modelField);
-  return picks;
-}
-
-function openFeature() {
-  document.querySelector("#feature-name").value = "";
-  document.querySelector("#feature-description").value = "";
-  refreshFeatureFolder();
-  const list = document.querySelector("#feature-agents");
-  list.replaceChildren();
-  for (const group of groups(state.data.agents)) {
-    const agents = group.agents.filter((agent) => agent.enabled !== false);
-    if (!agents.length) continue;
-    const section = el("section", "feature-group");
-    section.append(el("h3", "", categoryLabel(group.name)));
-    for (const agent of agents) {
-      const row = el("div", "feature-agent");
-      const toggle = el("div", "feature-toggle");
-      const text = el("span", "feature-label");
-      text.append(el("span", "feature-title", agent.title));
-      text.append(el("span", "feature-id", "ID: " + agent.id));
-      const button = el("button", "switch");
-      button.type = "button";
-      button.dataset.featureAgent = agent.id;
-      button.setAttribute("aria-pressed", "false");
-      button.setAttribute("aria-label", agent.title);
-      button.append(el("span", "switch-knob"));
-      const prompt = el("button", "icon-button feature-prompt");
-      prompt.type = "button";
-      prompt.hidden = true;
-      prompt.dataset.featurePrompt = agent.id;
-      prompt.setAttribute("aria-label", "Show the prompt for " + agent.title);
-      prompt.append(promptIcon());
-      const controls = el("div", "feature-controls");
-      controls.append(prompt, button);
-      toggle.append(text, controls);
-      row.append(toggle, featurePicks(agent.id));
-      section.append(row);
-    }
-    list.append(section);
-  }
-  const error = document.querySelector("#feature-error");
-  error.hidden = true;
-  error.textContent = "";
-  const result = document.querySelector("#feature-result");
-  result.hidden = true;
-  result.textContent = "";
-  result.classList.remove("error");
-  const label = orchestratorLabel();
-  document.querySelector("#feature-lead").textContent =
-    "Turn on the agents to start in " + label + ". AI Tool and model start from each agent. Agents that are turned off stay out of this list.";
-  const go = document.querySelector("#feature-go");
-  go.disabled = false;
-  go.textContent = "Start on " + label;
-  document.querySelector("#feature-dialog").showModal();
-  document.querySelector("#feature-name").focus();
-}
-
-function featureNote(agentId, folder) {
-  const name = document.querySelector("#feature-name").value.trim();
-  const description = document.querySelector("#feature-description").value.trim();
-  if (agentId === "requirement_document") {
-    return [
-      "Feature name: " + name,
-      "Requirement folder: " + folder.path,
-      "The folder name is " + folder.slug + ", the snake_case form of the feature name. Create this requirement folder and write the requirement there.",
-      "",
-      "What this feature does:",
-      description,
-    ].join("\n");
-  }
-  return [
-    "Requirement folder: " + folder.path,
-    "Use this folder when you need the requirement for this feature.",
-  ].join("\n");
-}
-
-async function openFeaturePrompt(id) {
-  const agent = agentById(id);
-  const tool = document.querySelector(`[data-feature-tool="${CSS.escape(id)}"]`).value;
-  const model = document.querySelector(`[data-feature-model="${CSS.escape(id)}"]`).value;
-  const dialog = document.querySelector("#prompt-reader");
-  document.querySelector("#prompt-reader-title").textContent = agent.title + " — prompt sent to " + orchestratorLabel();
-  document.querySelector("#prompt-reader-body").textContent = "Loading…";
-  dialog.showModal();
-  try {
-    const data = await api("/api/agents/" + encodeURIComponent(id) + "/preview", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        note: featureNote(id, featureFolder()),
-        repo: agent.repos[0],
-        agent: tool,
-        model,
-      }),
-    });
-    document.querySelector("#prompt-reader-body").innerHTML = renderMarkdown(data.prompt);
-  } catch (error) {
-    dialog.close();
-    featureError(error.message);
-  }
-}
-
-function featureError(message) {
-  const error = document.querySelector("#feature-error");
-  error.hidden = false;
-  error.textContent = message;
-}
-
-async function startFeature() {
-  const error = document.querySelector("#feature-error");
-  error.hidden = true;
-  const name = document.querySelector("#feature-name").value.trim();
-  const description = document.querySelector("#feature-description").value.trim();
-  const folder = featureFolder();
-  const checked = [...document.querySelectorAll("[data-feature-agent][aria-pressed='true']")];
-  if (!name || !folder.slug) {
-    featureError("Enter a feature name.");
-    return;
-  }
-  if (!folder.path) {
-    featureError("The document folder is not set.");
-    return;
-  }
-  if (!description) {
-    featureError("Describe what this feature does.");
-    return;
-  }
-  if (!checked.length) {
-    featureError("Turn on at least one agent.");
-    return;
-  }
-  const go = document.querySelector("#feature-go");
-  const result = document.querySelector("#feature-result");
-  go.disabled = true;
-  go.textContent = "Starting…";
-  result.hidden = false;
-  result.classList.remove("error");
-  const stamp = featureStamp();
-  const label = orchestratorLabel();
-  const lines = [];
-  let failed = 0;
-  for (const box of checked) {
-    const id = box.dataset.featureAgent;
-    const agent = agentById(id);
-    const tool = document.querySelector(`[data-feature-tool="${CSS.escape(id)}"]`).value;
-    const model = document.querySelector(`[data-feature-model="${CSS.escape(id)}"]`).value;
-    result.textContent = "Starting " + id + " on " + label + "…";
-    try {
-      const data = await api("/api/agents/" + encodeURIComponent(id) + "/launch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          note: featureNote(id, folder),
-          repo: agent.repos[0],
-          agent: tool,
-          model,
-          slug: folder.slug,
-          stamp,
-        }),
-      });
-      if (data.launch.status === "ok") lines.push(id + ": started on " + label);
-      else {
-        failed += 1;
-        lines.push(id + ": " + data.launch.detail);
-      }
-    } catch (err) {
-      failed += 1;
-      lines.push(id + ": " + err.message);
-    }
-  }
-  result.classList.toggle("error", failed > 0);
-  result.textContent = lines.join("\n");
-  try {
-    const fresh = await api("/api/state");
-    state.data = fresh;
-    renderHistory(fresh);
-  } catch (err) {
-    lines.push(err.message);
-    result.textContent = lines.join("\n");
-  }
-  if (failed === 0) {
-    document.querySelector("#feature-dialog").close();
-    banner("Started " + checked.length + (checked.length === 1 ? " agent" : " agents") + " on " + label + " for " + folder.slug + ".");
-    return;
-  }
-  go.disabled = false;
-  go.textContent = "Start on " + label;
-}
-
 document.querySelector("#settings-fields").addEventListener("click", (event) => {
   if (event.target.closest("#team-browse")) browseTeamFolder();
 });
-document.querySelector("#start-feature").addEventListener("click", openFeature);
 document.querySelector("#open-settings").addEventListener("click", () => {
   if (!state.data) return;
   renderConfig(state.data);
@@ -6126,18 +5981,10 @@ document.querySelector("#settings-dialog").addEventListener("close", () => {
   renderConfig(state.data);
   syncSave();
 });
-document.querySelector("#feature-cancel").addEventListener("click", () => {
-  document.querySelector("#feature-dialog").close();
-});
 document.querySelector("#agent-form").addEventListener("submit", (event) => {
   if (event.submitter && event.submitter.value === "cancel") return;
   event.preventDefault();
   saveAgent();
-});
-
-document.querySelector("#feature-form").addEventListener("submit", (event) => {
-  event.preventDefault();
-  startFeature();
 });
 
 document.querySelector("#clone-form").addEventListener("submit", (event) => {
@@ -6199,45 +6046,92 @@ document.querySelector("#prompt-open").addEventListener("click", () => {
 document.querySelector("#prompt-reader-close").addEventListener("click", () => {
   document.querySelector("#prompt-reader").close();
 });
-function leaveGenerate() {
-  generatePending = null;
-  generateDraft = null;
-  stopGeneratePreview();
-  if (generateAbort) generateAbort.abort();
-  showAgentForm();
-}
-
-document.querySelector("#generate-run").addEventListener("click", () => {
-  const pending = generatePending;
-  if (!pending) return;
-  rewriteText(pending.button);
-});
-document.querySelector("#generate-back").addEventListener("click", leaveGenerate);
-document.querySelector("#generate-cancel").addEventListener("click", leaveGenerate);
-document.querySelector("#generate-use").addEventListener("click", () => {
-  const draft = generateDraft;
-  if (!draft) return;
-  if (draft.area.isConnected) {
-    draft.area.value = draft.text;
-    storeGeneratedText(draft.button, draft.text);
-  }
-  generateDraft = null;
-  showAgentForm();
-});
-document.querySelector("#agent-dialog").addEventListener("cancel", (event) => {
-  if (document.querySelector("#agent-generate").hidden) return;
-  event.preventDefault();
-  leaveGenerate();
-});
 document.querySelector("#agent-dialog").addEventListener("input", (event) => {
   if (event.target.closest(".compose textarea")) placeGenerateButtons();
+  if (event.target.matches("textarea[data-part='reply']")) {
+    const row = event.target.closest(".handoff");
+    if (row) syncHandoffRow(row);
+  }
+  resetGenerateUndo(event.target);
 });
-document.querySelector("#agent-dialog").addEventListener("close", () => {
-  generatePending = null;
-  stopGeneratePreview();
-  if (generateAbort) generateAbort.abort();
-  showAgentForm();
+document.querySelector("#agent-dialog").addEventListener("close", stopGenerateRuns);
+function syncTaskLaunchPreview(target) {
+  if (!target) return;
+  if (target.id === "task-group-search") paintTaskGroups();
+}
+
+function taskGroupMenuOpen() {
+  const menu = document.querySelector("#task-group-menu");
+  return !!(menu && !menu.hidden);
+}
+
+function setTaskGroupMenu(open) {
+  const menu = document.querySelector("#task-group-menu");
+  const toggle = document.querySelector("#task-group-toggle");
+  if (!menu || !toggle) return;
+  const task = state.taskId ? taskById(state.taskId) : null;
+  if (task && task.started) open = false;
+  menu.hidden = !open;
+  toggle.setAttribute("aria-expanded", open ? "true" : "false");
+  if (!open) return;
+  const search = document.querySelector("#task-group-search");
+  if (!search) return;
+  search.value = "";
+  paintTaskGroups();
+  search.focus();
+}
+
+function chooseTaskGroup(id) {
+  const hidden = document.querySelector("#task-group");
+  if (hidden) hidden.value = id || "";
+  const search = document.querySelector("#task-group-search");
+  if (search) search.value = "";
+  setTaskGroupMenu(false);
+  paintTaskGroups();
+  syncTaskGroup();
+}
+
+document.querySelector("#task-group-toggle").addEventListener("click", () => {
+  setTaskGroupMenu(!taskGroupMenuOpen());
 });
+
+document.querySelector("#task-group-search").addEventListener("keydown", (event) => {
+  if (event.key === "Escape") return;
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  const choices = [...document.querySelectorAll("#task-group-list [data-task-group]:not(:disabled)")];
+  const picked = choices.find((choice) => choice.getAttribute("aria-selected") === "true") || (choices.length === 1 ? choices[0] : null);
+  if (!picked) return;
+  chooseTaskGroup(picked.dataset.taskGroup || "");
+});
+
+document.querySelector("#task-group-list").addEventListener("click", (event) => {
+  const choice = event.target.closest("[data-task-group]");
+  if (!choice || choice.disabled) return;
+  chooseTaskGroup(choice.dataset.taskGroup || "");
+});
+
+document.querySelector("#task-dialog").addEventListener("click", (event) => {
+  if (!taskGroupMenuOpen()) return;
+  if (event.target.closest("#task-group-field")) return;
+  setTaskGroupMenu(false);
+});
+
+document.querySelector("#task-dialog").addEventListener("cancel", (event) => {
+  if (!taskGroupMenuOpen()) return;
+  event.preventDefault();
+  setTaskGroupMenu(false);
+  document.querySelector("#task-group-toggle").focus();
+});
+document.querySelector("#task-dialog").addEventListener("input", (event) => {
+  if (event.target.closest(".compose textarea")) placeGenerateButtons();
+  resetGenerateUndo(event.target);
+  syncTaskLaunchPreview(event.target);
+});
+document.querySelector("#task-dialog").addEventListener("change", (event) => {
+  syncTaskLaunchPreview(event.target);
+});
+document.querySelector("#task-dialog").addEventListener("close", stopGenerateRuns);
 document.querySelector("#launch-repo").addEventListener("change", () => {
   showWorktree();
   if (!document.querySelector("#launch-prompt").hidden) showPrompt();
@@ -6263,27 +6157,1643 @@ document.querySelector("#panel-agents").addEventListener("click", (event) => {
   if (event.target.closest("[data-open-team-share]")) {
     document.querySelector("#team-share-dialog").showModal();
     refreshTeamShare();
+  }
+});
+
+const taskColumns = [
+  { id: "todo", label: "TODO" },
+  { id: "progress", label: "In Progress" },
+  { id: "done", label: "Done" },
+];
+const taskStatuses = [
+  { id: "pending", label: "Pending", badge: "" },
+  { id: "doing", label: "Doing", badge: "warn" },
+  { id: "review", label: "Waiting for review", badge: "wait" },
+  { id: "completed", label: "Completed", badge: "ok" },
+];
+let taskSuppressClick = false;
+let taskDragging = false;
+let taskSyncTimer = 0;
+let taskSyncGeneration = 0;
+
+function orcaMark(run) {
+  if (!run) return null;
+  if (run.status === "idle" || run.status === "exited") return { label: "Finished", badge: "ok" };
+  if (run.status === "running") return { label: "Running", badge: "warn" };
+  return { label: "Checking", badge: "" };
+}
+
+function taskLogText(run) {
+  const text = String((run && run.log) || "").trim();
+  return text || "Waiting for output from Orca.";
+}
+
+function taskLogNode(run, agentId) {
+  const log = el("pre", "task-log");
+  if (agentId) log.dataset.taskLog = agentId;
+  log.textContent = taskLogText(run);
+  return log;
+}
+
+function runsNeedWatch() {
+  for (const task of (state.data && state.data.tasks) || []) {
+    for (const run of task.runs || []) {
+      if (run.status !== "exited") return true;
+    }
+  }
+  return false;
+}
+
+function watchTaskRuns() {
+  if (taskSyncTimer || !runsNeedWatch()) return;
+  const generation = ++taskSyncGeneration;
+  const tick = async () => {
+    if (generation !== taskSyncGeneration) return;
+    if (!runsNeedWatch()) {
+      clearInterval(taskSyncTimer);
+      taskSyncTimer = 0;
+      return;
+    }
+    try {
+      const data = await api("/api/tasks/sync", { method: "POST" });
+      if (generation !== taskSyncGeneration) return;
+      applySyncedTasks(data.tasks || []);
+    } catch (error) {}
+  };
+  tick();
+  taskSyncTimer = setInterval(tick, 4000);
+}
+
+function applySyncedTasks(tasks) {
+  if (!state.data || !tasks.length) return;
+  const byID = new Map(tasks.map((task) => [task.id, task]));
+  state.data.tasks = (state.data.tasks || []).map((task) => byID.get(task.id) || task);
+  const dialog = document.querySelector("#task-dialog");
+  if (dialog && dialog.open && byID.has(state.taskId)) {
+    const open = byID.get(state.taskId);
+    paintTaskColumn(open.column);
+    paintTaskLogs(open);
+  }
+  const search = document.querySelector("#task-search");
+  if ((search && document.activeElement === search) || taskDragging) return;
+  renderTasks();
+}
+
+function followKey(agent, run) {
+  const options = (run && run.askOptions) || [];
+  return agent.status + "\n" + ((run && run.askPrompt) || "") + "\n" + options.join("\n");
+}
+
+function paintTaskColumn(column) {
+  const node = document.querySelector("#task-column");
+  if (!node) return;
+  const item = taskColumns.find((entry) => entry.id === column) || taskColumns[0];
+  node.textContent = item.label;
+  const tone = column === "done" ? "ok" : column === "progress" ? "warn" : "";
+  node.className = "badge" + (tone ? " " + tone : "");
+}
+
+function paintTaskLogs(task) {
+  const runs = new Map((task.runs || []).map((run) => [run.agentId, run]));
+  for (const agent of task.agents || []) {
+    const run = runs.get(agent.agentId) || null;
+    const selector = CSS.escape(agent.agentId);
+    let host = document.querySelector(`#task-dialog [data-task-panel="${selector}"]`);
+    if (!host) {
+      const row = document.querySelector(`#task-dialog [data-task-agent="${selector}"]`);
+      host = row && row.closest(".feature-agent");
+    }
+    if (!host) continue;
+    let node = host.querySelector(`[data-task-log="${selector}"]`);
+    if (run) {
+      if (!node) host.append(taskLogNode(run, agent.agentId));
+      else node.textContent = taskLogText(run);
+    }
+    const tabBadge = document.querySelector(`#task-dialog [data-task-tab-state="${selector}"]`);
+    const badge = host.querySelector(`[data-task-state="${selector}"]`);
+    if (badge) {
+      const status = taskStatus(agent.status);
+      badge.className = "badge" + (status.badge ? " " + status.badge : "");
+      badge.textContent = status.label;
+      if (tabBadge) {
+        tabBadge.className = badge.className;
+        tabBadge.textContent = status.label;
+      }
+    }
+    const key = followKey(agent, run);
+    const follow = host.querySelector(`[data-task-follow="${selector}"]`);
+    if (agent.status !== "review") {
+      if (follow) follow.remove();
+      continue;
+    }
+    if (follow && follow.dataset.key === key) continue;
+    const next = taskFollowup(agent.agentId, run);
+    next.dataset.key = key;
+    if (follow) follow.replaceWith(next);
+    else host.append(next);
+  }
+}
+
+function taskAnswerText(agentId) {
+  const host = document.querySelector(`#task-dialog [data-task-follow="${CSS.escape(agentId)}"]`);
+  if (!host) return "";
+  const radios = host.querySelectorAll('input[type="radio"]');
+  if (radios.length) {
+    const chosen = host.querySelector('input[type="radio"]:checked');
+    return chosen ? chosen.value : "";
+  }
+  const area = host.querySelector("[data-task-answer]");
+  return area ? area.value : "";
+}
+
+async function sendTaskAgent(agentId, text, button, choosing) {
+  const value = String(text || "").trim();
+  if (!value) {
+    const host = document.querySelector(`#task-dialog [data-task-follow="${CSS.escape(agentId)}"]`);
+    const radios = host && host.querySelector('input[type="radio"]');
+    taskError(choosing ? (radios ? "Choose an answer." : "Enter an answer.") : "Enter a comment.");
     return;
   }
-  const remove = event.target.closest("[data-delete-run]");
+  if (!state.taskId) return;
+  if (button) button.disabled = true;
+  try {
+    const data = await api("/api/tasks/" + state.taskId + "/agents/" + encodeURIComponent(agentId) + "/reply", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: value }),
+    });
+    rememberTask(data.task);
+    paintTaskLogs(data.task);
+    watchTaskRuns();
+    const error = document.querySelector("#task-error");
+    error.hidden = true;
+    error.textContent = "";
+  } catch (err) {
+    taskError(err.message);
+    if (button) button.disabled = false;
+  }
+}
+
+async function approveTaskAgent(agentId, button) {
+  if (!state.taskId) return;
+  if (button) button.disabled = true;
+  try {
+    const data = await api("/api/tasks/" + state.taskId + "/agents/" + encodeURIComponent(agentId) + "/approve", {
+      method: "POST",
+    });
+    rememberTask(data.task);
+    paintTaskLogs(data.task);
+    const error = document.querySelector("#task-error");
+    error.hidden = true;
+    error.textContent = "";
+  } catch (err) {
+    taskError(err.message);
+    if (button) button.disabled = false;
+  }
+}
+
+function taskStatus(id) {
+  return taskStatuses.find((item) => item.id === id) || taskStatuses[0];
+}
+
+function isoDate(date) {
+  const part = (value) => String(value).padStart(2, "0");
+  return date.getFullYear() + "-" + part(date.getMonth() + 1) + "-" + part(date.getDate());
+}
+
+function defaultDoneRange() {
+  const end = new Date();
+  const start = new Date();
+  start.setDate(end.getDate() - 6);
+  return { from: isoDate(start), to: isoDate(end) };
+}
+
+function doneRange() {
+  const base = defaultDoneRange();
+  const from = state.taskDoneFrom || base.from;
+  const to = state.taskDoneTo || base.to;
+  if (from <= to) return { from, to };
+  return { from: to, to: from };
+}
+
+function taskDay(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return isoDate(date);
+}
+
+function taskInDoneRange(task, range) {
+  const day = taskDay(task.doneAt || task.updatedAt || task.createdAt);
+  if (!day) return false;
+  return day >= range.from && day <= range.to;
+}
+
+function taskById(id) {
+  return (state.data.tasks || []).find((task) => task.id === id);
+}
+
+function taskIdentity(task) {
+  if (!task) return "";
+  const parts = ["Task ID " + task.id];
+  if (task.groupId) parts.push("Group ID " + task.groupId);
+  return parts.join(" · ");
+}
+
+function groupById(id) {
+  return ((state.data && state.data.groups) || []).find((group) => group.id === id);
+}
+
+function taskNote() {
+  const name = document.querySelector("#task-name").value.trim();
+  const description = document.querySelector("#task-description").value.trim();
+  return ["Task: " + name, "", description].join("\n");
+}
+
+function jiraSettings() {
+  const cfg = (state.data && state.data.atlassian) || {};
+  const jira = cfg.jira || {};
+  return {
+    enabled: !!(cfg.enabled && jira.enabled),
+    boardId: String(jira.boardId || ""),
+    boardName: String(jira.boardName || ""),
+    url: String(jira.url || "").replace(/\/$/, ""),
+  };
+}
+
+function boardLabel(name, id) {
+  name = String(name || "").trim();
+  id = String(id || "").trim();
+  if (!name) return id;
+  if (!id || id === name) return name;
+  return name + " (" + id + ")";
+}
+
+function epicBrowseURL(key) {
+  const settings = jiraSettings();
+  if (!settings.url || !key) return "";
+  return settings.url + "/browse/" + encodeURIComponent(key);
+}
+
+function jiraTicketLink(key) {
+  const url = epicBrowseURL(key);
+  if (!url) return el("span", "badge", key);
+  const link = el("a", "badge", key);
+  link.href = url;
+  link.setAttribute("aria-label", "Open " + key + " in Jira");
+  bindJiraOpen(link, key);
+  return link;
+}
+
+function bindJiraOpen(link, key) {
+  link.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openJiraTicket(key);
+  });
+}
+
+async function openJiraTicket(key) {
+  try {
+    await api("/api/jira/open", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    });
+  } catch (error) {
+    banner(error.message, true);
+  }
+}
+
+function jiraTicketOrder(key) {
+  const match = /^([A-Z][A-Z0-9]{1,9})-(\d+)$/.exec(String(key || "").trim().toUpperCase());
+  if (!match) return null;
+  return { project: match[1], number: Number(match[2]) };
+}
+
+function compareGroupsByTicket(a, b) {
+  const left = jiraTicketOrder(a.epicKey);
+  const right = jiraTicketOrder(b.epicKey);
+  if (left && right) {
+    if (left.project !== right.project) return left.project < right.project ? -1 : 1;
+    if (left.number !== right.number) return left.number - right.number;
+  } else if (left || right) {
+    return left ? -1 : 1;
+  }
+  return String(a.name || "").localeCompare(String(b.name || ""), undefined, { sensitivity: "base" });
+}
+
+function taskGroupChoice(id, name, epicKey, selected, started) {
+  const button = el("button", "task-group-choice");
+  button.type = "button";
+  button.dataset.taskGroup = id;
+  button.setAttribute("role", "option");
+  button.setAttribute("aria-selected", id === selected ? "true" : "false");
+  button.disabled = started;
+  if (epicKey) button.append(el("span", "badge", epicKey));
+  button.append(el("span", "", name));
+  return button;
+}
+
+function paintTaskGroupToggle() {
+  const hidden = document.querySelector("#task-group");
+  const value = document.querySelector("#task-group-value");
+  const toggle = document.querySelector("#task-group-toggle");
+  if (!hidden || !value || !toggle) return;
+  const task = state.taskId ? taskById(state.taskId) : null;
+  toggle.disabled = !!(task && task.started);
+  value.replaceChildren();
+  const group = groupById(hidden.value);
+  if (group) {
+    if (group.epicKey) value.append(el("span", "badge", group.epicKey));
+    value.append(el("span", "", group.name || group.id));
+    return;
+  }
+  value.append(el("span", hidden.value ? "" : "task-group-placeholder", hidden.value || "None"));
+}
+
+function fillTaskGroups(selected) {
+  const hidden = document.querySelector("#task-group");
+  const search = document.querySelector("#task-group-search");
+  if (hidden) hidden.value = selected || "";
+  if (search) search.value = "";
+  setTaskGroupMenu(false);
+  paintTaskGroups();
+}
+
+function paintTaskGroups() {
+  const hidden = document.querySelector("#task-group");
+  const search = document.querySelector("#task-group-search");
+  const list = document.querySelector("#task-group-list");
+  if (!hidden || !search || !list) return;
+  const task = state.taskId ? taskById(state.taskId) : null;
+  const started = !!(task && task.started);
+  search.disabled = started;
+  paintTaskGroupToggle();
+  const selected = hidden.value;
+  const query = search.value.trim().toLowerCase();
+  const groups = [...((state.data && state.data.groups) || [])].filter((group) => !group.deleted || group.id === selected).sort(compareGroupsByTicket);
+  const visible = groups.filter((group) => {
+    if (!query) return true;
+    const name = String(group.name || "").toLowerCase();
+    const ticket = String(group.epicKey || "").toLowerCase();
+    return name.includes(query) || ticket.includes(query);
+  });
+  list.replaceChildren();
+  if (!query) list.append(taskGroupChoice("", "None", "", selected, started));
+  if (!visible.length) list.append(el("p", "hint", query ? "No groups match this search." : "No groups yet."));
+  for (const group of visible) list.append(taskGroupChoice(group.id, group.name, group.epicKey, selected, started));
+  if (selected && !query && !groups.some((group) => group.id === selected)) {
+    const missing = groupById(selected);
+    list.append(taskGroupChoice(selected, (missing && missing.name) || selected, missing && missing.epicKey, selected, started));
+  }
+}
+
+function formEpic() {
+  const select = document.querySelector("#task-group");
+  const group = select ? groupById(select.value) : null;
+  if (!group || !group.epicKey) return null;
+  return { key: group.epicKey, boardId: group.epicBoardId || "", boardName: group.epicBoardName || "", pending: false };
+}
+
+function agentJiraBoard(agent) {
+  const item = ((agent && agent.mcps) || []).find((mcp) => mcp.id === "atlassian_jira");
+  if (!item) return null;
+  const shared = sharedPlace("atlassian_jira");
+  return {
+    boardId: item.boardId || shared.boardId || "",
+    boardName: item.boardName || shared.boardName || "",
+  };
+}
+
+function epicBlock(epic) {
+  if (!epic || !epic.key) return "";
+  return [
+    "Jira epic: " + epic.key,
+    "Board: " + boardLabel(epic.boardName, epic.boardId),
+    "This task belongs to this Jira epic. Do the work under this epic.",
+    "If you create Jira tickets that are not sub-tasks, create them under this epic.",
+    "If you create sub-tasks, create those sub-task tickets as children of the ticket this agent needs.",
+  ].join("\n");
+}
+
+function taskSendNote(epic, include) {
+  let note = taskNote();
+  if (include && epic && epic.key) note = note.replace(/\s+$/, "") + "\n\n" + epicBlock(epic);
+  return note;
+}
+
+function orcaEpicReason(epic, jira, include) {
+  if (!epic) return "No Jira epic is included.";
+  const epicBoard = boardLabel(epic.boardName, epic.boardId);
+  const agentBoard = jira ? boardLabel(jira.boardName, jira.boardId) : "";
+  if (epic.pending) {
+    if (!jira) return "Jira is off for this agent, so the new epic is left out.";
+    if (!epic.boardId || jira.boardId !== epic.boardId) return "The new epic is on " + epicBoard + ". This agent's board is " + (agentBoard || "not set") + ", so the epic is left out.";
+    return "A Jira epic is created on " + epicBoard + " when you start. Its key is added to this message, with instructions to put new tickets under that epic and sub-tasks under the ticket this agent needs.";
+  }
+  if (!jira) return "Jira is off for this agent, so epic " + epic.key + " is left out.";
+  if (include) return "Jira epic " + epic.key + " on " + epicBoard + " is included.";
+  return "Jira epic " + epic.key + " is on " + epicBoard + ". This agent's board is " + (agentBoard || "not set") + ", so the epic is left out.";
+}
+
+function taskManualSet() {
+  if (!state.taskManual) state.taskManual = new Set();
+  return state.taskManual;
+}
+
+// taskReach is every agent that turning on this agent also turns on. It follows
+// Agents Coordination from agent to agent and skips agents that are off.
+function taskReach(id) {
+  const seen = new Set([id]);
+  const queue = [id];
+  const out = [];
+  while (queue.length) {
+    const agent = agentById(queue.shift());
+    for (const peerId of (agent && agent.worksWith) || []) {
+      if (seen.has(peerId)) continue;
+      seen.add(peerId);
+      const peer = agentById(peerId);
+      if (!peer || peer.enabled === false) continue;
+      out.push(peerId);
+      queue.push(peerId);
+    }
+  }
+  return out;
+}
+
+// taskDependents maps each agent that was turned on by another agent to the
+// turned-on agents that list it under Agents Coordination.
+function taskDependents() {
+  const manual = taskManualSet();
+  const on = [...document.querySelectorAll("[data-task-agent][aria-pressed='true']")].map((button) => button.dataset.taskAgent);
+  const forced = new Map();
+  for (const id of on) {
+    if (manual.has(id)) continue;
+    const requesters = on.filter((other) => other !== id && ((agentById(other) || {}).worksWith || []).includes(id));
+    forced.set(id, requesters);
+  }
+  return forced;
+}
+
+function syncTaskForced() {
+  const manual = taskManualSet();
+  const forced = new Set();
+  for (const id of manual) {
+    for (const peer of taskReach(id)) {
+      if (!manual.has(peer)) forced.add(peer);
+    }
+  }
+  for (const button of document.querySelectorAll("[data-task-agent]")) {
+    const id = button.dataset.taskAgent;
+    const locked = forced.has(id);
+    const on = locked || manual.has(id);
+    button.setAttribute("aria-pressed", on ? "true" : "false");
+    button.disabled = locked;
+    button.removeAttribute("title");
+    const picks = document.querySelector(`[data-task-picks="${CSS.escape(id)}"]`);
+    if (picks) picks.hidden = !on;
+    const prompt = document.querySelector(`[data-task-prompt="${CSS.escape(id)}"]`);
+    if (prompt) prompt.hidden = !on;
+  }
+  const dependents = taskDependents();
+  for (const [id, requesters] of dependents) {
+    const button = document.querySelector(`[data-task-agent="${CSS.escape(id)}"]`);
+    if (!button) continue;
+    button.title = "Turned on by " + requesters.map(agentTitle).join(", ") + " through Agents Coordination. It waits for their request.";
+  }
+  paintSubAgents(manual, forced);
+}
+
+// paintSubAgents puts each agent that another agent turned on inside that main
+// agent's border. An agent reached by more than one main sits in the first one.
+function paintSubAgents(manual, forced) {
+  const list = document.querySelector("#task-agents");
+  if (!list) return;
+  const reach = new Map([...manual].map((id) => [id, taskReach(id)]));
+  const rows = [...list.querySelectorAll(".feature-agent")];
+  for (const row of rows) clearTaskSubMark(row);
+  for (const row of rows) {
+    const section = list.querySelector(`.feature-group[data-feature-home="${CSS.escape(row.dataset.featureHome || "")}"]`);
+    if (section) section.append(row);
+  }
+  for (const nest of list.querySelectorAll(".feature-subs")) nest.remove();
+  for (const section of list.querySelectorAll(".feature-group")) {
+    const agents = [...section.querySelectorAll(":scope > .feature-agent")];
+    agents.sort((a, b) => Number(a.dataset.featureOrder) - Number(b.dataset.featureOrder));
+    for (const row of agents) section.append(row);
+  }
+  for (const id of manual) {
+    const subs = (reach.get(id) || []).filter((peer) => {
+      if (!forced.has(peer)) return false;
+      const mains = [...manual].filter((main) => (reach.get(main) || []).includes(peer));
+      return mains[0] === id;
+    });
+    const mainRow = taskAgentCard(id);
+    if (!mainRow || !subs.length) continue;
+    const nest = el("div", "feature-subs");
+    for (const peer of subs) {
+      const subRow = taskAgentCard(peer);
+      if (!subRow || subRow === mainRow) continue;
+      nest.append(subRow);
+      markTaskSub(subRow, [...manual].filter((main) => (reach.get(main) || []).includes(peer)));
+    }
+    if (!nest.childElementCount) continue;
+    mainRow.classList.add("is-main");
+    mainRow.append(nest);
+  }
+}
+
+function taskAgentCard(id) {
+  const button = document.querySelector(`#task-agents [data-task-agent="${CSS.escape(id)}"]`);
+  return button ? button.closest(".feature-agent") : null;
+}
+
+function clearTaskSubMark(row) {
+  row.classList.remove("is-sub", "is-main");
+  const label = row.querySelector(":scope > .feature-toggle .feature-label");
+  if (label) {
+    for (const node of [...label.children]) {
+      if (node.classList.contains("feature-sub")) node.remove();
+    }
+  }
+  const controls = row.querySelector(":scope > .feature-toggle .feature-controls");
+  if (controls) {
+    for (const node of [...controls.children]) {
+      if (node.classList.contains("feature-sub-badge")) node.remove();
+    }
+  }
+}
+
+function markTaskSub(row, mains) {
+  row.classList.add("is-sub");
+  const controls = row.querySelector(":scope > .feature-toggle .feature-controls");
+  const label = row.querySelector(":scope > .feature-toggle .feature-label");
+  if (controls) controls.insertBefore(el("span", "badge sub feature-sub-badge", "Sub agent"), controls.firstChild);
+  if (label) label.append(el("span", "feature-sub", "Sub agent of " + mains.map(agentTitle).join(", ") + ". Waits for their request."));
+}
+
+// taskInitialManual picks the agents the user turned on from a saved list. An agent
+// that another one in the list turns on is not one of them.
+function taskInitialManual(ids) {
+  const manual = new Set();
+  const forced = new Set();
+  for (const id of ids) {
+    if (forced.has(id)) continue;
+    manual.add(id);
+    for (const peer of taskReach(id)) {
+      forced.add(peer);
+      manual.delete(peer);
+    }
+  }
+  return manual;
+}
+
+function taskAgentChoice(agent) {
+  const tool = document.querySelector(`[data-task-tool="${CSS.escape(agent.id)}"]`);
+  const model = document.querySelector(`[data-task-model="${CSS.escape(agent.id)}"]`);
+  if (tool && model) return { tool: tool.value, model: model.value };
+  return { tool: agent.tool || "", model: agent.model || "" };
+}
+
+function taskSendAgents() {
+  const task = state.taskId ? taskById(state.taskId) : null;
+  if (task && task.started) {
+    return (task.agents || []).map((item) => agentById(item.agentId) || { id: item.agentId, title: item.agentId, mcps: [] });
+  }
+  const chosen = [];
+  for (const button of document.querySelectorAll("[data-task-agent][aria-pressed='true']")) {
+    const agent = agentById(button.dataset.taskAgent);
+    if (agent && agent.enabled !== false) chosen.push(agent);
+  }
+  return chosen;
+}
+
+function syncTaskGroup() {
+  const note = document.querySelector("#task-group-note");
+  const select = document.querySelector("#task-group");
+  if (!select || !note) return;
+  paintTaskGroups();
+  note.hidden = false;
+  note.replaceChildren();
+  const group = groupById(select.value);
+  if (group && group.epicKey) {
+    note.append(document.createTextNode("This task belongs to Jira epic "));
+    const url = epicBrowseURL(group.epicKey);
+    if (url) {
+      const link = el("a", "", group.epicKey);
+      link.href = url;
+      bindJiraOpen(link, group.epicKey);
+      note.append(link);
+    } else note.append(document.createTextNode(group.epicKey));
+    const board = boardLabel(group.epicBoardName, group.epicBoardId);
+    note.append(document.createTextNode(board ? " on " + board + "." : "."));
+    return;
+  }
+  if (group) {
+    note.textContent = "This group has no Jira epic.";
+    return;
+  }
+  const groups = (state.data && state.data.groups) || [];
+  note.textContent = groups.length
+    ? "Choose a group to put this task under that group's Jira epic."
+    : "Create a group first. A Jira epic is created when Jira is on in Settings.";
+}
+
+function paintOrcaSend() {
+  const host = document.querySelector("#task-orca-body");
+  if (!host) return;
+  const label = orchestratorLabel();
+  const agents = taskSendAgents();
+  host.replaceChildren();
+  if (!agents.length) {
+    host.append(el("p", "hint", "Turn on an agent to see what Start sends to " + label + "."));
+    return;
+  }
+  const epic = formEpic();
+  for (const agent of agents) {
+    const block = el("section", "task-orca-agent");
+    const choice = taskAgentChoice(agent);
+    block.append(el("h4", "", agent.title || agent.id));
+    const meta = [choice.tool, choice.model].filter(Boolean).join(" · ");
+    if (meta) block.append(el("p", "hint", meta));
+    const jira = agentJiraBoard(agent);
+    const include = !!(epic && epic.key && jira && epic.boardId && jira.boardId === epic.boardId);
+    block.append(el("p", "hint", orcaEpicReason(epic, jira, include)));
+    const waitFor = taskDependents().get(agent.id);
+    if (waitFor && waitFor.length) {
+      block.append(el("p", "hint", "Starts first and waits for a request from " + waitFor.map(agentTitle).join(", ") + " before it works."));
+    }
+    const field = el("div", "field");
+    const label = el("span", "", "Prompt");
+    label.id = "task-send-label-" + agent.id;
+    const compose = el("div", "compose");
+    const area = el("textarea");
+    area.rows = 8;
+    area.dataset.taskSendNote = agent.id;
+    area.value = taskSendNote(epic, include);
+    area.setAttribute("aria-labelledby", label.id);
+    compose.append(area, generateButton("prompt", agent.title || agent.id));
+    field.append(label, compose);
+    block.append(field);
+    host.append(block);
+  }
+}
+
+function taskSections(task) {
+  const assigned = new Map((task.agents || []).map((item) => [item.agentId, item.status || "pending"]));
+  const runs = new Map((task.runs || []).map((run) => [run.agentId, run]));
+  const sections = [];
+  const seen = new Set();
+  for (const group of groups(state.data.agents || [])) {
+    const rows = [];
+    for (const agent of group.agents) {
+      if (!assigned.has(agent.id)) continue;
+      seen.add(agent.id);
+      const status = taskStatus(assigned.get(agent.id));
+      rows.push({ id: agent.id, title: agent.title, status, run: runs.get(agent.id) || null });
+    }
+    if (rows.length) sections.push({ name: group.name, rows });
+  }
+  const missing = [];
+  for (const [id, raw] of assigned) {
+    if (seen.has(id)) continue;
+    missing.push({ id, title: id, status: taskStatus(raw), run: runs.get(id) || null });
+  }
+  if (missing.length) sections.push({ name: "", rows: missing });
+  return sections;
+}
+
+function renderTasks() {
+  const panel = document.querySelector("#panel-tasks");
+  if (!panel || !state.data) return;
+  const range = doneRange();
+  const tasks = state.data.tasks || [];
+  const query = state.taskQuery.trim().replace(/^#/, "").toLowerCase();
+  panel.replaceChildren();
+  panel.append(taskViewTabs());
+  if (state.taskView === "groups") {
+    panel.append(renderGroupList());
+    return;
+  }
+  const head = el("div", "tasks-head");
+  const search = el("input");
+  search.type = "search";
+  search.id = "task-search";
+  search.placeholder = "Group ID";
+  search.value = state.taskQuery;
+  search.setAttribute("aria-label", "Search by group ID");
+  search.autocomplete = "off";
+  const actions = el("div", "tasks-actions");
+  const addGroup = el("button", "", "New group");
+  addGroup.type = "button";
+  addGroup.id = "group-new";
+  const create = el("button", "primary", "New task");
+  create.type = "button";
+  create.id = "task-new";
+  actions.append(addGroup, create);
+  head.append(search, actions);
+  panel.append(head);
+  const board = el("div", "task-board");
+  for (const column of taskColumns) {
+    const inColumn = tasks.filter((task) => task.column === column.id && (column.id !== "done" || taskInDoneRange(task, range)));
+    const visible = inColumn.filter((task) => !query || String(task.groupId || "").toLowerCase().includes(query));
+    const section = el("section", "task-column");
+    section.dataset.column = column.id;
+    const title = el("div", "task-column-head");
+    title.append(el("h2", "", column.label));
+    title.append(el("span", "task-count", String(visible.length)));
+    section.append(title);
+    if (column.id === "done") section.append(taskDoneRange(range));
+    const cards = el("div", "task-column-cards");
+    if (!visible.length) {
+      const empty = query ? "No tasks match this group ID." : (column.id === "done" ? "No tasks in this range." : "No tasks.");
+      cards.append(el("p", "hint", empty));
+    }
+    for (const task of visible) cards.append(taskCard(task));
+    section.append(cards);
+    board.append(section);
+  }
+  panel.append(board);
+}
+
+function taskViewTabs() {
+  const nav = el("div", "task-tabs");
+  nav.setAttribute("role", "tablist");
+  nav.setAttribute("aria-label", "Tasks");
+  nav.append(taskViewTab("board", "Board"), taskViewTab("groups", "Group"));
+  return nav;
+}
+
+function taskViewTab(id, label) {
+  const button = el("button", "task-tab", label);
+  button.type = "button";
+  button.dataset.taskView = id;
+  button.setAttribute("role", "tab");
+  button.setAttribute("aria-selected", state.taskView === id ? "true" : "false");
+  return button;
+}
+
+function activeGroups() {
+  return ((state.data && state.data.groups) || []).filter((group) => !group.deleted);
+}
+
+function renderGroupList() {
+  const wrap = el("div", "group-list");
+  const head = el("div", "tasks-head");
+  const actions = el("div", "tasks-actions");
+  const add = el("button", "primary", "New group");
+  add.type = "button";
+  add.id = "group-new";
+  actions.append(add);
+  head.append(actions);
+  wrap.append(head);
+  const groups = [...activeGroups()].sort(compareGroupsByTicket);
+  if (!groups.length) {
+    wrap.append(el("p", "hint", "No groups yet. Create a group to make a Jira epic, then choose that group on a task."));
+    return wrap;
+  }
+  for (const group of groups) wrap.append(groupRow(group));
+  return wrap;
+}
+
+function groupRow(group) {
+  const row = el("article", "card group-row");
+  const main = el("div", "group-row-main");
+  const title = el("div", "group-row-title");
+  title.append(el("h3", "", group.name));
+  if (group.epicKey) title.append(jiraTicketLink(group.epicKey));
+  main.append(title);
+  main.append(el("p", "task-id", group.id));
+  main.append(el("p", group.description ? "summary" : "hint", group.description || "No description."));
+  const remove = el("button", "", "Delete");
+  remove.type = "button";
+  remove.dataset.deleteGroup = group.id;
+  row.append(main, remove);
+  return row;
+}
+
+function openDeleteGroup(id) {
+  const group = groupById(id);
+  if (!group) return;
+  const dialog = document.querySelector("#group-delete-dialog");
+  dialog.dataset.groupId = id;
+  document.querySelector("#group-delete-title").textContent = "Delete " + group.name;
+  document.querySelector("#group-delete-text").textContent = "This removes the group from the list. Tasks that already use it stay on the board.";
+  const line = document.querySelector("#group-delete-jira-line");
+  const box = document.querySelector("#group-delete-jira");
+  box.checked = false;
+  if (group.epicKey) {
+    line.hidden = false;
+    document.querySelector("#group-delete-jira-label").textContent = "Also delete Jira ticket " + group.epicKey;
+  } else {
+    line.hidden = true;
+  }
+  const error = document.querySelector("#group-delete-error");
+  error.hidden = true;
+  error.textContent = "";
+  document.querySelector("#group-delete-go").disabled = false;
+  dialog.showModal();
+}
+
+async function confirmDeleteGroup() {
+  const dialog = document.querySelector("#group-delete-dialog");
+  const id = dialog.dataset.groupId;
+  const group = groupById(id);
+  const jira = !document.querySelector("#group-delete-jira-line").hidden && document.querySelector("#group-delete-jira").checked;
+  const error = document.querySelector("#group-delete-error");
+  const button = document.querySelector("#group-delete-go");
+  if (!id) {
+    error.hidden = false;
+    error.textContent = "Choose a group.";
+    return;
+  }
+  button.disabled = true;
+  error.hidden = true;
+  try {
+    await api("/api/groups/" + encodeURIComponent(id), {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ jira }),
+    });
+    if (group) group.deleted = true;
+    dialog.close();
+    renderTasks();
+    const name = (group && group.name) || "the group";
+    banner(jira && group && group.epicKey ? "Deleted " + name + " and Jira ticket " + group.epicKey + "." : "Deleted " + name + ".");
+  } catch (err) {
+    error.hidden = false;
+    error.textContent = err.message;
+    button.disabled = false;
+  }
+}
+
+function taskDoneRange(range) {
+  const box = el("div", "task-range");
+  box.append(taskDateField("From", "task-done-from", range.from), taskDateField("To", "task-done-to", range.to));
+  if (state.taskDoneFrom || state.taskDoneTo) {
+    const reset = el("button", "task-range-reset", "Last 7 days");
+    reset.type = "button";
+    reset.id = "task-done-reset";
+    box.append(reset);
+  }
+  return box;
+}
+
+function taskDateField(label, id, value) {
+  const field = el("label");
+  field.append(el("span", "", label));
+  const input = el("input");
+  input.type = "date";
+  input.id = id;
+  input.value = value;
+  field.append(input);
+  return field;
+}
+
+function taskCard(task) {
+  const card = el("button", "card task-card");
+  card.type = "button";
+  card.dataset.task = String(task.id);
+  card.append(el("p", "task-id", task.id));
+  const heading = el("div", "task-card-title");
+  heading.append(el("h3", "", task.name));
+  card.append(heading);
+  if (task.groupId) {
+    const group = groupById(task.groupId);
+    const name = (group && group.name) || "";
+    const ticket = (group && group.epicKey) || task.epicKey || "";
+    const label = ["Group:", name, ticket].filter(Boolean).join(" ");
+    if (name || ticket) card.append(el("p", "hint", label));
+  }
+  card.append(el("p", task.description ? "summary" : "hint", task.description || "No description."));
+  const sections = taskSections(task);
+  if (!sections.length) card.append(el("p", "hint", "No agents are assigned."));
+  for (const section of sections) {
+    const block = el("div", "task-category");
+    block.append(el("h4", "", categoryLabel(section.name)));
+    for (const row of section.rows) {
+      const line = el("div", "task-agent");
+      line.append(el("span", "task-agent-name", row.title));
+      const marks = el("span", "task-agent-marks");
+      const live = orcaMark(row.run);
+      if (live) marks.append(el("span", "badge " + live.badge, live.label));
+      marks.append(el("span", "badge" + (row.status.badge ? " " + row.status.badge : ""), row.status.label));
+      line.append(marks);
+      block.append(line);
+      if (row.run) block.append(taskLogNode(row.run));
+    }
+    card.append(block);
+  }
+  return card;
+}
+
+function rememberTask(task) {
+  state.data.tasks = (state.data.tasks || []).filter((item) => item.id !== task.id);
+  state.data.tasks.unshift(task);
+  renderTasks();
+}
+
+function forgetTask(id) {
+  state.data.tasks = (state.data.tasks || []).filter((item) => item.id !== id);
+  renderTasks();
+}
+
+function taskError(message) {
+  const error = document.querySelector("#task-error");
+  error.hidden = false;
+  error.textContent = message;
+}
+
+function taskFormBody() {
+  const task = state.taskId ? taskById(state.taskId) : null;
+  return {
+    name: document.querySelector("#task-name").value.trim(),
+    description: document.querySelector("#task-description").value.trim(),
+    column: task ? task.column : "todo",
+    groupId: document.querySelector("#task-group").value,
+    agents: [...document.querySelectorAll("[data-task-agent][aria-pressed='true']")].map((button) => {
+      const id = button.dataset.taskAgent;
+      const task = state.taskId ? taskById(state.taskId) : null;
+      const stored = ((task && task.agents) || []).find((agent) => agent.agentId === id);
+      return { agentId: id, status: stored ? stored.status : "pending" };
+    }),
+  };
+}
+
+async function saveTaskForm() {
+  const body = taskFormBody();
+  if (!body.name) {
+    taskError("Enter a task name.");
+    return null;
+  }
+  const creating = !state.taskId;
+  const data = await api(creating ? "/api/tasks" : "/api/tasks/" + state.taskId, {
+    method: creating ? "POST" : "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  rememberTask(data.task);
+  state.taskId = data.task.id;
+  document.querySelector("#task-delete").hidden = false;
+  document.querySelector("#task-dialog-title").textContent = data.task.name;
+  const idLine = document.querySelector("#task-id");
+  idLine.hidden = false;
+  idLine.textContent = taskIdentity(data.task);
+  fillTaskGroups(data.task.groupId || "");
+  syncTaskGroup();
+  return data.task;
+}
+
+function taskFollowup(agentId, run, locked) {
+  const box = el("div", "task-followup");
+  box.dataset.taskFollow = agentId;
+  const options = (run && run.askOptions) || [];
+  if (run && run.askPrompt) {
+    const ask = el("div", "task-ask");
+    ask.append(el("p", "task-ask-prompt", run.askPrompt));
+    if (options.length) {
+      for (const option of options) {
+        const label = el("label", "task-choice");
+        const input = el("input");
+        input.type = "radio";
+        input.name = "ask-" + agentId;
+        input.value = option;
+        label.append(input, document.createTextNode(" " + option));
+        ask.append(label);
+      }
+    } else {
+      const area = el("textarea");
+      area.dataset.taskAnswer = agentId;
+      area.rows = 3;
+      area.placeholder = "Your answer";
+      ask.append(area);
+    }
+    const submit = el("button", "", "Submit");
+    submit.type = "button";
+    submit.dataset.taskAskSubmit = agentId;
+    ask.append(submit);
+    box.append(ask);
+  }
+  if (!locked) {
+    const comment = el("label", "field");
+    comment.append(el("span", "", "Comments"));
+    const area = el("textarea");
+    area.dataset.taskComment = agentId;
+    area.rows = 3;
+    area.placeholder = "Ask this agent to continue";
+    comment.append(area);
+    box.append(comment);
+  }
+  const actions = el("div", "task-follow-actions");
+  if (!locked) {
+    const send = el("button", "", "Send");
+    send.type = "button";
+    send.dataset.taskSend = agentId;
+    actions.append(send);
+  }
+  const approve = el("button", "primary", "Approve");
+  approve.type = "button";
+  approve.dataset.taskApprove = agentId;
+  actions.append(approve);
+  box.append(actions);
+  return box;
+}
+
+function taskPicks(agent) {
+  const picks = el("div", "agent-picks task-picks");
+  picks.dataset.taskPicks = agent.id;
+  if (agent.enabled === false) {
+    picks.hidden = true;
+    return picks;
+  }
+  const choice = choiceFor(agent.id);
+  const toolField = el("label", "field");
+  toolField.append(el("span", "", "AI Tool"));
+  const toolSelect = el("select");
+  toolSelect.dataset.taskTool = agent.id;
+  fillToolSelect(toolSelect, choice.tool);
+  toolField.append(toolSelect);
+  const modelField = el("label", "field");
+  modelField.append(el("span", "", "Model"));
+  const modelSelect = el("select");
+  modelSelect.dataset.taskModel = agent.id;
+  fillModels(modelSelect, choice.tool, choice.model);
+  modelField.append(modelSelect);
+  picks.append(toolField, modelField);
+  return picks;
+}
+
+function taskAgentRow(agent, status, on, run) {
+  const row = el("div", "feature-agent");
+  const toggle = el("div", "feature-toggle");
+  const text = el("span", "feature-label");
+  text.append(el("span", "feature-title", agent.title));
+  text.append(el("span", "feature-id", "ID: " + agent.id));
+  const controls = el("div", "feature-controls");
+  if (on) {
+    const statusInfo = taskStatus(status);
+    const badge = el("span", "badge" + (statusInfo.badge ? " " + statusInfo.badge : ""), statusInfo.label);
+    badge.dataset.taskState = agent.id;
+    controls.append(badge);
+  }
+  if (agent.enabled === false) controls.append(el("span", "badge bad", "Off"));
+  else {
+    const prompt = el("button", "icon-button feature-prompt");
+    prompt.type = "button";
+    prompt.hidden = !on;
+    prompt.dataset.taskPrompt = agent.id;
+    prompt.setAttribute("aria-label", "Show the prompt for " + agent.title);
+    prompt.append(promptIcon());
+    controls.append(prompt);
+  }
+  const button = el("button", "switch");
+  button.type = "button";
+  button.dataset.taskAgent = agent.id;
+  button.setAttribute("aria-pressed", on ? "true" : "false");
+  button.setAttribute("aria-label", agent.title);
+  button.append(el("span", "switch-knob"));
+  controls.append(button);
+  toggle.append(text, controls);
+  const picks = taskPicks(agent);
+  picks.hidden = !on;
+  row.append(toggle, picks);
+  if (run) row.append(taskLogNode(run, agent.id));
+  if (on && status === "review") {
+    const follow = taskFollowup(agent.id, run);
+    follow.dataset.key = followKey({ status }, run);
+    row.append(follow);
+  }
+  return row;
+}
+
+function taskAgentPanel(agent, status, run) {
+  const panel = el("div", "task-agent-panel");
+  panel.dataset.taskPanel = agent.id;
+  panel.setAttribute("role", "tabpanel");
+  const marks = el("div", "task-agent-marks");
+  const live = orcaMark(run);
+  if (live) marks.append(el("span", "badge " + live.badge, live.label));
+  const statusInfo = taskStatus(status);
+  const badge = el("span", "badge" + (statusInfo.badge ? " " + statusInfo.badge : ""), statusInfo.label);
+  badge.dataset.taskState = agent.id;
+  marks.append(badge);
+  panel.append(marks);
+  if (run) panel.append(taskLogNode(run, agent.id));
+  else panel.append(el("p", "hint", "Waiting for output from Orca."));
+  if (status === "review") {
+    const follow = taskFollowup(agent.id, run, true);
+    follow.dataset.key = followKey({ status }, run);
+    panel.append(follow);
+  }
+  return panel;
+}
+
+function renderStartedAgents(task) {
+  const list = document.querySelector("#task-agents");
+  const runs = new Map((task.runs || []).map((run) => [run.agentId, run]));
+  const tabs = el("div", "task-tabs");
+  tabs.setAttribute("role", "tablist");
+  const panels = [];
+  (task.agents || []).forEach((item, index) => {
+    const agent = agentById(item.agentId) || { id: item.agentId, title: item.agentId, enabled: true };
+    const status = item.status || "pending";
+    const statusInfo = taskStatus(status);
+    const tab = el("button", "task-tab");
+    tab.type = "button";
+    tab.dataset.taskTab = agent.id;
+    tab.setAttribute("role", "tab");
+    tab.setAttribute("aria-selected", index === 0 ? "true" : "false");
+    tab.append(document.createTextNode(agent.title + " "));
+    const mark = el("span", "badge" + (statusInfo.badge ? " " + statusInfo.badge : ""), statusInfo.label);
+    mark.dataset.taskTabState = agent.id;
+    tab.append(mark);
+    tabs.append(tab);
+    const panel = taskAgentPanel(agent, status, runs.get(item.agentId));
+    panel.hidden = index !== 0;
+    panels.push(panel);
+  });
+  list.replaceChildren(tabs);
+  if (!panels.length) list.append(el("p", "hint", "No agents are assigned."));
+  for (const panel of panels) list.append(panel);
+}
+
+function openTask(id) {
+  const task = id ? taskById(id) : null;
+  state.taskId = task ? task.id : "";
+  const started = !!(task && task.started);
+  document.querySelector("#task-dialog-title").textContent = task ? task.name : "New task";
+  const idLine = document.querySelector("#task-id");
+  idLine.hidden = !task;
+  idLine.textContent = taskIdentity(task);
+  const name = document.querySelector("#task-name");
+  const description = document.querySelector("#task-description");
+  name.value = task ? task.name : "";
+  description.value = task ? task.description : "";
+  name.readOnly = started;
+  description.readOnly = started;
+  for (const button of document.querySelectorAll("#task-dialog [data-generate]")) button.hidden = started;
+  paintTaskColumn(task ? task.column : "todo");
+  const assigned = new Map((task ? task.agents : []).map((item) => [item.agentId, item.status || "pending"]));
+  const runs = new Map((task && task.runs ? task.runs : []).map((run) => [run.agentId, run]));
+  const list = document.querySelector("#task-agents");
+  list.replaceChildren();
+  if (started) {
+    renderStartedAgents(task);
+  } else {
+    const seen = new Set();
+    let home = 0;
+    for (const group of groups(state.data.agents || [])) {
+      const agents = group.agents.filter((agent) => agent.enabled !== false || assigned.has(agent.id));
+      if (!agents.length) continue;
+      const section = el("section", "feature-group");
+      section.dataset.featureHome = String(home++);
+      section.append(el("h3", "", categoryLabel(group.name)));
+      agents.forEach((agent, index) => {
+        seen.add(agent.id);
+        const row = taskAgentRow(agent, assigned.get(agent.id) || "pending", assigned.has(agent.id), runs.get(agent.id));
+        row.dataset.featureHome = section.dataset.featureHome;
+        row.dataset.featureOrder = String(index);
+        section.append(row);
+      });
+      list.append(section);
+    }
+    const missing = [...assigned.keys()].filter((agentId) => !seen.has(agentId));
+    if (missing.length) {
+      const section = el("section", "feature-group");
+      section.dataset.featureHome = String(home++);
+      section.append(el("h3", "", "Agents"));
+      missing.forEach((agentId, index) => {
+        const row = taskAgentRow({ id: agentId, title: agentId, enabled: false }, assigned.get(agentId) || "pending", true, runs.get(agentId));
+        row.dataset.featureHome = section.dataset.featureHome;
+        row.dataset.featureOrder = String(index);
+        section.append(row);
+      });
+      list.append(section);
+    }
+    if (!list.childElementCount) list.append(el("p", "hint", "No agents are turned on."));
+    const ordered = (state.data.agents || []).map((agent) => agent.id).filter((agentId) => assigned.has(agentId));
+    for (const agentId of assigned.keys()) if (!ordered.includes(agentId)) ordered.push(agentId);
+    state.taskManual = taskInitialManual(ordered);
+    syncTaskForced();
+  }
+  const error = document.querySelector("#task-error");
+  error.hidden = true;
+  error.textContent = "";
+  const result = document.querySelector("#task-result");
+  result.hidden = true;
+  result.textContent = "";
+  result.classList.remove("error");
+  const label = orchestratorLabel();
+  document.querySelector("#task-lead").textContent = started
+    ? "This task is running in " + label + ". Each tab is one agent. Answer a question and submit it. Approve marks that agent Completed. When every agent is Completed, the task moves to Done."
+    : "Turn on the agents for this task. An agent also turns on the agents in its Agents Coordination, and those cannot be turned off on their own. They start first and wait for a request before they work. Start sends the name and description to the agents that are on, groups them in " + label + " by this group ID, and moves this task to In Progress. Kiki shows each agent's thinking and replies. When an agent asks a question or finishes, its status becomes Waiting for review. Approve marks that agent Completed. When every agent is Completed, the task moves to Done.";
+  document.querySelector("#task-delete").hidden = !task;
+  const go = document.querySelector("#task-go");
+  const save = document.querySelector("#task-save");
+  go.hidden = started;
+  save.hidden = started;
+  go.disabled = false;
+  go.textContent = "Start on " + label;
+  save.disabled = false;
+  fillTaskGroups(task ? task.groupId : "");
+  syncTaskGroup();
+  document.querySelector("#task-dialog").showModal();
+  placeGenerateButtons();
+  if (!started) name.focus();
+}
+
+async function openTaskPrompt(id) {
+  const agent = agentById(id);
+  const tool = document.querySelector(`[data-task-tool="${CSS.escape(id)}"]`).value;
+  const model = document.querySelector(`[data-task-model="${CSS.escape(id)}"]`).value;
+  const dialog = document.querySelector("#prompt-reader");
+  document.querySelector("#prompt-reader-title").textContent = agent.title + " — prompt sent to " + orchestratorLabel();
+  document.querySelector("#prompt-reader-body").textContent = "Loading…";
+  dialog.showModal();
+  try {
+    const data = await api("/api/agents/" + encodeURIComponent(id) + "/preview", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        note: taskNote(),
+        repo: agent.repos[0],
+        agent: tool,
+        model,
+        taskId: state.taskId || "",
+        waitFor: taskDependents().get(id) || [],
+      }),
+    });
+    document.querySelector("#prompt-reader-body").innerHTML = renderMarkdown(data.prompt);
+  } catch (error) {
+    dialog.close();
+    taskError(error.message);
+  }
+}
+
+async function saveTask() {
+  const current = state.taskId ? taskById(state.taskId) : null;
+  if (current && current.started) return;
+  const error = document.querySelector("#task-error");
+  error.hidden = true;
+  const button = document.querySelector("#task-save");
+  button.disabled = true;
+  try {
+    const task = await saveTaskForm();
+    if (!task) return;
+    document.querySelector("#task-dialog").close();
+    banner("Saved " + task.name + ".");
+  } catch (err) {
+    taskError(err.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function deleteTask() {
+  if (!state.taskId) return;
+  const button = document.querySelector("#task-delete");
+  button.disabled = true;
+  try {
+    await api("/api/tasks/" + state.taskId, { method: "DELETE" });
+    forgetTask(state.taskId);
+    state.taskId = "";
+    document.querySelector("#task-dialog").close();
+    banner("Deleted the task.");
+  } catch (err) {
+    taskError(err.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function taskStartAgents() {
+  const chosen = [];
+  for (const button of document.querySelectorAll("[data-task-agent][aria-pressed='true']")) {
+    const agent = agentById(button.dataset.taskAgent);
+    if (!agent || agent.enabled === false) continue;
+    chosen.push(button);
+  }
+  return chosen;
+}
+
+function reviewTaskStart() {
+  const current = state.taskId ? taskById(state.taskId) : null;
+  if (current && current.started) return;
+  const error = document.querySelector("#task-error");
+  error.hidden = true;
+  const name = document.querySelector("#task-name").value.trim();
+  const description = document.querySelector("#task-description").value.trim();
+  if (!name) {
+    taskError("Enter a task name.");
+    return;
+  }
+  if (!description) {
+    taskError("Describe this task.");
+    return;
+  }
+  if (!document.querySelector("#task-group").value) {
+    taskError("Choose a group before starting this task.");
+    return;
+  }
+  if (taskNote().length > 4000) {
+    taskError("Description is longer than 4000 characters.");
+    return;
+  }
+  if (!taskStartAgents().length) {
+    taskError("Turn on at least one agent.");
+    return;
+  }
+  const label = orchestratorLabel();
+  document.querySelector("#task-start-title").textContent = "Start on " + label;
+  document.querySelector("#task-start-go").textContent = "Start on " + label;
+  const startError = document.querySelector("#task-start-error");
+  startError.hidden = true;
+  startError.textContent = "";
+  paintOrcaSend();
+  document.querySelector("#task-start-dialog").showModal();
+  requestAnimationFrame(placeGenerateButtons);
+}
+
+function taskStartPrompts() {
+  const notes = new Map();
+  for (const box of taskStartAgents()) {
+    const id = box.dataset.taskAgent;
+    const area = document.querySelector(`#task-start-dialog [data-task-send-note="${CSS.escape(id)}"]`);
+    const text = area ? area.value.trim() : "";
+    if (!text) return { error: "Enter the prompt." };
+    if (text.length > 8000) return { error: "Prompt is longer than 8000 characters." };
+    notes.set(id, text);
+  }
+  return { notes };
+}
+
+function taskStartError(message) {
+  const error = document.querySelector("#task-start-error");
+  if (!error) return;
+  error.hidden = false;
+  error.textContent = message;
+}
+
+async function startTask(notes) {
+  const current = state.taskId ? taskById(state.taskId) : null;
+  if (current && current.started) return;
+  const error = document.querySelector("#task-error");
+  error.hidden = true;
+  const name = document.querySelector("#task-name").value.trim();
+  const description = document.querySelector("#task-description").value.trim();
+  if (!name) {
+    taskError("Enter a task name.");
+    return;
+  }
+  if (!description) {
+    taskError("Describe this task.");
+    return;
+  }
+  if (!document.querySelector("#task-group").value) {
+    taskError("Choose a group before starting this task.");
+    return;
+  }
+  const note = taskNote();
+  if (note.length > 4000) {
+    taskError("Description is longer than 4000 characters.");
+    return;
+  }
+  const prompts = notes || taskStartPrompts().notes;
+  const checked = taskStartAgents();
+  if (!checked.length) {
+    taskError("Turn on at least one agent.");
+    return;
+  }
+  const go = document.querySelector("#task-go");
+  const result = document.querySelector("#task-result");
+  const label = orchestratorLabel();
+  go.disabled = true;
+  go.textContent = "Starting…";
+  result.hidden = false;
+  result.classList.remove("error");
+  result.textContent = "Saving…";
+  let task;
+  try {
+    task = await saveTaskForm();
+  } catch (err) {
+    result.hidden = true;
+    taskError(err.message);
+    go.disabled = false;
+    go.textContent = "Start on " + label;
+    return;
+  }
+  if (!task) {
+    result.hidden = true;
+    go.disabled = false;
+    go.textContent = "Start on " + label;
+    return;
+  }
+  result.textContent = "Naming the branch…";
+  let named;
+  try {
+    named = await api("/api/tasks/" + task.id + "/branch", { method: "POST" });
+  } catch (err) {
+    result.hidden = true;
+    taskError(err.message);
+    go.disabled = false;
+    go.textContent = "Start on " + label;
+    return;
+  }
+  const lines = [];
+  const started = [];
+  let failed = 0;
+  const dependents = taskDependents();
+  const ordered = checked.slice().sort((a, b) => Number(dependents.has(b.dataset.taskAgent)) - Number(dependents.has(a.dataset.taskAgent)));
+  for (const box of ordered) {
+    const id = box.dataset.taskAgent;
+    const agent = agentById(id);
+    const tool = document.querySelector(`[data-task-tool="${CSS.escape(id)}"]`).value;
+    const model = document.querySelector(`[data-task-model="${CSS.escape(id)}"]`).value;
+    result.textContent = "Starting " + id + " on " + label + "…";
+    try {
+      const data = await api("/api/agents/" + encodeURIComponent(id) + "/launch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          note: (prompts && prompts.get(id)) || note,
+          noteFinal: !!(prompts && prompts.get(id)),
+          repo: agent.repos[0],
+          agent: tool,
+          model,
+          slug: named.slug,
+          taskId: String(task.id),
+          ticket: named.ticket || "",
+          waitFor: dependents.get(id) || [],
+        }),
+      });
+      if (data.launch.status === "ok") {
+        started.push(id);
+        lines.push(id + ": started on " + label);
+      } else {
+        failed += 1;
+        lines.push(id + ": " + data.launch.detail);
+      }
+    } catch (err) {
+      failed += 1;
+      lines.push(id + ": " + err.message);
+    }
+  }
+  try {
+    const fresh = await api("/api/state");
+    state.data = fresh;
+    renderTasks();
+    watchTaskRuns();
+  } catch (err) {
+    lines.push(err.message);
+  }
+  result.classList.toggle("error", failed > 0);
+  result.textContent = lines.join("\n");
+  if (failed === 0) {
+    document.querySelector("#task-dialog").close();
+    banner("Started " + started.length + (started.length === 1 ? " agent" : " agents") + " on " + label + " for " + name + ".");
+    return;
+  }
+  const running = taskById(task.id);
+  if (running && running.started) {
+    openTask(task.id);
+    const shown = document.querySelector("#task-result");
+    shown.hidden = false;
+    shown.classList.add("error");
+    shown.textContent = lines.join("\n");
+    return;
+  }
+  go.disabled = false;
+  go.textContent = "Start on " + label;
+}
+
+document.querySelector("#task-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  reviewTaskStart();
+});
+document.querySelector("#task-start-dialog").addEventListener("input", (event) => {
+  if (event.target.closest(".compose textarea")) placeGenerateButtons();
+  resetGenerateUndo(event.target);
+});
+document.querySelector("#task-start-dialog").addEventListener("close", stopGenerateRuns);
+document.querySelector("#task-start-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const prompts = taskStartPrompts();
+  if (prompts.error) {
+    taskStartError(prompts.error);
+    return;
+  }
+  document.querySelector("#task-start-dialog").close();
+  startTask(prompts.notes);
+});
+document.querySelector("#task-start-back").addEventListener("click", () => {
+  document.querySelector("#task-start-dialog").close();
+});
+document.querySelector("#task-cancel").addEventListener("click", () => {
+  document.querySelector("#task-dialog").close();
+});
+document.querySelector("#task-save").addEventListener("click", () => {
+  saveTask();
+});
+document.querySelector("#task-delete").addEventListener("click", () => {
+  deleteTask();
+});
+function openGroup() {
+  document.querySelector("#group-name").value = "";
+  document.querySelector("#group-description").value = "";
+  const error = document.querySelector("#group-error");
+  error.hidden = true;
+  error.textContent = "";
+  const settings = jiraSettings();
+  const note = document.querySelector("#group-note");
+  const go = document.querySelector("#group-go");
+  if (!settings.enabled) {
+    note.textContent = "Jira is off, so this group is saved without a Jira epic.";
+    go.disabled = false;
+  } else if (!settings.boardId) {
+    note.textContent = "Choose a Jira board in Settings before creating a group.";
+    go.disabled = true;
+  } else {
+    note.textContent = "Creating this group creates a Jira epic on " + boardLabel(settings.boardName, settings.boardId) + ".";
+    go.disabled = false;
+  }
+  document.querySelector("#group-dialog").showModal();
+  if (!go.disabled) document.querySelector("#group-name").focus();
+}
+
+function rememberGroup(group) {
+  state.data.groups = [group, ...((state.data.groups || []).filter((item) => item.id !== group.id))];
+  renderTasks();
+}
+
+async function saveGroup() {
+  const name = document.querySelector("#group-name").value.trim();
+  const description = document.querySelector("#group-description").value.trim();
+  const error = document.querySelector("#group-error");
+  error.hidden = true;
+  if (!name) {
+    error.hidden = false;
+    error.textContent = "Enter a group name.";
+    return;
+  }
+  const button = document.querySelector("#group-go");
+  button.disabled = true;
+  try {
+    const data = await api("/api/groups", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, description }),
+    });
+    rememberGroup(data.group);
+    document.querySelector("#group-dialog").close();
+    banner("Created " + data.group.name + (data.group.epicKey ? ". Jira epic " + data.group.epicKey + "." : "."));
+  } catch (err) {
+    error.hidden = false;
+    error.textContent = err.message;
+    button.disabled = false;
+  }
+}
+
+document.querySelector("#group-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  saveGroup();
+});
+document.querySelector("#group-cancel").addEventListener("click", () => {
+  document.querySelector("#group-dialog").close();
+});
+document.querySelector("#group-delete-form").addEventListener("submit", (event) => {
+  if (event.submitter && event.submitter.value === "cancel") return;
+  event.preventDefault();
+  confirmDeleteGroup();
+});
+document.querySelector("#panel-tasks").addEventListener("click", (event) => {
+  if (taskSuppressClick) return;
+  const view = event.target.closest("[data-task-view]");
+  if (view) {
+    state.taskView = view.dataset.taskView;
+    renderTasks();
+    return;
+  }
+  const remove = event.target.closest("[data-delete-group]");
   if (remove) {
-    deleteRun(remove.dataset.deleteRun).catch((error) => banner(error.message, true));
+    openDeleteGroup(remove.dataset.deleteGroup);
     return;
   }
-  if (event.target.closest("[data-clear-runs]")) {
-    clearRuns().catch((error) => banner(error.message, true));
+  if (event.target.closest("#task-done-reset")) {
+    state.taskDoneFrom = "";
+    state.taskDoneTo = "";
+    renderTasks();
     return;
   }
-  const row = event.target.closest("[data-run]");
-  if (row) openRun(row.dataset.run);
-});
-document.querySelector("#run-close").addEventListener("click", () => {
-  document.querySelector("#run-dialog").close();
-});
-document.querySelector("#run-delete").addEventListener("click", () => {
-  const id = document.querySelector("#run-dialog").dataset.id;
-  if (!id) return;
-  deleteRun(id).catch((error) => banner(error.message, true));
+  if (event.target.closest("#group-new")) {
+    openGroup();
+    return;
+  }
+  if (event.target.closest("#task-new")) {
+    openTask("");
+    return;
+  }
+  const card = event.target.closest("[data-task]");
+  if (card) openTask(card.dataset.task);
 });
 
 paintGenerateIcons();
@@ -6294,6 +7804,8 @@ api("/api/state")
     refreshAssignedRepoIndexes();
   })
   .catch((error) => {
+    const tasks = document.querySelector("#panel-tasks");
+    if (tasks) tasks.replaceChildren();
     document.querySelector("#panel-agents").replaceChildren();
     banner(error.message, true);
   });

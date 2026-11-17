@@ -38,8 +38,12 @@ func TestPromptNamesCollaboratorsByID(t *testing.T) {
 		WorkspaceID: "kiki",
 		Repos:       []Repo{{Kind: "document", Folder: "/app/docs", Index: "obsidian"}},
 	}, "", []Peer{{
-		ID:   "requirement_designer",
-		Note: "Hand over the requirement folder.\nWait for design.html.",
+		ID: "requirement_designer",
+		Handoffs: []Handoff{
+			{When: "The requirement files are ready.", Send: "Hand over the requirement folder.\nWait for design.html.", Reply: "The design path.\nOpen questions.", MaxLoops: 3},
+			{Send: "Say the folder is blocked."},
+			{When: "No content", Send: " "},
+		},
 	}})
 	for _, want := range []string{
 		"KIKI started you with `orca agent launch`.",
@@ -50,7 +54,21 @@ func TestPromptNamesCollaboratorsByID(t *testing.T) {
 		"Work in this repository:",
 		"Write the requirement files in this folder.",
 		"- agent id: requirement_designer",
+		"When a condition is met, send that content to the agent through Orca",
+		"Message 1 to requirement_designer:",
+		"Send when:\n      The requirement files are ready.",
 		"Hand over the requirement folder.",
+		"Report back: yes. In this message, ask requirement_designer to report back to you, agent id requirement_document, when it has finished the work.",
+		"The report from requirement_designer must contain:\n      The design path.\n      Open questions.",
+		"Loop: this exchange can go back and forth between you and requirement_designer.",
+		"Allow at most 3 loops.",
+		"when the Send when condition of message 1 is met again after the report from requirement_designer",
+		"\"loop 1 of 3\"",
+		"After loop 3, do not send this message again",
+		"Message 2 to requirement_designer:",
+		"Send when: (no condition set)",
+		"Say the folder is blocked.",
+		"Report back: no. Do not ask requirement_designer to report back.",
 		"Wait for design.html.",
 		"MCP servers for this agent:",
 		"- Atlassian - Jira",
@@ -72,6 +90,12 @@ func TestPromptNamesCollaboratorsByID(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("missing %q in\n%s", want, text)
 		}
+	}
+	if strings.Count(text, "Loop: this exchange") != 1 || strings.Count(text, "must contain:") != 1 {
+		t.Fatalf("a message without a loop or a reply got one:\n%s", text)
+	}
+	if strings.Contains(text, "Message 3 to") || strings.Contains(text, "No content") {
+		t.Fatalf("a message with nothing to send was written:\n%s", text)
 	}
 	if strings.Contains(text, "codegraph explore") || strings.Contains(text, "Obsidian vault:") {
 		t.Fatalf("document agent prompt includes an index it is not set to use:\n%s", text)
@@ -202,5 +226,62 @@ func TestPromptSaysWhenARepositoryIsReadonly(t *testing.T) {
 	}
 	if strings.Count(text, "Readonly: this agent can only read this repository.") != 1 {
 		t.Fatalf("readonly note should be only on document:\n%s", text)
+	}
+}
+
+func TestPromptNamesTheGuideFileOfEachRepository(t *testing.T) {
+	text := Prompt(agentdef.Agent{
+		ID:    "backend_runner",
+		Title: "Backend Runner",
+		Repos: []agentdef.Repo{{Kind: "backend", Guide: "RULES.md"}, {Kind: "document"}},
+	}, "Body\n", Snapshot{
+		Root: "/app",
+		Repos: []Repo{
+			{Kind: "backend", Folder: "/app/backend", Services: []string{"api"}, Index: "codegraph"},
+			{Kind: "document", Folder: "/app/docs", Index: "obsidian"},
+		},
+	}, "", nil)
+	for _, want := range []string{
+		"guide file: /app/backend/RULES.md (read it and follow it",
+		"guide file: /app/docs/AGENTS.md (read it and follow it",
+		"read /app/backend/RULES.md",
+		"/app/backend/<project root>/RULES.md",
+		"If RULES.md is missing",
+		"Read /app/docs/AGENTS.md before you search notes",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "/app/backend/AGENTS.md") {
+		t.Fatalf("backend still names AGENTS.md:\n%s", text)
+	}
+}
+
+func TestPromptWaitingTellsASupportingAgentToWait(t *testing.T) {
+	agent := agentdef.Agent{ID: "requirement_designer", Title: "Designer", Repos: []agentdef.Repo{{Kind: "document"}}}
+	snap := Snapshot{Root: "/app", Repos: []Repo{{Kind: "document", Folder: "/app/docs"}}}
+	text := PromptWaiting(agent, "Body\n", snap, "Add a cart.", nil, []Requester{
+		{ID: "requirement_document", Title: "Document Writer"},
+		{ID: "requirement_designer"},
+		{ID: " "},
+	})
+	for _, want := range []string{
+		"WAIT FOR A REQUEST.",
+		"listed under Agents Coordination by requirement_document (Document Writer).",
+		"wait for a request from requirement_document (Document Writer), sent through Orca to your agent id",
+		"It is context for the request that will reach you. It is not an instruction to start now.",
+		"===== USER MESSAGE =====\nAdd a cart.",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("missing %q in\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "Treat that message as the user message in your terminal") || strings.Contains(text, "from requirement_designer") {
+		t.Fatalf("waiting prompt still treats the message as an instruction or waits for itself:\n%s", text)
+	}
+	plain := PromptWaiting(agent, "Body\n", snap, "Add a cart.", nil, []Requester{{ID: "requirement_designer"}})
+	if strings.Contains(plain, "WAIT FOR A REQUEST.") || !strings.Contains(plain, "Treat that message as the user message in your terminal") {
+		t.Fatalf("an agent that only lists itself was told to wait:\n%s", plain)
 	}
 }

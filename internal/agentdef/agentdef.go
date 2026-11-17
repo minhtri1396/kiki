@@ -9,11 +9,35 @@ import (
 	"kiki/internal/agents"
 )
 
+// DefaultGuide is the guide file an agent reads in a repository when none is set.
+const DefaultGuide = "AGENTS.md"
+
+// GuideFile is the guide file name to use. An empty name is DefaultGuide.
+func GuideFile(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return DefaultGuide
+	}
+	return name
+}
+
+// ValidGuide reports whether name is a markdown file name with no folder in it.
+func ValidGuide(name string) bool {
+	name = GuideFile(name)
+	if strings.ContainsAny(name, "/\\\r\n\x00") {
+		return false
+	}
+	return len(name) > len(".md") && strings.EqualFold(name[len(name)-len(".md"):], ".md")
+}
+
 // Repo is one repository this agent uses.
+// Guide is the markdown file the agent reads and follows when it works in that
+// repository. Empty means DefaultGuide.
 // Description is the note written into the agent file when KIKI creates it.
 // Readonly means this agent may read the repository and must not change it.
 type Repo struct {
 	Kind        string
+	Guide       string
 	Description string
 	Readonly    bool
 }

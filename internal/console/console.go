@@ -344,10 +344,21 @@ func readProjectName(path string) (string, bool) {
 	return strings.TrimSpace(doc.Name), true
 }
 
-// Peer is one agent this launch can hand work to.
+// Peer is one agent this launch can send messages to.
 type Peer struct {
-	ID   string
-	Note string
+	ID       string
+	Handoffs []Handoff
+}
+
+// Handoff is one message for a peer. When is the condition for sending it and
+// Send is the content. Reply is what the peer reports back to the sender when it
+// has finished. An empty Reply means no report. MaxLoops, when above zero, is the
+// most round trips the two agents may make.
+type Handoff struct {
+	When     string
+	Send     string
+	Reply    string
+	MaxLoops int
 }
 
 // writeLaunchLead names the Agent Orchestration tool that started this agent.
@@ -361,8 +372,22 @@ func writeLaunchLead(b *strings.Builder, snap Snapshot) {
 	}
 }
 
+// Requester is an agent that lists another agent under Agents Coordination and
+// so turned it on for a task.
+type Requester struct {
+	ID    string
+	Title string
+}
+
 // Prompt is the text passed to the selected Agent Orchestration tool.
 func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string, peers []Peer) string {
+	return PromptWaiting(agent, body, snap, note, peers, nil)
+}
+
+// PromptWaiting is Prompt for an agent that a task turned on because other agents
+// list it under Agents Coordination. That agent waits for a request from them
+// before it does any work.
+func PromptWaiting(agent agentdef.Agent, body string, snap Snapshot, note string, peers []Peer, requesters []Requester) string {
 	snap = Fill(snap)
 	var b strings.Builder
 	fmt.Fprintf(&b, "You are %s (%s).\n\n", agent.ID, agent.Title)
@@ -371,9 +396,9 @@ func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string, peers
 	fmt.Fprintf(&b, "%s worktree: %s\n", OrchestratorLabel(snap.Orchestrator), snap.Worktree)
 	fmt.Fprintf(&b, "Setup file: %s\n", snap.SetupFile)
 	fmt.Fprintf(&b, "Workspace id: %s\n", snap.WorkspaceID)
-	b.WriteString("\nThe setup file is .kiki/kiki.yaml next to the app. The app folder is the repository root. Its absolute path is the Setup file line above. Read that file in Step 0. It is the only setup file. Do not read .kiki/agents/config.local.yaml. The workspace id is workspace_id in that file. Do not invent values that are missing, and do not assume the workspace id is kiki. Folder paths and service names below are the saved setup.\n\n")
+	b.WriteString("\nThe setup file is .kiki/kiki.yaml next to the app. The app folder is the repository root. Its absolute path is the Setup file line above. Read that file in Step 0. It is the only setup file. The workspace id is workspace_id in that file. Do not invent values that are missing, and do not assume the workspace id is kiki. Folder paths and service names below are the saved setup.\n\n")
 	fmt.Fprintf(&b, "You were started in the %s worktree. That folder is the repository for this launch. Run git and project commands in the repository folder from the setup file. Do not create, edit, commit, or run project commands in a repository that is not listed. A repository with no folder is not set up.\n\n", OrchestratorLabel(snap.Orchestrator))
-	b.WriteString("Service names are the Nx project names in a code repository. Use them when you choose a project and its AGENTS.md. The document repository has a folder and no service names.\n\n")
+	b.WriteString("Service names are the Nx project names in a code repository. Use them when you choose a project and its guide file. The document repository has a folder and no service names.\n\n")
 	b.WriteString("Repositories for this agent:\n")
 	for _, item := range agent.Repos {
 		kind := strings.TrimSpace(item.Kind)
@@ -381,11 +406,17 @@ func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string, peers
 			continue
 		}
 		repo := snap.Repo(kind)
+		guide := agentdef.GuideFile(item.Guide)
 		fmt.Fprintf(&b, "- %s\n", kind)
 		if repo.Folder == "" {
 			b.WriteString("  folder: (not set)\n")
 		} else {
 			fmt.Fprintf(&b, "  folder: %s\n", repo.Folder)
+		}
+		if repo.Folder == "" {
+			fmt.Fprintf(&b, "  guide file: %s (read it and follow it whenever you work in this repository)\n", guide)
+		} else {
+			fmt.Fprintf(&b, "  guide file: %s (read it and follow it whenever you work in this repository)\n", filepath.Join(repo.Folder, guide))
 		}
 		if repo.Sparse != "" {
 			fmt.Fprintf(&b, "  checkout: %s\n", repo.Sparse)
@@ -415,13 +446,15 @@ func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string, peers
 	}
 	b.WriteString("\n")
 	writeIndexes(&b, agent.Repos, snap)
-	writePeers(&b, agent.ID, peers)
+	writePeers(&b, agent.ID, peers, OrchestratorLabel(snap.Orchestrator))
 	writeUses(&b, "MCP servers for this agent:", "Use this MCP server:", agent.MCPs)
 	writeUses(&b, "Tools for this agent:", "", agent.Tools)
 	note = strings.TrimSpace(note)
-	if note == "" {
+	switch {
+	case writeWaiting(&b, agent.ID, requesters, OrchestratorLabel(snap.Orchestrator), note != ""):
+	case note == "":
 		b.WriteString("The user did not send a ticket, a requirement folder, or any other instruction. Follow the Startup behavior in the agent document and wait.\n\n")
-	} else {
+	default:
 		b.WriteString("The user sent a message with this launch. It is repeated after the agent document. Treat that message as the user message in your terminal.\n\n")
 	}
 	fmt.Fprintf(&b, "===== AGENT DOCUMENT (%s) =====\n", agent.File)
@@ -438,7 +471,43 @@ func Prompt(agent agentdef.Agent, body string, snap Snapshot, note string, peers
 	return b.String()
 }
 
-func writePeers(b *strings.Builder, self string, peers []Peer) {
+// writeWaiting tells a supporting agent to stay idle until a request reaches it.
+// It reports whether it wrote anything.
+func writeWaiting(b *strings.Builder, self string, requesters []Requester, orchestrator string, hasNote bool) bool {
+	var list []string
+	for _, item := range requesters {
+		id := strings.TrimSpace(item.ID)
+		if id == "" || id == strings.TrimSpace(self) {
+			continue
+		}
+		if title := strings.TrimSpace(item.Title); title != "" {
+			list = append(list, fmt.Sprintf("%s (%s)", id, title))
+		} else {
+			list = append(list, id)
+		}
+	}
+	if len(list) == 0 {
+		return false
+	}
+	fmt.Fprintf(b, "WAIT FOR A REQUEST. KIKI turned you on for a task because you are listed under Agents Coordination by %s. You are a supporting agent. Do not start any work yet. Do not read repositories, do not create or edit files, and do not run project commands until a request reaches you. Stay idle and wait for a request from %s, sent through %s to your agent id. Do the work in the agent document only after that request arrives, and do it for what the request asks.\n", strings.Join(list, " and "), strings.Join(list, " or "), orchestrator)
+	if hasNote {
+		b.WriteString("The user message at the end of this prompt is the task. It is context for the request that will reach you. It is not an instruction to start now.\n")
+	}
+	b.WriteString("\n")
+	return true
+}
+
+// writeLoop states the loop limit for one message. A loop is one round trip, where
+// the agent sends the message and the other agent reports back.
+func writeLoop(b *strings.Builder, peer string, pair Handoff, number int) {
+	again := "the report from " + peer + " asks for more work, or shows the work is not done"
+	if pair.When != "" {
+		again = "the Send when condition of message " + fmt.Sprint(number) + " is met again after the report from " + peer
+	}
+	fmt.Fprintf(b, "    Loop: this exchange can go back and forth between you and %s. Count one loop each time you send this message and %s reports back. Allow at most %d loops. Send this message again only when %s. State the loop number in every message you send, for example \"loop 1 of %d\". After loop %d, do not send this message again: stop the exchange, and tell the user what is still open.\n", peer, peer, pair.MaxLoops, again, pair.MaxLoops, pair.MaxLoops)
+}
+
+func writePeers(b *strings.Builder, self string, peers []Peer, orchestrator string) {
 	self = strings.TrimSpace(self)
 	list := make([]Peer, 0, len(peers))
 	for _, peer := range peers {
@@ -446,7 +515,20 @@ func writePeers(b *strings.Builder, self string, peers []Peer) {
 		if id == "" || id == self {
 			continue
 		}
-		list = append(list, Peer{ID: id, Note: strings.TrimSpace(peer.Note)})
+		item := Peer{ID: id}
+		for _, pair := range peer.Handoffs {
+			when := strings.TrimSpace(pair.When)
+			send := strings.TrimSpace(pair.Send)
+			if send == "" {
+				continue
+			}
+			handoff := Handoff{When: when, Send: send, Reply: strings.TrimSpace(pair.Reply)}
+			if handoff.Reply != "" && pair.MaxLoops > 0 {
+				handoff.MaxLoops = pair.MaxLoops
+			}
+			item.Handoffs = append(item.Handoffs, handoff)
+		}
+		list = append(list, item)
 	}
 	if self == "" && len(list) == 0 {
 		return
@@ -459,14 +541,45 @@ func writePeers(b *strings.Builder, self string, peers []Peer) {
 		return
 	}
 	b.WriteString("Agents Coordination with these agents. When you communicate or hand work to one of them, use that agent id.\n")
+	fmt.Fprintf(b, "Each message below has a condition and the content to send. While you work, check each condition. When a condition is met, send that content to the agent through %s, addressed by its agent id. Add the facts the other agent needs, such as paths, ids, and results. Send each message when its condition is met, not before. A message with no condition is sent at the point its content describes.\n", orchestrator)
 	for _, peer := range list {
 		fmt.Fprintf(b, "- agent id: %s\n", peer.ID)
-		if peer.Note == "" {
+		if len(peer.Handoffs) == 0 {
+			b.WriteString("  No message is set for this agent.\n")
 			continue
 		}
-		b.WriteString("  Coordination:\n")
-		for _, line := range strings.Split(peer.Note, "\n") {
-			fmt.Fprintf(b, "  %s\n", line)
+		for i, pair := range peer.Handoffs {
+			fmt.Fprintf(b, "  Message %d to %s:\n", i+1, peer.ID)
+			if pair.When == "" {
+				b.WriteString("    Send when: (no condition set)\n")
+			} else {
+				b.WriteString("    Send when:\n")
+				for _, line := range strings.Split(pair.When, "\n") {
+					fmt.Fprintf(b, "      %s\n", line)
+				}
+			}
+			b.WriteString("    Send:\n")
+			for _, line := range strings.Split(pair.Send, "\n") {
+				fmt.Fprintf(b, "      %s\n", line)
+			}
+			switch {
+			case pair.Reply != "" && self != "":
+				fmt.Fprintf(b, "    Report back: yes. In this message, ask %s to report back to you, agent id %s, when it has finished the work. Use %s for that report. Expect that report.\n", peer.ID, self, orchestrator)
+			case pair.Reply != "":
+				fmt.Fprintf(b, "    Report back: yes. In this message, ask %s to report back to you when it has finished the work.\n", peer.ID)
+			default:
+				fmt.Fprintf(b, "    Report back: no. Do not ask %s to report back.\n", peer.ID)
+			}
+			if pair.Reply != "" {
+				fmt.Fprintf(b, "    The report from %s must contain:\n", peer.ID)
+				for _, line := range strings.Split(pair.Reply, "\n") {
+					fmt.Fprintf(b, "      %s\n", line)
+				}
+				b.WriteString("    Put that in the message so the other agent knows what to send back.\n")
+			}
+			if pair.Reply != "" && pair.MaxLoops > 0 {
+				writeLoop(b, peer.ID, pair, i+1)
+			}
 		}
 	}
 	b.WriteString("\n")

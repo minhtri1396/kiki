@@ -44,14 +44,66 @@ type File struct {
 // Readonly means the agent may read that repository and must not change it.
 type Repository struct {
 	Kind        string
+	Guide       string
 	Description string
 	Readonly    bool
 }
 
-// Collaborator is one agent this agent works with, and how they coordinate.
+// Collaborator is one agent this agent works with, and the messages this agent
+// sends to it.
 type Collaborator struct {
-	ID            string
-	Collaboration string
+	ID       string
+	Handoffs []Handoff
+}
+
+// Handoff is one message for a collaborator. When is the condition for sending it.
+// Send is the content to send. An empty When leaves the timing to the content.
+// Reply is what the receiving agent reports back to this agent when it finishes.
+// An empty Reply means it does not report back. MaxLoops, when above zero, means
+// the two agents may pass work back and forth, and it is the most round trips
+// allowed. MaxLoops only counts when Reply is set.
+type Handoff struct {
+	When     string
+	Send     string
+	Reply    string
+	MaxLoops int
+}
+
+// CheckHandoffs reports a message that has no condition or nothing to send. The
+// agent editor requires both. It is not part of Save, so an older file with a note
+// and no condition can still be saved by the rest of KIKI.
+func CheckHandoffs(list []Collaborator) error {
+	for _, peer := range list {
+		for i, item := range peer.Handoffs {
+			if strings.TrimSpace(item.When) == "" {
+				return fmt.Errorf("enter Send when for message %d to %s, or remove the message", i+1, strings.TrimSpace(peer.ID))
+			}
+			if strings.TrimSpace(item.Send) == "" {
+				return fmt.Errorf("enter What to send for message %d to %s, or remove the message", i+1, strings.TrimSpace(peer.ID))
+			}
+		}
+	}
+	return nil
+}
+
+// MaxHandoffLoops is the most round trips a message may allow.
+const MaxHandoffLoops = 20
+
+func cleanHandoffs(list []Handoff) []Handoff {
+	var out []Handoff
+	for _, item := range list {
+		when := strings.TrimSpace(item.When)
+		send := strings.TrimSpace(item.Send)
+		if when == "" && send == "" {
+			continue
+		}
+		handoff := Handoff{When: when, Send: send, Reply: strings.TrimSpace(item.Reply)}
+		if handoff.Reply != "" {
+			handoff.MaxLoops = item.MaxLoops
+		}
+		out = append(out, handoff)
+	}
+	return out
 }
 
 // Use is one MCP server or tool this agent uses, and what it does with it.
@@ -67,6 +119,16 @@ type Use struct {
 	SpaceName   string
 	ParentID    string
 	ParentTitle string
+}
+
+// customGuide is the guide file name when it is not the default, and empty when
+// the agent reads the default guide file.
+func customGuide(name string) string {
+	name = strings.TrimSpace(name)
+	if name == agentdef.DefaultGuide {
+		return ""
+	}
+	return name
 }
 
 // repoList accepts a kind, a list of kinds, or a list of kind and description notes.
@@ -98,6 +160,7 @@ func (r *repoList) UnmarshalYAML(value *yaml.Node) error {
 			var row struct {
 				ID          string `yaml:"id"`
 				Kind        string `yaml:"kind"`
+				Guide       string `yaml:"guide"`
 				Description string `yaml:"description"`
 				Readonly    bool   `yaml:"readonly"`
 			}
@@ -113,6 +176,7 @@ func (r *repoList) UnmarshalYAML(value *yaml.Node) error {
 			}
 			out = append(out, Repository{
 				Kind:        kind,
+				Guide:       customGuide(row.Guide),
 				Description: strings.TrimSpace(row.Description),
 				Readonly:    row.Readonly,
 			})
@@ -130,7 +194,7 @@ func (r repoList) MarshalYAML() (any, error) {
 	}
 	noted := false
 	for _, item := range r {
-		if strings.TrimSpace(item.Description) != "" || item.Readonly {
+		if strings.TrimSpace(item.Description) != "" || item.Readonly || customGuide(item.Guide) != "" {
 			noted = true
 			break
 		}
@@ -144,18 +208,20 @@ func (r repoList) MarshalYAML() (any, error) {
 	}
 	type row struct {
 		ID          string `yaml:"id"`
+		Guide       string `yaml:"guide,omitempty"`
 		Description string `yaml:"description,omitempty"`
 		Readonly    bool   `yaml:"readonly,omitempty"`
 	}
 	rows := make([]row, len(r))
 	for i, item := range r {
-		rows[i] = row{ID: item.Kind, Description: strings.TrimSpace(item.Description), Readonly: item.Readonly}
+		rows[i] = row{ID: item.Kind, Guide: customGuide(item.Guide), Description: strings.TrimSpace(item.Description), Readonly: item.Readonly}
 	}
 	return rows, nil
 }
 
-// peers accepts an id, a list of ids, or a list of id and description notes.
-// A note may still be stored under the old key collaboration.
+// peers accepts an id, a list of ids, or a list of ids with handoffs.
+// A handoff is a when and send pair. An old description, or the older key
+// collaboration, is read as one handoff with that text to send.
 type peers []Collaborator
 
 func (p *peers) UnmarshalYAML(value *yaml.Node) error {
@@ -185,6 +251,12 @@ func (p *peers) UnmarshalYAML(value *yaml.Node) error {
 				ID            string `yaml:"id"`
 				Description   string `yaml:"description"`
 				Collaboration string `yaml:"collaboration"`
+				Handoffs      []struct {
+					When     string `yaml:"when"`
+					Send     string `yaml:"send"`
+					Reply    string `yaml:"reply"`
+					MaxLoops int    `yaml:"max_loops"`
+				} `yaml:"handoffs"`
 			}
 			if err := item.Decode(&row); err != nil {
 				return err
@@ -193,11 +265,18 @@ func (p *peers) UnmarshalYAML(value *yaml.Node) error {
 			if id == "" {
 				continue
 			}
-			note := strings.TrimSpace(row.Description)
-			if note == "" {
-				note = strings.TrimSpace(row.Collaboration)
+			var handoffs []Handoff
+			for _, pair := range row.Handoffs {
+				handoffs = append(handoffs, Handoff{When: pair.When, Send: pair.Send, Reply: pair.Reply, MaxLoops: pair.MaxLoops})
 			}
-			out = append(out, Collaborator{ID: id, Collaboration: note})
+			if len(handoffs) == 0 {
+				note := strings.TrimSpace(row.Description)
+				if note == "" {
+					note = strings.TrimSpace(row.Collaboration)
+				}
+				handoffs = []Handoff{{Send: note}}
+			}
+			out = append(out, Collaborator{ID: id, Handoffs: cleanHandoffs(handoffs)})
 		default:
 			return fmt.Errorf("Agents Coordination must be an agent id or a list")
 		}
@@ -212,7 +291,7 @@ func (p peers) MarshalYAML() (any, error) {
 	}
 	noted := false
 	for _, item := range p {
-		if strings.TrimSpace(item.Collaboration) != "" {
+		if len(cleanHandoffs(item.Handoffs)) > 0 {
 			noted = true
 			break
 		}
@@ -224,13 +303,22 @@ func (p peers) MarshalYAML() (any, error) {
 		}
 		return ids, nil
 	}
+	type pair struct {
+		When     string `yaml:"when,omitempty"`
+		Send     string `yaml:"send"`
+		Reply    string `yaml:"reply,omitempty"`
+		MaxLoops int    `yaml:"max_loops,omitempty"`
+	}
 	type row struct {
-		ID          string `yaml:"id"`
-		Description string `yaml:"description,omitempty"`
+		ID       string `yaml:"id"`
+		Handoffs []pair `yaml:"handoffs,omitempty"`
 	}
 	rows := make([]row, len(p))
 	for i, item := range p {
-		rows[i] = row{ID: item.ID, Description: strings.TrimSpace(item.Collaboration)}
+		rows[i] = row{ID: item.ID}
+		for _, handoff := range cleanHandoffs(item.Handoffs) {
+			rows[i].Handoffs = append(rows[i].Handoffs, pair{When: handoff.When, Send: handoff.Send, Reply: handoff.Reply, MaxLoops: handoff.MaxLoops})
+		}
 	}
 	return rows, nil
 }
@@ -649,8 +737,8 @@ func writeNew(path string, agent agentdef.Agent, tool, model string) error {
 			continue
 		}
 		with = append(with, Collaborator{
-			ID:            id,
-			Collaboration: strings.TrimSpace(peer.Collaboration),
+			ID:       id,
+			Handoffs: cleanHandoffs([]Handoff{{When: "This agent has work for " + id + ".", Send: peer.Collaboration}}),
 		})
 	}
 	repos := make(repoList, 0, len(agent.Repos))
@@ -661,6 +749,7 @@ func writeNew(path string, agent agentdef.Agent, tool, model string) error {
 		}
 		repos = append(repos, Repository{
 			Kind:        kind,
+			Guide:       customGuide(repo.Guide),
 			Description: strings.TrimSpace(repo.Description),
 		})
 	}
@@ -737,7 +826,16 @@ func normalizeFile(file File) (File, error) {
 			return File{}, fmt.Errorf("works with must be an agent id")
 		}
 		seenPeer[id] = true
-		with = append(with, Collaborator{ID: id, Collaboration: strings.TrimSpace(peer.Collaboration)})
+		handoffs := cleanHandoffs(peer.Handoffs)
+		for _, handoff := range handoffs {
+			if handoff.Send == "" {
+				return File{}, fmt.Errorf("enter what to send to %s, or remove the condition", id)
+			}
+			if handoff.MaxLoops < 0 || handoff.MaxLoops > MaxHandoffLoops {
+				return File{}, fmt.Errorf("enter a loop limit from 1 to %d for the message to %s", MaxHandoffLoops, id)
+			}
+		}
+		with = append(with, Collaborator{ID: id, Handoffs: handoffs})
 	}
 	file.WorksWith = with
 	mcps, err := normalizeUses(file.MCPs, "MCP servers")
@@ -767,11 +865,15 @@ func normalizeFile(file File) (File, error) {
 			return File{}, fmt.Errorf("repos must use folder-safe names")
 		}
 		seen[kind] = true
-			repos = append(repos, Repository{
-				Kind:        kind,
-				Description: strings.TrimSpace(repo.Description),
-				Readonly:    repo.Readonly,
-			})
+		if !agentdef.ValidGuide(repo.Guide) {
+			return File{}, fmt.Errorf("enter the guide file for %s as a markdown file name such as %s", kind, agentdef.DefaultGuide)
+		}
+		repos = append(repos, Repository{
+			Kind:        kind,
+			Guide:       customGuide(repo.Guide),
+			Description: strings.TrimSpace(repo.Description),
+			Readonly:    repo.Readonly,
+		})
 	}
 	if len(repos) == 0 {
 		return File{}, fmt.Errorf("choose at least one repo")

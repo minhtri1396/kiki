@@ -235,6 +235,85 @@ func TestReadonlyWorktreeBlocksWrites(t *testing.T) {
 	}
 }
 
+func TestDecideBlocksAnNxProjectTheRepositoryDidNotSelect(t *testing.T) {
+	root := t.TempDir()
+	writeProject(t, root, "apps/admin", "admin")
+	writeProject(t, root, "apps/user", "user")
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hi"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	policy := Policy{
+		AgentID:  "runner",
+		Roots:    []string{root},
+		Services: map[string][]string{root: {"admin"}},
+	}
+	admin := filepath.Join(root, "apps", "admin", "src", "main.ts")
+	user := filepath.Join(root, "apps", "user", "src", "main.ts")
+	readme := filepath.Join(root, "README.md")
+	if got := policy.Decide(root, "", Classify("beforeReadFile", []byte(`{"file_path":"`+admin+`"}`))); !got.Allow {
+		t.Fatalf("admin = %+v", got)
+	}
+	blocked := policy.Decide(root, "", Classify("beforeReadFile", []byte(`{"file_path":"`+user+`"}`)))
+	if blocked.Allow || !strings.Contains(blocked.Message, "service user") || !strings.Contains(blocked.Message, "admin") {
+		t.Fatalf("user = %+v", blocked)
+	}
+	if got := policy.Decide(root, "", Classify("beforeReadFile", []byte(`{"file_path":"`+readme+`"}`))); !got.Allow {
+		t.Fatalf("readme = %+v", got)
+	}
+	fromUser := policy.Decide(filepath.Join(root, "apps", "user"), "", Classify("beforeShellExecution", []byte(`{"command":"ls"}`)))
+	if fromUser.Allow || !strings.Contains(fromUser.Message, "service user") {
+		t.Fatalf("cwd = %+v", fromUser)
+	}
+	open := Policy{AgentID: "runner", Roots: []string{root}}
+	if got := open.Decide(root, "", Classify("beforeReadFile", []byte(`{"file_path":"`+user+`"}`))); !got.Allow {
+		t.Fatalf("unset services = %+v", got)
+	}
+}
+
+func TestWorktreeKeepsTheServicesSelectedForThatRepository(t *testing.T) {
+	repo := t.TempDir()
+	work := t.TempDir()
+	writeProject(t, work, "apps/admin", "admin")
+	writeProject(t, work, "apps/user", "user")
+	got := Resolve(Query{
+		Cwd:   work,
+		Agent: "runner",
+		Policies: []Policy{{
+			AgentID:  "runner",
+			Roots:    []string{repo},
+			Services: map[string][]string{repo: {"admin"}},
+		}},
+		Bindings: []Binding{{
+			AgentID:  "runner",
+			Worktree: work,
+			Services: []string{"admin"},
+		}},
+	})
+	if got.Status != StatusUse {
+		t.Fatalf("resolve = %+v", got)
+	}
+	admin := filepath.Join(work, "apps", "admin", "main.ts")
+	user := filepath.Join(work, "apps", "user", "main.ts")
+	if edit := got.Policy.Decide(work, "", Classify("preToolUse", []byte(`{"tool_name":"Edit","tool_input":{"path":"`+admin+`"}}`))); !edit.Allow {
+		t.Fatalf("admin = %+v", edit)
+	}
+	blocked := got.Policy.Decide(work, "", Classify("preToolUse", []byte(`{"tool_name":"Edit","tool_input":{"path":"`+user+`"}}`)))
+	if blocked.Allow || !strings.Contains(blocked.Message, "service user") {
+		t.Fatalf("user = %+v", blocked)
+	}
+}
+
+func writeProject(t *testing.T, root, rel, name string) {
+	t.Helper()
+	dir := filepath.Join(root, filepath.FromSlash(rel))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "project.json"), []byte(`{"name":"`+name+`"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestReplyUsesTheToolHookShape(t *testing.T) {
 	cursor := Reply("cursor", "beforeMCPExecution", false, "blocked")
 	if !strings.Contains(cursor, `"permission":"deny"`) || !strings.Contains(cursor, "blocked") {

@@ -28,16 +28,22 @@
   </header>
   <div class="section-bar">
     <nav class="tabs" aria-label="Sections">
-      <button type="button" data-tab="agents" aria-selected="true">Agents</button>
+      <button type="button" data-tab="tasks" aria-selected="true">Tasks</button>
+      <button type="button" data-tab="agents" aria-selected="false">Agents</button>
       <button type="button" data-tab="repos" aria-selected="false" disabled>Repositories</button>
       <button type="button" data-tab="workflow" aria-selected="false" disabled>Topology</button>
     </nav>
-    <button type="button" id="start-feature" class="primary" disabled>Start Feature</button>
   </div>
   </div>
   <div id="banners" class="banner-stack"></div>
   <main>
-    <section id="panel-agents">
+    <section id="panel-tasks">
+      <p class="loading" role="status">
+        <span class="spinner" aria-hidden="true"></span>
+        Loading tasks…
+      </p>
+    </section>
+    <section id="panel-agents" hidden>
       <p class="loading" role="status">
         <span class="spinner" aria-hidden="true"></span>
         Loading agents…
@@ -77,27 +83,106 @@
       </div>
     </form>
   </dialog>
-  <dialog id="feature-dialog">
-    <form method="dialog" id="feature-form">
+  <dialog id="task-dialog">
+    <form method="dialog" id="task-form">
       <div class="dialog-body">
-        <h2>Start Feature</h2>
-        <label class="field">
-          <span>Feature name</span>
-          <input id="feature-name" type="text" autocomplete="off" placeholder="Manage products">
-        </label>
-        <p id="feature-folder" class="hint">The folder name is the snake_case form of the feature name.</p>
-        <label class="field">
-          <span>What this feature does</span>
-          <textarea id="feature-description" rows="4" placeholder="Describe the feature"></textarea>
-        </label>
-        <p id="feature-lead" class="hint">Turn on the agents to start. AI Tool and model start from each agent. Agents that are turned off stay out of this list.</p>
-        <div id="feature-agents"></div>
+        <div class="task-dialog-fields">
+        <div class="task-dialog-head">
+          <h2 id="task-dialog-title">New task</h2>
+          <span id="task-column" class="badge">TODO</span>
+        </div>
+        <p id="task-id" class="hint" hidden></p>
+        <div class="field" id="task-group-field">
+          <span id="task-group-label">Group</span>
+          <div class="task-group-picker">
+            <button type="button" id="task-group-toggle" class="task-group-toggle" aria-haspopup="listbox" aria-expanded="false" aria-controls="task-group-menu" aria-labelledby="task-group-label task-group-value">
+              <span id="task-group-value">None</span>
+            </button>
+            <div id="task-group-menu" class="task-group-menu" hidden>
+              <input id="task-group-search" type="search" autocomplete="off" placeholder="Search by name or Jira ticket" aria-label="Search by name or Jira ticket" aria-controls="task-group-list">
+              <div id="task-group-list" class="task-group-list" role="listbox" aria-labelledby="task-group-label"></div>
+            </div>
+          </div>
+          <input type="hidden" id="task-group" value="">
+        </div>
+        <p id="task-group-note" class="hint"></p>
+        <div class="field">
+          <span id="task-name-label">Name</span>
+          <div class="compose">
+            <input id="task-name" type="text" autocomplete="off" placeholder="Enter a task name" aria-labelledby="task-name-label">
+            <button type="button" class="field-generate" data-generate="task-name" aria-label="Rewrite by AI">Rewrite by AI</button>
+          </div>
+        </div>
+        <div class="field">
+          <span id="task-description-label">Description</span>
+          <div class="compose">
+            <textarea id="task-description" rows="4" placeholder="What this task should do" aria-labelledby="task-description-label"></textarea>
+            <button type="button" class="field-generate" data-generate="task" aria-label="Rewrite by AI">Rewrite by AI</button>
+          </div>
+        </div>
+        <p id="task-lead" class="hint">Turn on the agents for this task. Start sends the name and description to the agents that are on, groups them by this group ID, and moves this task to In Progress. Kiki shows each agent's thinking and replies. When an agent asks a question or finishes, its status becomes Waiting for review. Approve marks that agent Completed. When every agent is Completed, the task moves to Done.</p>
+        </div>
+        <div id="task-agents"></div>
       </div>
-      <p id="feature-error" class="result error" hidden></p>
-      <p id="feature-result" class="result" hidden></p>
+      <p id="task-error" class="result error" hidden></p>
+      <p id="task-result" class="result" hidden></p>
       <div class="actions">
-        <button type="button" id="feature-cancel">Cancel</button>
-        <button type="submit" id="feature-go" class="primary" value="start">Start</button>
+        <button type="button" id="task-delete" class="danger" hidden>Delete</button>
+        <button type="button" id="task-cancel">Cancel</button>
+        <button type="button" id="task-save">Save</button>
+        <button type="submit" id="task-go" class="primary" value="start">Start</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="task-start-dialog">
+    <form method="dialog" id="task-start-form">
+      <div class="dialog-body">
+        <h2 id="task-start-title">Start on Orca</h2>
+        <p class="hint">Check the prompt each agent receives. You can edit it. Nothing starts until you confirm.</p>
+        <div id="task-orca-body"></div>
+      </div>
+      <p id="task-start-error" class="result error" hidden></p>
+      <div class="actions">
+        <button type="button" id="task-start-back">Back</button>
+        <button type="submit" id="task-start-go" class="primary">Start on Orca</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="group-dialog">
+    <form method="dialog" id="group-form">
+      <div class="dialog-body">
+        <h2>New group</h2>
+        <p id="group-note" class="hint"></p>
+        <label class="field">
+          <span>Name</span>
+          <input id="group-name" type="text" autocomplete="off" placeholder="Group name">
+        </label>
+        <label class="field">
+          <span>Description</span>
+          <textarea id="group-description" rows="4" placeholder="What this epic covers"></textarea>
+        </label>
+      </div>
+      <p id="group-error" class="result error" hidden></p>
+      <div class="actions">
+        <button type="button" id="group-cancel">Cancel</button>
+        <button type="submit" id="group-go" class="primary">Create group</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="group-delete-dialog">
+    <form method="dialog" id="group-delete-form">
+      <div class="dialog-body">
+        <h2 id="group-delete-title">Delete group</h2>
+        <p id="group-delete-text" class="hint"></p>
+        <label class="check-line" id="group-delete-jira-line">
+          <input type="checkbox" id="group-delete-jira">
+          <span id="group-delete-jira-label">Also delete the Jira ticket</span>
+        </label>
+      </div>
+      <p id="group-delete-error" class="result error" hidden></p>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" class="danger" id="group-delete-go" value="confirm">Delete</button>
       </div>
     </form>
   </dialog>
@@ -255,30 +340,11 @@
       <button type="button" id="settings-save" class="primary" disabled>Save</button>
     </div>
   </dialog>
-  <dialog id="run-dialog">
-    <div class="reader-bar">
-      <h2>Run detail</h2>
-    </div>
-    <div class="dialog-body">
-      <p id="run-meta" class="hint"></p>
-      <p class="prompt-label">Message</p>
-      <pre id="run-note" class="run-text"></pre>
-      <p class="prompt-label">Detail</p>
-      <pre id="run-detail" class="run-text"></pre>
-    </div>
-    <div class="actions">
-      <button type="button" id="run-close">Close</button>
-      <button type="button" id="run-delete" class="danger">Delete</button>
-    </div>
-  </dialog>
   <dialog id="agent-dialog">
     <form method="dialog" id="agent-form">
       <div class="dialog-body">
         <h2 id="agent-dialog-title">Edit agent</h2>
-        <label class="field">
-          <span>ID</span>
-          <input id="agent-id" type="text" disabled>
-        </label>
+        <p id="agent-id" class="peer-id"></p>
         <div class="agent-grid">
           <label class="field">
             <span>AI Tool</span>
@@ -323,7 +389,7 @@
           <div class="agent-scope-head">
             <div class="agent-scope-copy">
               <h3 id="agent-repos-title">Repositories</h3>
-              <p>Folders this agent can open. Turn a folder on, then write what the agent does there. Readonly keeps that folder read-only for this agent.</p>
+              <p>Folders this agent can open. Turn a folder on, then set the guide file the agent reads and follows there, and write what the agent uses the folder for. Readonly keeps that folder read-only for this agent.</p>
             </div>
             <span class="agent-scope-count" id="agent-repo-count" data-empty="true" aria-live="polite">None selected</span>
           </div>
@@ -334,7 +400,7 @@
           <div class="agent-scope-head">
             <div class="agent-scope-copy">
               <h3 id="agent-peers-title">Agents Coordination</h3>
-              <p>Other agents this one works with. Turn an agent on, then write how they coordinate.</p>
+              <p>Other agents this one works with. Turn an agent on, then add messages for it. Each message has a condition and the content to send, and both are required. When the condition is met while this agent runs, it sends that content to that agent.</p>
             </div>
             <span class="agent-scope-count" id="agent-peer-count" data-empty="true" aria-live="polite">None selected</span>
           </div>
@@ -375,48 +441,6 @@
         <button type="submit" id="agent-save" class="primary" value="save">Save</button>
       </div>
     </form>
-    <div id="agent-generate" hidden>
-      <div class="reader-bar generate-bar">
-        <button type="button" id="generate-back" class="icon-button" aria-label="Back">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M14.5 5.5 8 12l6.5 6.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
-          </svg>
-        </button>
-        <div class="generate-heading">
-          <h2 id="generate-dialog-title">Rewrite by AI</h2>
-          <p id="generate-dialog-agent" class="generate-agent"></p>
-        </div>
-      </div>
-      <div class="dialog-body generate-layout">
-        <section class="generate-output">
-          <div id="generate-command" class="generate-command" hidden>
-            <p class="think-label">Command</p>
-            <div class="generate-command-field">
-              <code id="generate-command-text"></code>
-              <div class="generate-command-actions">
-                <button type="button" id="generate-run" disabled>Run</button>
-              </div>
-            </div>
-          </div>
-          <div id="generate-log">
-            <div class="generate-log-head">
-              <p id="generate-thinking-label" class="think-label" hidden><span id="generate-spinner" class="spinner"></span><span>Thinking</span></p>
-              <p id="generate-choice" class="generate-choice"></p>
-            </div>
-            <pre id="generate-thinking" class="think"></pre>
-            <pre id="generate-answer" hidden></pre>
-          </div>
-        </section>
-        <section class="generate-compare" aria-label="Diff" hidden>
-          <div id="generate-compare" class="compare-grid"></div>
-        </section>
-        <p id="generate-error" class="result error" hidden></p>
-      </div>
-      <div class="actions">
-        <button type="button" id="generate-cancel">Cancel</button>
-        <button type="button" id="generate-use" class="primary" disabled>Use</button>
-      </div>
-    </div>
   </dialog>
   <dialog id="prompt-reader">
     <div class="reader-bar">

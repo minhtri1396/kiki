@@ -157,18 +157,19 @@ func guardExecutable() (string, error) {
 	return exe, nil
 }
 
-func (s *Server) bindGuard(agentID, worktree string, readonly bool) {
+func (s *Server) bindGuard(agentID, worktree string, readonly bool, services []string) {
 	agentID = strings.TrimSpace(agentID)
 	worktree = strings.TrimSpace(worktree)
 	if agentID == "" || worktree == "" || !filepath.IsAbs(worktree) {
 		return
 	}
 	s.guardMu.Lock()
-		s.guardBindings = append(s.guardBindings, guard.Binding{
-			AgentID:  agentID,
-			Worktree: filepath.Clean(worktree),
-			ReadOnly: readonly,
-		})
+	s.guardBindings = append(s.guardBindings, guard.Binding{
+		AgentID:  agentID,
+		Worktree: filepath.Clean(worktree),
+		ReadOnly: readonly,
+		Services: append([]string(nil), services...),
+	})
 	if len(s.guardBindings) > 40 {
 		s.guardBindings = append([]guard.Binding(nil), s.guardBindings[len(s.guardBindings)-40:]...)
 	}
@@ -291,10 +292,16 @@ func policyFrom(file agentfile.File, snap console.Snapshot, enabled map[string]b
 		if setup.Sparse != "" {
 			folder = filepath.Join(folder, filepath.FromSlash(setup.Sparse))
 		}
-			policy.Roots = append(policy.Roots, folder)
-			if repo.Readonly {
-				policy.ReadOnly = append(policy.ReadOnly, folder)
+		policy.Roots = append(policy.Roots, folder)
+		if repo.Readonly {
+			policy.ReadOnly = append(policy.ReadOnly, folder)
+		}
+		if len(setup.Services) > 0 {
+			if policy.Services == nil {
+				policy.Services = map[string][]string{}
 			}
+			policy.Services[folder] = append([]string(nil), setup.Services...)
+		}
 	}
 	return policy
 }

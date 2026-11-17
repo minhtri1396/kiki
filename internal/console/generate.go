@@ -49,7 +49,17 @@ func RewritePrompt(kind, subject, text string) (string, error) {
 		if subject == "" {
 			return "", InputError{Message: "Choose an agent first."}
 		}
-		what = "This says how the agent communicates and coordinates with " + subject + "."
+		what = "This is the message the agent sends to agent " + subject + " when its condition is met."
+	case "teamwork_when":
+		if subject == "" {
+			return "", InputError{Message: "Choose an agent first."}
+		}
+		what = "This is the condition under which the agent sends a message to agent " + subject + ". The agent checks it while it works, so state it as something the agent can observe."
+	case "teamwork_reply":
+		if subject == "" {
+			return "", InputError{Message: "Choose an agent first."}
+		}
+		what = "This is what agent " + subject + " sends back to the agent that gave it work, after it has finished that work."
 	case "mcp":
 		if subject == "" {
 			return "", InputError{Message: "Choose an MCP server first."}
@@ -60,6 +70,12 @@ func RewritePrompt(kind, subject, text string) (string, error) {
 			return "", InputError{Message: "Choose a tool first."}
 		}
 		what = "This says what the agent does with the " + subject + " tool."
+	case "branch":
+		return "This task name will become part of a git branch.\n\nRewrite it as a short English name of two to five words. Keep the same meaning. Drop ticket ids and punctuation. Return only the English name.\n\n" + text, nil
+	case "task":
+		what = "This is a task description. Keep the rewrite within 4000 characters."
+	case "task-name":
+		what = "This is a task name. Keep the rewrite on one line and within 200 characters."
 	default:
 		return "", InputError{Message: "Choose a prompt, repository note, Agents Coordination note, MCP note, or tool note."}
 	}

@@ -1,14 +1,20 @@
 package guard
 
 import (
+	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
 
 // Policy is what the user allowed for one agent.
 // ReadOnly lists roots the agent may read and must not change.
+// Services maps a repository root to the Nx projects that repository selected.
+// A file inside another Nx project under that root is blocked. A root with no
+// entry has no service limit.
 type Policy struct {
 	AgentID   string
 	Workspace string
@@ -17,8 +23,12 @@ type Policy struct {
 	Agents    []string
 	Roots     []string
 	ReadOnly  []string
+	Services  map[string][]string
 	RTK       bool
 }
+
+// serviceName matches an Nx project name stored for a repository.
+var serviceName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
 
 // Target is one concrete interaction found in a hook event.
 // Write is true when a repository interaction changes files.
@@ -37,10 +47,12 @@ type Result struct {
 
 // Binding is an agent KIKI started in a worktree.
 // ReadOnly means that worktree belongs to a repository the agent must not change.
+// Services are the Nx projects selected for that repository. Empty adds no service limit.
 type Binding struct {
 	AgentID  string
 	Worktree string
 	ReadOnly bool
+	Services []string
 }
 
 // Query is the information available when a hook asks for a decision.
@@ -82,8 +94,8 @@ func Resolve(q Query) Resolution {
 			return Resolution{Status: StatusDeny, Message: "Guardrail: agent " + id + " is not available."}
 		}
 		if insideAny(policy.Roots, cwd) || bindingFor(q.Bindings, id, cwd) {
-			if extra, readonly, ok := bindingWorktree(q.Bindings, id, cwd); ok {
-				policy = policy.withRoot(extra, readonly)
+			if binding, ok := bindingWorktree(q.Bindings, id, cwd); ok {
+				policy = policy.withRoot(binding.Worktree, binding.ReadOnly, binding.Services)
 			}
 			return Resolution{Status: StatusUse, Policy: policy}
 		}
@@ -94,7 +106,7 @@ func Resolve(q Query) Resolution {
 		if !found {
 			return Resolution{Status: StatusDeny, Message: "Guardrail: agent " + binding.AgentID + " is not available."}
 		}
-		return Resolution{Status: StatusUse, Policy: policy.withRoot(binding.Worktree, binding.ReadOnly)}
+		return Resolution{Status: StatusUse, Policy: policy.withRoot(binding.Worktree, binding.ReadOnly, binding.Services)}
 	}
 	var matched []Policy
 	for _, policy := range q.Policies {
@@ -173,14 +185,17 @@ func (p Policy) veto(cwd, home string, target Target) Result {
 			label = "another agent"
 		}
 		return Result{Message: "Guardrail: this agent cannot work with " + label + "."}
-		case "repo":
-			if result := p.vetoPaths(cwd, home, target.Paths); !result.Allow {
-				return result
-			}
-			if target.Write {
-				return p.vetoReadOnly(cwd, home, target.Paths)
-			}
-			return Result{Allow: true}
+	case "repo":
+		if result := p.vetoPaths(cwd, home, target.Paths); !result.Allow {
+			return result
+		}
+		if result := p.vetoServices(cwd, home, target.Paths); !result.Allow {
+			return result
+		}
+		if target.Write {
+			return p.vetoReadOnly(cwd, home, target.Paths)
+		}
+		return Result{Allow: true}
 	default:
 		return Result{Message: "Guardrail: this action is not one this agent can take."}
 	}
@@ -301,7 +316,56 @@ func (p Policy) has(list []string, id string) bool {
 	return false
 }
 
-func (p Policy) withRoot(extra string, readonly bool) Policy {
+func (p Policy) vetoServices(cwd, home string, paths []string) Result {
+	if len(p.Services) == 0 {
+		return Result{Allow: true}
+	}
+	if result := p.vetoServicePath(cwd); !result.Allow {
+		return result
+	}
+	for _, path := range paths {
+		if strings.Contains(path, "://") {
+			continue
+		}
+		full := expandPath(path, cwd, home)
+		if result := p.vetoServicePath(full); !result.Allow {
+			return result
+		}
+	}
+	return Result{Allow: true}
+}
+
+func (p Policy) vetoServicePath(path string) Result {
+	root, names, ok := p.serviceLimit(path)
+	if !ok {
+		return Result{Allow: true}
+	}
+	name, found := serviceAt(path, root)
+	if !found || hasService(names, name) {
+		return Result{Allow: true}
+	}
+	return Result{Message: "Guardrail: this agent cannot use the service " + name + ". This repository is set to " + serviceList(names) + "."}
+}
+
+func (p Policy) serviceLimit(path string) (string, []string, bool) {
+	var root string
+	var names []string
+	for candidate, allowed := range p.Services {
+		if !Inside(candidate, path) {
+			continue
+		}
+		if root == "" || len(absPath(candidate)) > len(root) {
+			root = absPath(candidate)
+			names = allowed
+		}
+	}
+	if root == "" {
+		return "", nil, false
+	}
+	return root, names, true
+}
+
+func (p Policy) withRoot(extra string, readonly bool, services []string) Policy {
 	extra = absPath(extra)
 	if extra == "" {
 		return p
@@ -309,12 +373,20 @@ func (p Policy) withRoot(extra string, readonly bool) Policy {
 	roots := make([]string, len(p.Roots), len(p.Roots)+1)
 	copy(roots, p.Roots)
 	p.Roots = append(roots, extra)
-	if !readonly {
+	if readonly {
+		reads := make([]string, len(p.ReadOnly), len(p.ReadOnly)+1)
+		copy(reads, p.ReadOnly)
+		p.ReadOnly = append(reads, extra)
+	}
+	if len(services) == 0 {
 		return p
 	}
-	reads := make([]string, len(p.ReadOnly), len(p.ReadOnly)+1)
-	copy(reads, p.ReadOnly)
-	p.ReadOnly = append(reads, extra)
+	limits := make(map[string][]string, len(p.Services)+1)
+	for root, names := range p.Services {
+		limits[root] = names
+	}
+	limits[extra] = append([]string(nil), services...)
+	p.Services = limits
 	return p
 }
 
@@ -337,17 +409,80 @@ func latestBinding(list []Binding, cwd string) (Binding, bool) {
 }
 
 func bindingFor(list []Binding, id, cwd string) bool {
-	_, _, ok := bindingWorktree(list, id, cwd)
+	_, ok := bindingWorktree(list, id, cwd)
 	return ok
 }
 
-func bindingWorktree(list []Binding, id, cwd string) (string, bool, bool) {
+func bindingWorktree(list []Binding, id, cwd string) (Binding, bool) {
 	for i := len(list) - 1; i >= 0; i-- {
 		if strings.EqualFold(list[i].AgentID, id) && Inside(list[i].Worktree, cwd) {
-			return list[i].Worktree, list[i].ReadOnly, true
+			return list[i], true
 		}
 	}
-	return "", false, false
+	return Binding{}, false
+}
+
+func serviceAt(path, root string) (string, bool) {
+	path = absPath(path)
+	root = absPath(root)
+	if path == "" || root == "" || !Inside(root, path) {
+		return "", false
+	}
+	dir := path
+	info, err := os.Stat(path)
+	if err != nil || !info.IsDir() {
+		dir = filepath.Dir(path)
+	}
+	for {
+		if !Inside(root, dir) {
+			return "", false
+		}
+		if name, ok := readServiceName(filepath.Join(dir, "project.json")); ok {
+			return name, true
+		}
+		if dir == root {
+			return "", false
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
+}
+
+func readServiceName(path string) (string, bool) {
+	file, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer file.Close()
+	var doc struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(file, 256*1024)).Decode(&doc); err != nil {
+		return "", false
+	}
+	name := strings.TrimSpace(doc.Name)
+	if !serviceName.MatchString(name) {
+		return "", false
+	}
+	return name, true
+}
+
+func hasService(names []string, name string) bool {
+	for _, item := range names {
+		if item == name {
+			return true
+		}
+	}
+	return false
+}
+
+func serviceList(names []string) string {
+	sorted := append([]string(nil), names...)
+	sort.Strings(sorted)
+	return strings.Join(sorted, ", ")
 }
 
 func insideAny(roots []string, path string) bool {

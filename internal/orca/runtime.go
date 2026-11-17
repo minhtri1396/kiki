@@ -65,7 +65,7 @@ func (c *Client) groupProject(ctx context.Context, name, displayName string) err
 	if !found {
 		return fmt.Errorf("Orca project %s was not found", displayName)
 	}
-	raw, err := c.call(ctx, "projectGroup.list", nil)
+	raw, err := c.runtime(ctx, "projectGroup.list", nil)
 	if err != nil {
 		return fmt.Errorf("group Orca projects in %s: %w", name, err)
 	}
@@ -86,7 +86,7 @@ func (c *Client) groupProject(ctx context.Context, name, displayName string) err
 		}
 	}
 	if groupID == "" {
-		raw, err = c.call(ctx, "projectGroup.create", map[string]any{
+		raw, err = c.runtime(ctx, "projectGroup.create", map[string]any{
 			"name":        name,
 			"createdFrom": "manual",
 		})
@@ -110,13 +110,20 @@ func (c *Client) groupProject(ctx context.Context, name, displayName string) err
 			return fmt.Errorf("group Orca projects in %s: Orca did not return a folder", name)
 		}
 	}
-	if _, err := c.call(ctx, "projectGroup.moveProject", map[string]any{
+	if _, err := c.runtime(ctx, "projectGroup.moveProject", map[string]any{
 		"repo":    repoID,
 		"groupId": groupID,
 	}); err != nil {
 		return fmt.Errorf("group Orca projects in %s: %w", name, err)
 	}
 	return nil
+}
+
+func (c *Client) runtime(ctx context.Context, method string, params any) (json.RawMessage, error) {
+	if c != nil && c.Runtime != nil {
+		return c.Runtime(ctx, method, params)
+	}
+	return c.call(ctx, method, params)
 }
 
 func (c *Client) call(ctx context.Context, method string, params any) (json.RawMessage, error) {

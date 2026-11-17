@@ -13,17 +13,18 @@ func writeIndexes(b *strings.Builder, repos []agentdef.Repo, snap Snapshot) {
 	for _, item := range repos {
 		kind := strings.TrimSpace(item.Kind)
 		repo := snap.Repo(kind)
+		guide := agentdef.GuideFile(item.Guide)
 		switch repo.Index {
 		case "obsidian":
-			blocks = append(blocks, obsidianIndex(kind, repo, snap.Root))
+			blocks = append(blocks, obsidianIndex(kind, repo, snap.Root, guide))
 		case "codegraph":
-			blocks = append(blocks, codegraphIndex(kind, repo, snap.Root))
+			blocks = append(blocks, codegraphIndex(kind, repo, snap.Root, guide))
 		}
 	}
 	if len(blocks) == 0 {
 		return
 	}
-	b.WriteString("Repository indexes. For each repository this agent uses, read that repository's AGENTS.md, then use the index below. The index is the one saved for that repository. Do not set an index up yourself.\n\n")
+	b.WriteString("Repository indexes. For each repository this agent uses, read that repository's guide file, then use the index below. The index is the one saved for that repository. Do not set an index up yourself.\n\n")
 	for _, block := range blocks {
 		b.WriteString(block)
 		if !strings.HasSuffix(block, "\n") {
@@ -49,11 +50,11 @@ func indexFileLine(root, kind string) string {
 	return fmt.Sprintf("Index file: %s\n\n", filepath.Join(root, ".kiki", "repos", kind+".yaml"))
 }
 
-func obsidianIndex(kind string, repo Repo, root string) string {
+func obsidianIndex(kind string, repo Repo, root, guide string) string {
 	path := folderPath(repo.Folder)
-	read := "The folder is not set. Do not invent a path. Read this repository's AGENTS.md once the folder is set."
+	read := fmt.Sprintf("The folder is not set. Do not invent a path. Read this repository's %s once the folder is set.", guide)
 	if path != "(not set)" {
-		read = fmt.Sprintf("Read %s/AGENTS.md before you search notes in this repository.", path)
+		read = fmt.Sprintf("Read %s/%s before you search notes in this repository.", path, guide)
 	}
 	return fmt.Sprintf(`### %s — Obsidian
 
@@ -85,15 +86,15 @@ If it is not set up, do not create the vault. Ask the user once: Read files (ope
 `, kind, path, indexFileLine(root, kind), read, path)
 }
 
-func codegraphIndex(kind string, repo Repo, root string) string {
+func codegraphIndex(kind string, repo Repo, root, guide string) string {
 	path := folderPath(repo.Folder)
 	services := "(none)"
 	if len(repo.Services) > 0 {
 		services = strings.Join(repo.Services, ", ")
 	}
-	read := "The folder is not set. Do not invent a path. Read this repository's AGENTS.md, and each service AGENTS.md, once the folder is set."
+	read := fmt.Sprintf("The folder is not set. Do not invent a path. Read this repository's %s, and each service's %s, once the folder is set.", guide, guide)
 	if path != "(not set)" {
-		read = fmt.Sprintf("Before you read code, read %s/AGENTS.md. For each service this work touches, also read %s/<project root>/AGENTS.md.", path, path)
+		read = fmt.Sprintf("Before you read code, read %s/%s. For each service this work touches, also read %s/<project root>/%s.", path, guide, path, guide)
 	}
 	return fmt.Sprintf(`### %s — CodeGraph
 
@@ -101,7 +102,7 @@ Folder: %s
 
 %sServices: %s
 
-%s A service is an Nx project from the services list. Find its root in project.json (`+"`npx nx show projects`"+`, run in the folder). If the project root is ".", that file is the folder file; read it once. The folder file covers the repository. The service file covers the files in that service. When they conflict inside a service, follow the service file. If AGENTS.md is missing, ask the user once and stop. Do not invent the structure or the rules.
+%s A service is an Nx project from the services list. Find its root in project.json (`+"`npx nx show projects`"+`, run in the folder). If the project root is ".", that file is the folder file; read it once. The folder file covers the repository. The service file covers the files in that service. When they conflict inside a service, follow the service file. If %s is missing, ask the user once and stop. Do not invent the structure or the rules.
 
 CodeGraph is set up when %s/.codegraph exists and `+"`codegraph status %s`"+` runs without a "not initialized" error. Do not run `+"`codegraph init`"+` yourself, and do not install CodeGraph. If it is not set up, ask the user once: Read files (search the exact symbol or path and read only the files you need, and say this index was not used) or Wait for setup (stop until the user sets up CodeGraph on this folder in KIKI). Do not choose for the user.
 
@@ -118,6 +119,6 @@ codegraph sync %s
 
 MCP: codegraph_explore with projectPath set to the folder, and the question in query. Run codegraph sync when codegraph status shows pending changes.
 
-Open a file only when the result marks it stale, when the graph does not cover it (schemas, generated code, fixtures, config, assets), or when AGENTS.md tells you to. Do not read the whole repository. .codegraph/ is gitignored; leave it uncommitted.
-`, kind, path, indexFileLine(root, kind), services, read, path, path, path, path, path, path, path, path)
+Open a file only when the result marks it stale, when the graph does not cover it (schemas, generated code, fixtures, config, assets), or when %s tells you to. Do not read the whole repository. .codegraph/ is gitignored; leave it uncommitted.
+`, kind, path, indexFileLine(root, kind), services, read, guide, path, path, path, path, path, path, path, path, guide)
 }

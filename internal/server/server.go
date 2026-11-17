@@ -58,6 +58,10 @@ type Server struct {
 	// GuardHooks installs or removes guardrail hooks. Nil uses the guard package.
 	GuardHooks func(home string, on bool) error
 
+	// BranchNamer rewrites a task name into a short English name for a git branch.
+	// Nil uses the Generate text AI Tool.
+	BranchNamer func(ctx context.Context, tool, model, name string) (string, error)
+
 	guardMu       sync.Mutex
 	guardHome     string
 	guardURL      string
@@ -83,10 +87,20 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/guardrail", s.handleGuardrail)
 	mux.HandleFunc("DELETE /api/launches/{id}", s.handleDeleteLaunch)
 	mux.HandleFunc("DELETE /api/launches", s.handleClearLaunches)
+	mux.HandleFunc("POST /api/groups", s.handleCreateGroup)
+	mux.HandleFunc("DELETE /api/groups/{id}", s.handleDeleteGroup)
+	mux.HandleFunc("POST /api/tasks", s.handleCreateTask)
+	mux.HandleFunc("PUT /api/tasks/{id}", s.handleUpdateTask)
+	mux.HandleFunc("DELETE /api/tasks/{id}", s.handleDeleteTask)
+	mux.HandleFunc("POST /api/tasks/{id}/branch", s.handleTaskBranch)
+	mux.HandleFunc("POST /api/tasks/sync", s.handleSyncTasks)
+	mux.HandleFunc("POST /api/tasks/{id}/agents/{agentId}/reply", s.handleTaskReply)
+	mux.HandleFunc("POST /api/tasks/{id}/agents/{agentId}/approve", s.handleTaskApprove)
 	mux.HandleFunc("POST /api/indexes/check", s.handleCheck)
 	mux.HandleFunc("POST /api/indexes/check/{kind}", s.handleCheckOne)
 	mux.HandleFunc("POST /api/indexes/refresh/{index}", s.handleRefreshIndex)
 	mux.HandleFunc("POST /api/open", s.handleOpen)
+	mux.HandleFunc("POST /api/jira/open", s.handleOpenJira)
 	mux.HandleFunc("DELETE /api/indexes/{kind}", s.handleClearIndex)
 	mux.HandleFunc("PUT /api/indexes/{kind}", s.handleUseIndex)
 	mux.HandleFunc("POST /api/indexes/obsidian", s.handleObsidian)
@@ -317,12 +331,18 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 		Model       string `json:"model"`
 		Repos       []struct {
 			Kind        string `json:"kind"`
+			Guide       string `json:"guide"`
 			Description string `json:"description"`
 			Readonly    bool   `json:"readonly"`
 		} `json:"repos"`
 		WorksWith []struct {
-			ID            string `json:"id"`
-			Collaboration string `json:"collaboration"`
+			ID       string `json:"id"`
+			Handoffs []struct {
+				When     string `json:"when"`
+				Send     string `json:"send"`
+				Reply    string `json:"reply"`
+				MaxLoops int    `json:"maxLoops"`
+			} `json:"handoffs"`
 		} `json:"worksWith"`
 		MCPs []struct {
 			ID          string `json:"id"`
@@ -357,11 +377,19 @@ func (s *Server) handleSaveAgent(w http.ResponseWriter, r *http.Request) {
 	currentID := r.PathValue("id")
 	with := make([]agentfile.Collaborator, 0, len(body.WorksWith))
 	for _, peer := range body.WorksWith {
-		with = append(with, agentfile.Collaborator{ID: peer.ID, Collaboration: peer.Collaboration})
+		handoffs := make([]agentfile.Handoff, 0, len(peer.Handoffs))
+		for _, pair := range peer.Handoffs {
+			handoffs = append(handoffs, agentfile.Handoff{When: pair.When, Send: pair.Send, Reply: pair.Reply, MaxLoops: pair.MaxLoops})
+		}
+		with = append(with, agentfile.Collaborator{ID: peer.ID, Handoffs: handoffs})
+	}
+	if err := agentfile.CheckHandoffs(with); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
 	}
 	repos := make([]agentfile.Repository, 0, len(body.Repos))
 	for _, repo := range body.Repos {
-		repos = append(repos, agentfile.Repository{Kind: repo.Kind, Description: repo.Description, Readonly: repo.Readonly})
+		repos = append(repos, agentfile.Repository{Kind: repo.Kind, Guide: repo.Guide, Description: repo.Description, Readonly: repo.Readonly})
 	}
 	mcps := make([]agentfile.Use, 0, len(body.MCPs))
 	for _, item := range body.MCPs {
@@ -452,6 +480,12 @@ func (s *Server) handleLaunch(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, storeErr)
 		return
 	}
+	if status == "ok" {
+		if err := s.rememberTaskRun(prep, raw); err != nil {
+			writeErr(w, http.StatusInternalServerError, err)
+			return
+		}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"launch": launch})
 }
 
@@ -490,7 +524,9 @@ type launchPrep struct {
 	tool     string
 	model    string
 	slug     string
-	stamp    string
+	taskID   string
+	groupID  string
+	ticket   string
 }
 
 func (s *Server) prepare(w http.ResponseWriter, r *http.Request, allowOff bool) (launchPrep, bool) {
@@ -524,9 +560,15 @@ func (s *Server) prepare(w http.ResponseWriter, r *http.Request, allowOff bool) 
 		Tools:   toolPromptUses(file.Tools, enabled),
 		Summary: file.Description,
 	}
-	note, repo, tool, model, slug, stamp, err := readLaunch(r)
+	req, err := readLaunch(r)
 	if err != nil {
 		writeErr(w, http.StatusBadRequest, err)
+		return launchPrep{}, false
+	}
+	note, repo, tool, model, slug, taskID, ticket, noteFinal := req.Note, req.Repo, req.Tool, req.Model, req.Slug, req.TaskID, req.Ticket, req.NoteFinal
+	waiting, err := s.waitingFor(file.ID, req.WaitFor)
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
 		return launchPrep{}, false
 	}
 	snap, err := s.load()
@@ -551,6 +593,22 @@ func (s *Server) prepare(w http.ResponseWriter, r *http.Request, allowOff bool) 
 		writeErr(w, http.StatusBadRequest, err)
 		return launchPrep{}, false
 	}
+	groupID := ""
+	if taskID != "" && s.Store != nil {
+		linked, err := s.Store.Task(taskID)
+		if err != nil {
+			writeTaskErr(w, err)
+			return launchPrep{}, false
+		}
+		groupID = strings.TrimSpace(linked.GroupID)
+		if groupID == "" {
+			writeErr(w, http.StatusBadRequest, errors.New("Choose a group before starting this task."))
+			return launchPrep{}, false
+		}
+		if !noteFinal {
+			note = epicNote(note, linked, agent)
+		}
+	}
 	if !allowOff {
 		if err := toolsReady(useIDs(file.Tools), enabled); err != nil {
 			writeErr(w, http.StatusBadRequest, err)
@@ -560,7 +618,7 @@ func (s *Server) prepare(w http.ResponseWriter, r *http.Request, allowOff bool) 
 	snap.Worktree = worktree
 	return launchPrep{
 		agent:    agent,
-		prompt:   console.Prompt(agent, file.Prompt, snap, note, launchPeers(file.WorksWith)),
+		prompt:   console.PromptWaiting(agent, file.Prompt, snap, note, launchPeers(file.WorksWith), waiting),
 		snap:     snap,
 		note:     note,
 		kind:     kind,
@@ -568,7 +626,9 @@ func (s *Server) prepare(w http.ResponseWriter, r *http.Request, allowOff bool) 
 		tool:     tool,
 		model:    model,
 		slug:     slug,
-		stamp:    stamp,
+		taskID:   taskID,
+		groupID:  groupID,
+		ticket:   ticket,
 	}, true
 }
 
@@ -590,6 +650,51 @@ func (s *Server) handleCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.handleState(w, r)
+}
+
+func (s *Server) handleOpenJira(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Key string `json:"key"`
+	}
+	if !readJSON(w, r, &body) {
+		return
+	}
+	if s == nil || s.Store == nil {
+		writeErr(w, http.StatusBadRequest, errors.New("Set the Jira site URL in Settings."))
+		return
+	}
+	cfg, err := s.Store.Atlassian()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	groups, err := s.Store.Groups()
+	if err != nil {
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	key := strings.ToUpper(strings.TrimSpace(body.Key))
+	found := false
+	for _, group := range groups {
+		if group.EpicKey == key {
+			found = true
+			break
+		}
+	}
+	if !found {
+		writeErr(w, http.StatusBadRequest, errors.New("That ticket is not on a group."))
+		return
+	}
+	page, err := jiraBrowsePage(cfg.Jira.URL, key)
+	if err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if err := startBrowser(page); err != nil {
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 func (s *Server) handleOpen(w http.ResponseWriter, r *http.Request) {
@@ -929,20 +1034,24 @@ func repoKinds(list []agentfile.Repository) []string {
 func catalogRepos(list []agentfile.Repository) []agentdef.Repo {
 	repos := make([]agentdef.Repo, 0, len(list))
 	for _, repo := range list {
-		repos = append(repos, agentdef.Repo{Kind: repo.Kind, Description: repo.Description, Readonly: repo.Readonly})
+		repos = append(repos, agentdef.Repo{Kind: repo.Kind, Guide: repo.Guide, Description: repo.Description, Readonly: repo.Readonly})
 	}
 	return repos
 }
 
-func teamworkJSON(list []agentfile.Collaborator) []map[string]string {
-	out := make([]map[string]string, 0, len(list))
+func teamworkJSON(list []agentfile.Collaborator) []map[string]any {
+	out := make([]map[string]any, 0, len(list))
 	for _, peer := range list {
 		if peer.ID == "" {
 			continue
 		}
-		out = append(out, map[string]string{
-			"id":            peer.ID,
-			"collaboration": peer.Collaboration,
+		handoffs := make([]map[string]any, 0, len(peer.Handoffs))
+		for _, pair := range peer.Handoffs {
+			handoffs = append(handoffs, map[string]any{"when": pair.When, "send": pair.Send, "reply": pair.Reply, "maxLoops": pair.MaxLoops})
+		}
+		out = append(out, map[string]any{
+			"id":       peer.ID,
+			"handoffs": handoffs,
 		})
 	}
 	return out
@@ -986,6 +1095,7 @@ func repositoryJSON(list []agentfile.Repository) []map[string]any {
 		}
 		out = append(out, map[string]any{
 			"kind":        repo.Kind,
+			"guide":       agentdef.GuideFile(repo.Guide),
 			"description": repo.Description,
 			"readonly":    repo.Readonly,
 		})
@@ -1006,7 +1116,11 @@ func peerIDs(list []agentfile.Collaborator) []string {
 func catalogPeers(list []agentfile.Collaborator) []agentdef.Peer {
 	peers := make([]agentdef.Peer, 0, len(list))
 	for _, peer := range list {
-		peers = append(peers, agentdef.Peer{ID: peer.ID, Collaboration: peer.Collaboration})
+		note := ""
+		for _, pair := range peer.Handoffs {
+			note += pair.Send + "\n"
+		}
+		peers = append(peers, agentdef.Peer{ID: peer.ID, Collaboration: strings.TrimSpace(note)})
 	}
 	return peers
 }
@@ -1014,7 +1128,11 @@ func catalogPeers(list []agentfile.Collaborator) []agentdef.Peer {
 func launchPeers(list []agentfile.Collaborator) []console.Peer {
 	peers := make([]console.Peer, 0, len(list))
 	for _, peer := range list {
-		peers = append(peers, console.Peer{ID: peer.ID, Note: peer.Collaboration})
+		handoffs := make([]console.Handoff, 0, len(peer.Handoffs))
+		for _, pair := range peer.Handoffs {
+			handoffs = append(handoffs, console.Handoff{When: pair.When, Send: pair.Send, Reply: pair.Reply, MaxLoops: pair.MaxLoops})
+		}
+		peers = append(peers, console.Peer{ID: peer.ID, Handoffs: handoffs})
 	}
 	return peers
 }
@@ -1025,6 +1143,14 @@ func (s *Server) snapshot() (map[string]any, error) {
 		return nil, err
 	}
 	launches, err := s.Store.Launches(50)
+	if err != nil {
+		return nil, err
+	}
+	tasks, err := s.Store.Tasks()
+	if err != nil {
+		return nil, err
+	}
+	groups, err := s.Store.Groups()
 	if err != nil {
 		return nil, err
 	}
@@ -1116,6 +1242,8 @@ func (s *Server) snapshot() (map[string]any, error) {
 		"indexes":         s.indexes(snap),
 		"jobs":            s.Jobs.List(),
 		"launches":        launches,
+		"tasks":           tasks,
+		"groups":          groups,
 		"teamFolder":      team,
 		"atlassian":       atlassianState(atlassian),
 		"mcps":            namedJSON(mcpsFromAtlassian(atlassian)),
@@ -1477,11 +1605,24 @@ func (s *Server) previewOrca(prep launchPrep) (string, string, error) {
 	if err != nil {
 		return "", "", err
 	}
-	return orcaCommand(prep.tool, prep.worktree, prep.prompt, project, prep.agent.ID, prep.model), project, nil
+	if prep.taskID != "" {
+		if strings.TrimSpace(prep.groupID) == "" {
+			return "", "", errors.New("Choose a group before starting this task.")
+		}
+		project, err = orca.FeatureProjectName(prep.snap.WorkspaceID, prep.groupID, prep.kind)
+		if err != nil {
+			return "", "", err
+		}
+	}
+	command := orcaCommand(prep.tool, prep.worktree, prep.prompt, project, prep.agent.ID, prep.model)
+	if prep.taskID != "" {
+		command = "folder " + prep.groupID + "\n" + command + "\nworktree " + prep.taskID
+	}
+	return command, project, nil
 }
 
 func (s *Server) launchOrchestrator(ctx context.Context, prep launchPrep) (string, error) {
-	s.bindGuard(prep.agent.ID, prep.worktree, repoReadonly(prep.agent.Repos, prep.kind))
+	s.bindGuard(prep.agent.ID, prep.worktree, repoReadonly(prep.agent.Repos, prep.kind), prep.snap.Repo(prep.kind).Services)
 	if err := s.ensureAgentHooks(prep.tool); err != nil {
 		return "", err
 	}
@@ -1512,19 +1653,22 @@ func (s *Server) launchOrca(ctx context.Context, prep launchPrep) (string, error
 	env := append([]string{}, client.Env...)
 	next.Env = append(env, "KIKI_AGENT="+prep.agent.ID)
 	next.OnWorktree = func(path string) {
-		s.bindGuard(prep.agent.ID, path, repoReadonly(prep.agent.Repos, prep.kind))
+		s.bindGuard(prep.agent.ID, path, repoReadonly(prep.agent.Repos, prep.kind), prep.snap.Repo(prep.kind).Services)
 	}
 	client = &next
-	if prep.stamp != "" {
-		project, err = orca.FeatureProjectName(prep.snap.WorkspaceID, prep.kind, prep.stamp)
+	if prep.taskID != "" {
+		if strings.TrimSpace(prep.groupID) == "" {
+			return "", errors.New("Choose a group before starting this task.")
+		}
+		project, err = orca.FeatureProjectName(prep.snap.WorkspaceID, prep.groupID, prep.kind)
 		if err != nil {
 			return "", err
 		}
-		branch, branchErr := orca.FeatureBranch(prep.stamp, prep.slug, prep.kind)
+		branch, branchErr := orca.FeatureBranch(prep.ticket, prep.slug, prep.kind)
 		if branchErr != nil {
 			return "", branchErr
 		}
-		return client.LaunchFeature(ctx, prep.tool, prep.worktree, prep.prompt, project, prep.agent.ID, prep.model, prep.slug, branch)
+		return client.LaunchFeature(ctx, prep.tool, prep.worktree, prep.prompt, project, prep.agent.ID, prep.model, prep.groupID, prep.taskID, branch)
 	}
 	return client.Launch(ctx, prep.tool, prep.worktree, prep.prompt, project, prep.agent.ID, prep.model)
 }
@@ -1539,30 +1683,101 @@ func orcaCommand(runtime, root, prompt, project, tab, model string) string {
 	return "project " + project + "\ntab " + tab + "\norca " + jobs.FormatArgs(args)
 }
 
-func readLaunch(r *http.Request) (string, string, string, string, string, string, error) {
+// launchRequest is what the launch and preview calls send.
+// WaitFor lists the agents that asked for this one. When it is set, this agent is
+// a supporting agent that waits for a request before it works.
+type launchRequest struct {
+	Note      string
+	Repo      string
+	Tool      string
+	Model     string
+	Slug      string
+	TaskID    string
+	Ticket    string
+	NoteFinal bool
+	WaitFor   []string
+}
+
+func readLaunch(r *http.Request) (launchRequest, error) {
 	var body struct {
-		Note  string `json:"note"`
-		Repo  string `json:"repo"`
-		Agent string `json:"agent"`
-		Model string `json:"model"`
-		Slug  string `json:"slug"`
-		Stamp string `json:"stamp"`
+		Note      string   `json:"note"`
+		Repo      string   `json:"repo"`
+		Agent     string   `json:"agent"`
+		Model     string   `json:"model"`
+		Slug      string   `json:"slug"`
+		TaskID    string   `json:"taskId"`
+		Ticket    string   `json:"ticket"`
+		NoteFinal bool     `json:"noteFinal"`
+		WaitFor   []string `json:"waitFor"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		if errors.Is(err, io.EOF) {
-			return "", "", "", "", "", "", nil
+			return launchRequest{}, nil
 		}
-		return "", "", "", "", "", "", errors.New("invalid data")
+		return launchRequest{}, errors.New("invalid data")
 	}
-	if len(body.Note) > 4000 {
-		return "", "", "", "", "", "", errors.New("message is longer than 4000 characters")
+	limit := 4000
+	if body.NoteFinal {
+		limit = 8000
+	}
+	if len(body.Note) > limit {
+		return launchRequest{}, errors.New("message is longer than " + fmt.Sprint(limit) + " characters")
 	}
 	slug := strings.TrimSpace(body.Slug)
-	stamp := strings.TrimSpace(body.Stamp)
-	if (slug == "") != (stamp == "") {
-		return "", "", "", "", "", "", errors.New("feature name is not valid")
+	taskID := strings.TrimSpace(body.TaskID)
+	ticket := strings.ToUpper(strings.TrimSpace(body.Ticket))
+	if taskID != "" && !orca.ValidTaskID(taskID) {
+		return launchRequest{}, errors.New("feature name is not valid")
 	}
-	return body.Note, strings.TrimSpace(body.Repo), strings.TrimSpace(body.Agent), strings.TrimSpace(body.Model), slug, stamp, nil
+	if slug != "" && !orca.ValidBranchSlug(slug) {
+		return launchRequest{}, errors.New("feature name is not valid")
+	}
+	if !orca.ValidTicket(ticket) {
+		return launchRequest{}, errors.New("feature name is not valid")
+	}
+	if taskID == "" && (slug != "" || ticket != "") {
+		return launchRequest{}, errors.New("feature name is not valid")
+	}
+	return launchRequest{
+		Note:      body.Note,
+		Repo:      strings.TrimSpace(body.Repo),
+		Tool:      strings.TrimSpace(body.Agent),
+		Model:     strings.TrimSpace(body.Model),
+		Slug:      slug,
+		TaskID:    taskID,
+		Ticket:    ticket,
+		NoteFinal: body.NoteFinal,
+		WaitFor:   body.WaitFor,
+	}, nil
+}
+
+// waitingFor keeps the agents that exist, are not this agent, and are listed once.
+func (s *Server) waitingFor(self string, ids []string) ([]console.Requester, error) {
+	if len(ids) == 0 {
+		return nil, nil
+	}
+	dir, err := s.agentDir()
+	if err != nil {
+		return nil, err
+	}
+	var out []console.Requester
+	seen := map[string]bool{self: true}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		file, found, err := agentfile.Find(dir, id)
+		if err != nil {
+			return nil, err
+		}
+		if !found {
+			continue
+		}
+		out = append(out, console.Requester{ID: file.ID, Title: file.Name})
+	}
+	return out, nil
 }
 
 func (s *Server) generateChoice() (string, string, error) {

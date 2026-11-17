@@ -2,6 +2,7 @@
 package orca
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -21,6 +22,8 @@ type Client struct {
 	Env []string
 	// OnWorktree is called with the folder an agent will run in, before that agent starts.
 	OnWorktree func(path string)
+	// Runtime answers an Orca runtime method. When unset, the local Orca app is used.
+	Runtime func(ctx context.Context, method string, params any) (json.RawMessage, error)
 }
 
 // LaunchArgs is `orca agent launch` for a terminal agent in this repository.
@@ -52,36 +55,60 @@ func ProjectName(workspace, repo string) (string, error) {
 }
 
 var (
-	featureStampPattern = regexp.MustCompile(`^[0-9]{10,14}$`)
-	featureSlugPattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,79}$`)
+	featureTaskPattern   = regexp.MustCompile(`^(?:[1-9][0-9]{0,17}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9A-HJKMNP-TV-Z]{26})$`)
+	featureSlugPattern   = regexp.MustCompile(`^[a-z0-9][a-z0-9_]{0,79}$`)
+	featureTicketPattern = regexp.MustCompile(`^[A-Z][A-Z0-9]{1,9}-[0-9]+$`)
 )
 
-// FeatureProjectName appends one shared timestamp to the project name for a feature start.
-func FeatureProjectName(workspace, repo, stamp string) (string, error) {
-	base, err := ProjectName(workspace, repo)
-	if err != nil {
-		return "", err
-	}
-	stamp = strings.TrimSpace(stamp)
-	if !featureStampPattern.MatchString(stamp) {
-		return "", fmt.Errorf("feature timestamp is not valid")
-	}
-	return base + "-" + stamp, nil
+// ValidTaskID reports whether id can name an Orca folder, project, or worktree.
+// Task ids and group ids share this shape.
+func ValidTaskID(id string) bool {
+	return featureTaskPattern.MatchString(strings.TrimSpace(id))
 }
 
-// FeatureBranch is the git branch for the worktree created for one repo in a feature start.
-// The document repo is spelled docs.
-func FeatureBranch(stamp, slug, kind string) (string, error) {
-	stamp = strings.TrimSpace(stamp)
+// ValidBranchSlug reports whether slug can sit in a feature branch name.
+func ValidBranchSlug(slug string) bool {
+	return featureSlugPattern.MatchString(strings.TrimSpace(slug))
+}
+
+// ValidTicket reports whether ticket is empty or a Jira issue key.
+func ValidTicket(ticket string) bool {
+	ticket = strings.ToUpper(strings.TrimSpace(ticket))
+	return ticket == "" || featureTicketPattern.MatchString(ticket)
+}
+
+// FeatureProjectName is the Orca project for one repo of one group.
+// The parts are the workspace, the group id, and the repo.
+func FeatureProjectName(workspace, groupID, repo string) (string, error) {
+	workspace = strings.TrimSpace(workspace)
+	groupID = strings.TrimSpace(groupID)
+	repo = strings.TrimSpace(repo)
+	if workspace == "" || repo == "" {
+		return "", fmt.Errorf("workspace and repo are required to name the Orca project")
+	}
+	if !featureTaskPattern.MatchString(groupID) {
+		return "", fmt.Errorf("group id is not valid")
+	}
+	return workspace + "-" + groupID + "-" + repo, nil
+}
+
+// FeatureBranch is the git branch for the worktree created for one repo of a task.
+// A Jira key is included when the task has one. The document repo is spelled docs.
+func FeatureBranch(ticket, slug, kind string) (string, error) {
+	ticket = strings.ToUpper(strings.TrimSpace(ticket))
 	slug = strings.TrimSpace(slug)
-	if !featureStampPattern.MatchString(stamp) || !featureSlugPattern.MatchString(slug) {
+	if !ValidTicket(ticket) || !featureSlugPattern.MatchString(slug) {
 		return "", fmt.Errorf("feature name is not valid")
 	}
 	repo := branchRepo(kind)
 	if repo == "" || strings.ContainsAny(repo, " /") {
 		return "", fmt.Errorf("feature repo is not valid")
 	}
-	return "feat/" + stamp + "-" + slug + "-" + repo, nil
+	name := slug + "-" + repo
+	if ticket != "" {
+		name = ticket + "-" + name
+	}
+	return "feat/" + name, nil
 }
 
 func branchRepo(kind string) string {
@@ -112,12 +139,17 @@ func (c *Client) Launch(ctx context.Context, runtime, root, prompt, project, tab
 	if _, err := c.run(ctx, "terminal", "rename", "--terminal", handle, "--title", tab, "--json"); err != nil {
 		return "", err
 	}
+	if strings.TrimSpace(prompt) != "" {
+		if err := c.submitPastedPrompt(ctx, handle); err != nil {
+			return "", err
+		}
+	}
 	return string(out), nil
 }
 
-// LaunchFeature names the project with the shared timestamp, groups it under the feature folder,
-// creates the feature worktree, and starts the agent there.
-func (c *Client) LaunchFeature(ctx context.Context, runtime, root, prompt, project, tab, model, group, branch string) (string, error) {
+// LaunchFeature puts the project for this repo in the group folder, creates the
+// task worktree from that repo, and starts the agent in the worktree folder.
+func (c *Client) LaunchFeature(ctx context.Context, runtime, root, prompt, project, tab, model, group, worktree, branch string) (string, error) {
 	if err := c.ensureRunning(ctx); err != nil {
 		return "", err
 	}
@@ -127,8 +159,11 @@ func (c *Client) LaunchFeature(ctx context.Context, runtime, root, prompt, proje
 	if err := c.ensureGroup(ctx, group, project); err != nil {
 		return "", err
 	}
-	checkout, err := c.ensureWorktree(ctx, root, project, branch)
+	checkout, err := c.ensureWorktree(ctx, root, project, worktree, branch)
 	if err != nil {
+		return "", err
+	}
+	if err := sameGitRepo(root, checkout); err != nil {
 		return "", err
 	}
 	c.noteWorktree(checkout)
@@ -142,6 +177,11 @@ func (c *Client) LaunchFeature(ctx context.Context, runtime, root, prompt, proje
 	}
 	if _, err := c.run(ctx, "terminal", "rename", "--terminal", handle, "--title", tab, "--json"); err != nil {
 		return "", err
+	}
+	if strings.TrimSpace(prompt) != "" {
+		if err := c.submitPastedPrompt(ctx, handle); err != nil {
+			return "", err
+		}
 	}
 	return string(out), nil
 }
@@ -164,16 +204,18 @@ func (c *Client) ensureGroup(ctx context.Context, name, project string) error {
 	return c.groupProject(ctx, name, project)
 }
 
-func (c *Client) ensureWorktree(ctx context.Context, root, project, branch string) (string, error) {
+func (c *Client) ensureWorktree(ctx context.Context, root, project, name, branch string) (string, error) {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "", fmt.Errorf("worktree name is required")
+	}
 	listed, err := c.run(ctx, "worktree", "list", "--repo", "path:"+root, "--json")
 	if err != nil {
 		return "", err
 	}
-	if path := worktreePath(listed, branch); path != "" {
+	if path := worktreeNamed(listed, name); path != "" {
 		return path, nil
 	}
-	name := strings.TrimPrefix(branch, "feat/")
-	name = strings.ReplaceAll(name, "/", "-")
 	created, err := c.run(ctx, "worktree", "create",
 		"--project", project,
 		"--name", name,
@@ -184,17 +226,20 @@ func (c *Client) ensureWorktree(ctx context.Context, root, project, branch strin
 	if err != nil {
 		return "", err
 	}
-	path := worktreePath(created, branch)
+	path := worktreeNamed(created, name)
+	if path == "" {
+		path = worktreePath(created, branch)
+	}
 	if path == "" {
 		path = worktreePath(created, "")
 	}
 	if path == "" {
-		return "", fmt.Errorf("Orca created worktree %s but did not return its folder", branch)
+		return "", fmt.Errorf("Orca created worktree %s but did not return its folder", name)
 	}
 	return path, nil
 }
 
-func worktreePath(out []byte, branch string) string {
+func worktreeRows(out []byte) []worktreeRow {
 	var env struct {
 		Result struct {
 			Path      string        `json:"path"`
@@ -204,15 +249,20 @@ func worktreePath(out []byte, branch string) string {
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(out, &env); err != nil {
-		return ""
+		return nil
 	}
-	rows := env.Result.Worktrees
+	rows := append([]worktreeRow{}, env.Result.Worktrees...)
 	if env.Result.Worktree.Path != "" {
 		rows = append(rows, env.Result.Worktree)
 	}
 	if env.Result.Path != "" {
 		rows = append(rows, worktreeRow{Path: env.Result.Path, Branch: env.Result.Branch})
 	}
+	return rows
+}
+
+func worktreePath(out []byte, branch string) string {
+	rows := worktreeRows(out)
 	if branch == "" {
 		if len(rows) == 1 {
 			return rows[0].Path
@@ -227,9 +277,59 @@ func worktreePath(out []byte, branch string) string {
 	return ""
 }
 
+func worktreeNamed(out []byte, name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	for _, row := range worktreeRows(out) {
+		if row.Path != "" && strings.TrimSpace(row.DisplayName) == name {
+			return row.Path
+		}
+	}
+	return ""
+}
+
 type worktreeRow struct {
-	Path   string `json:"path"`
-	Branch string `json:"branch"`
+	Path        string `json:"path"`
+	Branch      string `json:"branch"`
+	DisplayName string `json:"displayName"`
+}
+
+// sameGitRepo reports that checkout is a worktree of the git repository at root.
+func sameGitRepo(root, checkout string) error {
+	repo, err := gitCommonDir(root)
+	if err != nil {
+		return fmt.Errorf("repository folder is not a git checkout")
+	}
+	work, err := gitCommonDir(checkout)
+	if err != nil {
+		return fmt.Errorf("worktree folder is not a git checkout")
+	}
+	if !samePath(repo, work) {
+		return fmt.Errorf("worktree is not a checkout of this repository")
+	}
+	return nil
+}
+
+func gitCommonDir(path string) (string, error) {
+	cmd := exec.Command("git", "-C", path, "rev-parse", "--git-common-dir")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	dir := strings.TrimSpace(string(out))
+	if dir == "" {
+		return "", fmt.Errorf("git common dir is empty")
+	}
+	if !filepath.IsAbs(dir) {
+		dir = filepath.Join(path, dir)
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(abs), nil
 }
 
 func branchMatches(got, want string) bool {
@@ -392,6 +492,11 @@ func terminalHandle(out []byte) string {
 	return env.Result.Outcome.Handle
 }
 
+// TerminalHandle is the Orca terminal from an agent launch response.
+func TerminalHandle(out string) string {
+	return terminalHandle([]byte(out))
+}
+
 func samePath(a, b string) bool {
 	a = filepath.Clean(a)
 	b = filepath.Clean(b)
@@ -422,6 +527,17 @@ func (c *Client) appRunning(ctx context.Context) (bool, error) {
 }
 
 func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
+	out, err := c.commandOutput(ctx, args...)
+	if err != nil {
+		return nil, err
+	}
+	if !jsonOK(out) {
+		return nil, fmt.Errorf("orca %s failed\n%s", args[0], trim(out))
+	}
+	return out, nil
+}
+
+func (c *Client) commandOutput(ctx context.Context, args ...string) ([]byte, error) {
 	if _, ok := ctx.Deadline(); !ok {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, 90*time.Second)
@@ -439,11 +555,8 @@ func (c *Client) run(ctx context.Context, args ...string) ([]byte, error) {
 		cmd.Env = append(os.Environ(), c.Env...)
 	}
 	out, err := cmd.CombinedOutput()
-	if err != nil {
+	if err != nil && !json.Valid(bytes.TrimSpace(out)) {
 		return nil, fmt.Errorf("orca %s: %w\n%s", args[0], err, trim(out))
-	}
-	if !jsonOK(out) {
-		return nil, fmt.Errorf("orca %s failed\n%s", args[0], trim(out))
 	}
 	return out, nil
 }
