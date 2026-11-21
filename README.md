@@ -10,17 +10,17 @@ You describe each agent once: its role, the repositories it may touch, the other
 
 | Area | What you get |
 | --- | --- |
-| **Agents** | One markdown file per agent, grouped by category. Each agent has its own AI tool (Cursor, Claude, Codex, or Gemini), model, and prompt. Roles for requirement, backend, website, and mobile work are included. |
+| **Agents** | One markdown file per agent, grouped by category. Each agent has its own AI tool (Cursor, Claude, Codex, or Gemini), model, and prompt. You can add an agent or delete one. Roles for requirement, backend, website, and mobile work are included. |
 | **Agent to agent** | **Agents Coordination** says which agents an agent works with. Each link has messages: when to send, what to send, what the other agent reports back, and how many back-and-forth loops are allowed. |
 | **Agent to repository** | Each agent is given the repositories it may open, a guide file to follow in each one (`AGENTS.md` by default), a note on what it does there, and an optional read-only flag. |
-| **MCP Servers** | Set up an MCP server once in Settings (Atlassian: Jira and Confluence). Then choose it per agent, with a note on how that agent should use it. KIKI adds the server to the agent's AI tool before a run. |
+| **MCP Servers** | Set up Atlassian once in Settings. Jira and Confluence can share one email and API token, or each can use its own. Turn Jira, Confluence, or both on for an agent, with a note on how that agent should use it. KIKI adds those servers to the agent's AI tool before a run. |
 | **Tools** | CLI tools turned on in Settings: GitHub CLI (chosen per agent) and RTK (applies to every agent). |
-| **Repositories** | Document, Backend, Website, and Mobile repositories. Clone each one through Git, or point KIKI at an existing folder. A code repository can be an Nx monorepo, and you pick which projects the agents work on. |
-| **Team Sharing** | Share agent and repository setups through one shared folder. You decide how that folder is synchronized between team members' computers (Dropbox, iCloud Drive, a network drive, a git repository, or anything else). KIKI compares, shows the diff, and copies in either direction. |
+| **Repositories** | Document, Backend, Website, and Mobile to start. Add, rename, or delete a repository. Clone one through Git, or point KIKI at an existing folder. A code repository can be an Nx monorepo, and you pick which projects the agents work on. Deleting a repository leaves its folder on disk. |
+| **Team Sharing** | Share agent and repository setups through one shared folder. You decide how that folder is synchronized between team members' computers (Dropbox, iCloud Drive, a network drive, a git repository, or anything else). KIKI compares, and you choose which agents and repositories to copy. |
 | **Indexes** | One-click setup of [CodeGraph](https://github.com/colbymchenry/codegraph) and [Obsidian](https://obsidian.md/) indexes for a repository. Agents query the index first, so they read less code and spend fewer tokens. |
 | **RTK** | Turns on [RTK](https://github.com/rtk-ai/rtk) for Cursor, Claude, Codex, and Gemini. RTK rewrites shell commands so their output is shorter, which cuts input tokens. |
 | **Information providers and CLIs** | Connects to Atlassian (Jira, Confluence) through MCP, and to the GitHub CLI, the RTK CLI, and the Cursor, Claude, Codex, and Gemini CLIs. Settings shows which are installed. |
-| **Tasks** | Create tasks, group them under a group (a Jira epic when Jira is on), pick the agents, and send them to the orchestrator. The board tracks each agent from pending to completed. |
+| **Tasks** | Create tasks, group them under a group (a Jira epic when Jira is on), pick the agents and the AI tool for that start, and send them to the orchestrator. An agent also starts the agents it coordinates with; those wait for a request. The board tracks each agent from pending to completed. |
 | **Agent Orchestration** | Agents are started and coordinated through Orca (the `orca` CLI). Orca is the only orchestrator supported today. |
 | **Guardrails** | A hook on each AI tool checks every prompt, command, file, MCP call, and agent call against what that agent was given. It blocks anything else. |
 | **Topology** | A map of each agent, the guardrail, MCP servers, tools, repositories, and indexes it may use. |
@@ -29,49 +29,67 @@ You describe each agent once: its role, the repositories it may touch, the other
 
 ### Agents
 
-Every agent is a card with its AI tool and model. The **Team Sharing** card at the top compares this app's agents with your team folder.
+Every agent is a card with its AI tool and model. **New agent** adds one. Click a card to edit it. The trash icon deletes it, and the document icon shows the prompt KIKI sends. The **Team Sharing** card at the top compares this app's agents with your team folder.
 
 ![Agents](assets/screenshots/agents.png)
 
-Edit an agent to set its prompt, repositories, coordination with other agents, MCP servers, and tools.
+The editor has five tabs.
 
-![Agents Coordination](assets/screenshots/agent-coordination.png)
+**Prompt** is Role, Input, Output, Startup behavior, and Principles. KIKI joins those fields into the prompt sent when the agent starts. **Preview** reads a field as markdown. **Rewrite by AI** rewrites it with the AI tool and model chosen under **Generate text** in Settings.
+
+![Prompt](assets/screenshots/agent-prompt.png)
+
+**Repositories** turns on the folders this agent may open, then sets the guide file and what the agent does there.
 
 ![Agent repositories](assets/screenshots/agent-repositories.png)
 
+**Agents Coordination** turns on the agents this one works with, then adds messages. A message has **Send when** and **What to send**. Both are required. A third field says what the other agent reports back.
+
+![Agents Coordination](assets/screenshots/agent-coordination.png)
+
+**Connections** turns on the MCP servers and CLI tools for this agent.
+
+![Connections](assets/screenshots/agent-connections.png)
+
+**Topology** draws what this agent may reach. The same map is on the Topology tab.
+
 ### Repositories and indexes
 
-Each repository has a folder and an optional index. Turn the index on to set up CodeGraph or Obsidian in that folder.
+Each repository has a name, a folder, and an optional index. **Add repository** creates one. Rename changes the name and keeps the id. Delete removes it from KIKI and leaves the folder on disk. Turn the index on to set up CodeGraph or Obsidian. **Save** writes folder paths and the Nx projects you selected.
 
 ![Repositories](assets/screenshots/repositories.png)
 
 ### Tasks
 
-Choose the agents for a task. An agent also turns on the agents in its Agents Coordination, and those wait for a request before they work.
+Turn on the agents for a task. An agent also turns on the agents in its Agents Coordination. Those are sub agents: they cannot be turned off on their own, they start first, and they wait for a request. The AI tool and model on a turned-on agent are what this start uses.
 
 ![Start a task](assets/screenshots/task-start.png)
 
 ### Topology
 
-Select an agent to see what it may reach. Lines go through the guardrail.
+Select an agent to see what it may reach. Lines go through the guardrail to MCP servers, tools, repositories, coordinating agents, and indexes.
 
 ![Topology](assets/screenshots/topology.png)
 
 ### Team Sharing
 
-Compare this app's agents and repositories with your own folder or with another member's folder, then copy in the direction you choose.
+Compare this app's agents and repositories with your own folder or with another member's folder. An arrow opens a list so you choose what to copy. Anything you leave unticked stays as it is.
 
 ![Team Sharing](assets/screenshots/team-sharing.png)
 
 ### Settings
 
-Settings holds the orchestrator, the team folder, guardrails, MCP servers, and tools (including RTK).
+Settings holds appearance, the workspace, the orchestrator, **Generate text**, the team folder, guardrails, MCP servers, and tools.
 
 ![Settings](assets/screenshots/settings.png)
 
+Atlassian covers Jira and Confluence. Jira has a site URL and a board. Confluence has a site URL, a space, and a parent page. Each one can use the shared email and token, or its own.
+
 ![MCP Servers](assets/screenshots/settings-mcp.png)
 
-![Tools and RTK](assets/screenshots/settings-tools.png)
+Guardrails apply to every agent. GitHub CLI is chosen per agent. RTK applies to every agent while it is on.
+
+![Guardrails and tools](assets/screenshots/settings-tools.png)
 
 ## Install and run
 
@@ -114,18 +132,20 @@ A typical first run, in order:
 
 Open Settings with the gear next to the title. Press **Save** to keep changes. **Close** discards them.
 
+- **Appearance** is Light, Dark, or System. It applies immediately and stays on this computer.
 - **Workspace** is a short id: a letter, then letters, digits, `_`, or `-`.
 - **Agent Orchestration** is Orca.
+- **Generate text** is the AI tool and model used by **Rewrite by AI**.
 - **Team folder**: see step 6.
-- **Guardrails**: leave on. KIKI installs the hook into Cursor, Claude, Codex, and Gemini when an agent starts.
-- **MCP Servers**: turn on Atlassian, then enter your email and an [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens). Turn on Jira, Confluence, or both, and pick a default board, space, and parent page. A token you leave blank keeps the saved one.
+- **Guardrails**: leave on. KIKI installs the hook into Cursor, Claude, Codex, and Gemini when an agent starts. When a repository has Nx projects selected, a file in another project is blocked.
+- **MCP Servers**: turn on Atlassian, then enter your email and an [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens). Turn on Jira, Confluence, or both. Jira needs a site URL and a board. Confluence needs a site URL, a space, and a parent page. **Use a separate email and API token** gives that product its own credentials. A token you leave blank keeps the saved one.
 - **Tools**: turn on GitHub CLI and RTK (see step 5).
 
 ### 2. Repositories
 
-Open the **Repositories** tab. KIKI keeps four repositories as folders next to the binary.
+Open the **Repositories** tab. The first run creates four repositories as folders next to the binary. **Add repository** creates another. Its name starts with a letter and uses letters, digits, spaces, hyphens, or underscores. The id comes from that name. Rename changes the displayed name and keeps the id. Delete removes the repository from KIKI. The folder on disk stays.
 
-| Folder | Kind | Used by |
+| Folder | Id | Used by the included roles |
 | --- | --- | --- |
 | `backend/` | backend | Backend developer and reviewer |
 | `website/` | website | Website developer and reviewer |
@@ -133,8 +153,9 @@ Open the **Repositories** tab. KIKI keeps four repositories as folders next to t
 | `docs/` | document | Document writer, UI designer, and planner |
 
 - **Browse** points a repository at another folder.
-- **Clone repository** fills an empty folder from a Git URL. Fill **Folder** to check out only that folder (plus files at the repository root). Commit, push, and pull then use that checkout.
+- **Clone repository from git** shows when the folder is empty. Fill **Folder** to check out only that folder (plus files at the repository root). Commit, push, and pull then use that checkout.
 - A repository can be one project or an Nx monorepo. Turn on “This repository is divided into services” when it is split into Nx projects. KIKI finds those projects from each `project.json` `name`. The ones you select are what agents for that repository may use. Agents confirm a project with `npx nx show projects`.
+- **Save** writes the folder paths and the selected projects. Add, rename, and delete apply on their own.
 
 ### 3. Indexes
 
@@ -147,23 +168,25 @@ On the same tab, turn **Index tool** on for a repository and choose CodeGraph or
 
 ### 4. Agents
 
-Open the **Agents** tab. Each card has an AI tool and a model. **Edit** opens the full setup:
+Open the **Agents** tab. Each card has an AI tool and a model. **New agent** adds one. Click a card to edit it. The trash icon deletes it.
 
-- **Prompt**: the role. Turn **Preview** on to read it as markdown.
+The editor tabs are:
+
+- **Prompt**: Role, Input, Output, Startup behavior, and Principles. KIKI joins them into the prompt. An input can be required, or it can have a default. **Preview** reads a field as markdown.
 - **Repositories**: turn a repository on, then set the guide file and what the agent does there. **Readonly** keeps that repository read-only for this agent.
 - **Agents Coordination**: turn on the agents this one works with, then add messages. A message has **Send when** (the condition) and **What to send** (the content). Both are required. A third field says what the other agent reports back. When it is empty, no report is requested. Once it has text, you can allow a back-and-forth exchange of up to 20 loops.
-- **MCP Servers**: the servers this agent may call, with a note on how to use each one.
-- **Tools**: the CLI tools this agent may run.
+- **Connections**: the MCP servers this agent may call, with a note on how to use each one, and the CLI tools it may run.
+- **Topology**: the map of what this agent may reach.
 - The **On** switch keeps the file but leaves the agent out of task starts.
 
-The sparkle button (**Rewrite by AI**) on a text field rewrites it with the AI tool and model chosen under **Generate text** in Settings. You see both versions side by side and press **Use** to accept.
+**Rewrite by AI** on a text field rewrites it with the AI tool and model chosen under **Generate text** in Settings. You see both versions side by side and press **Use** to accept.
 
 The document icon on a card shows the exact prompt KIKI sends to Orca.
 
 ### 5. MCP Servers, Tools, and RTK
 
-- An MCP server set up in Settings shows in each agent's **MCP Servers** section. Only the servers set on an agent can be used by that agent.
-- **GitHub CLI** is turned on per agent in **Tools**.
+- Jira and Confluence, once set up in Settings, show on each agent's **Connections** tab. Only the servers turned on for an agent can be used by that agent.
+- **GitHub CLI** is turned on per agent on that same tab.
 - **RTK** applies to every agent while it is on. Starting an agent adds the RTK hook to that agent's AI tool when it is missing. Turning RTK off removes the hook from Cursor, Claude, Codex, and Gemini.
 
 ### 6. Team Sharing
@@ -172,15 +195,15 @@ The document icon on a card shows the exact prompt KIKI sends to Orca.
 2. Enter your name. If the folder already has members, you can pick one or type a new name.
 3. Save. KIKI copies `.kiki/agents` to `<team>/<name>/agents` and the repository setup to `<team>/<name>/repos`.
 
-On the **Agents** tab, open the **Team Sharing** card. Pick a member, see which agents and repositories differ (open one to see the diff), and use the arrows to copy. Your own folder can be copied both ways. Another member's folder is copied into this app only. Each copy asks before it overwrites. If a copied agent uses a repository this app does not have, KIKI asks you to create it or map it to an existing one.
+On the **Agents** tab, open the **Team Sharing** card. Pick a member, see which agents and repositories differ (open one to see the diff), and use the arrows to copy. An arrow opens a list: tick what to include. Anything you leave unticked stays as it is. Your own folder can be copied both ways. Another member's folder is copied into this app only. Each copy asks before it overwrites. If a copied agent uses a repository this app does not have, KIKI asks you to create it or map it to an existing one.
 
 ### 7. Tasks
 
 On the **Tasks** tab:
 
 1. **New group** (optional) makes a group. When Jira is on, a Jira epic is created on the board chosen in Settings.
-2. **New task**: enter a name and a description, choose a group, and turn on the agents. An agent also turns on the agents in its Agents Coordination. Those wait for a request.
-3. **Start on Orca** shows the prompt each agent will receive. You can edit it. Nothing starts until you confirm. KIKI opens an Orca worktree for each repository an agent uses and launches the agent there.
+2. **New task**: enter a name and a description, choose a group, and turn on the agents. An agent also turns on the agents in its Agents Coordination. Those are sub agents. They cannot be turned off on their own, they start first, and they wait for a request. The AI tool and model shown on a turned-on agent are what this start uses.
+3. **Start on Orca** shows the prompt each agent will receive. You can edit it. Nothing starts until you confirm. KIKI opens an Orca worktree for each repository an agent uses and launches the agent there. Sub agents start before the agent that called them.
 4. The task moves to **In Progress**. Each agent shows as Pending, Doing, Waiting for review, or Completed. KIKI shows each agent's thinking and replies.
 5. When an agent asks a question or finishes, it is **Waiting for review**. Reply to it, or press **Approve** to mark it Completed.
 6. When every agent is Completed, the task moves to **Done**.
@@ -189,13 +212,13 @@ On the **Tasks** tab:
 
 ### 8. Topology
 
-The **Topology** tab draws what each agent may reach. Select an agent to highlight its guardrail, MCP servers, tools, repositories, coordinating agents, and indexes.
+The **Topology** tab draws what each agent may reach. Select an agent to highlight its guardrail, MCP servers, tools, repositories, coordinating agents, and indexes. The same map is the **Topology** tab inside that agent's editor.
 
 ## Reference
 
 ### Agent files
 
-Agents live in `.kiki/agents` next to the app, as `<category>/<id>.md`. The embedded roles in `src-tauri/crates/agents/` are copied there the first time the folder has no agent files. After that the files are yours: an update to an embedded role does not overwrite an agent you already have. To start again from the current embedded roles, move `.kiki/agents` away (keep a copy of agents you edited) and restart KIKI. The roles read their repositories, services, collaborators, MCP servers, and Jira board from the launch prompt, so they do not depend on any other config file. A file stores the id, name, description, whether the agent is on, AI tool, model, repositories (with guide file and note), `agents_coordination` (with `handoffs` as `when` and `send` pairs), MCP servers, tools, and the prompt.
+Agents live in `.kiki/agents` next to the app, as `<category>/<id>.md`. The embedded roles in `src-tauri/crates/agents/` are copied there the first time the folder has no agent files. After that the files are yours: an update to an embedded role does not overwrite an agent you already have. To start again from the current embedded roles, move `.kiki/agents` away (keep a copy of agents you edited) and restart KIKI. The roles read their repositories, services, collaborators, MCP servers, and Jira board from the launch prompt, so they do not depend on any other config file. A file stores the id, name, description, whether the agent is on, AI tool, model, repositories (with guide file and note), `agents_coordination` (with `handoffs` as `when` and `send` pairs), MCP servers, tools, and the prompt. The prompt body is the sections Role, Input, Output, Startup behavior, and Principles.
 
 | Group | Agents | Repository |
 | --- | --- | --- |
@@ -227,7 +250,7 @@ KIKI writes its files in `.kiki` beside the executable, not in the current worki
 | File | Contents |
 | --- | --- |
 | `.kiki/kiki.yaml` | Workspace, orchestrator, repository folders, selected services, and team folder. |
-| `.kiki/repos/` | One file per repository (`backend.yaml`, `website.yaml`, `mobile.yaml`, `document.yaml`) with its folder, services, and index. |
+| `.kiki/repos/` | One file per repository (`backend.yaml`, `website.yaml`, `mobile.yaml`, `document.yaml`, and one file for each repository you add) with its folder, services, and index. |
 | `.kiki/agents/` | Agent files, `<category>/<id>.md`. |
 | `.kiki/mcp.yaml` | MCP credentials for this computer. Agents do not read it. |
 | `.kiki/tools.yaml` | Tools and guardrails choices for this computer. Agents do not read it. |
