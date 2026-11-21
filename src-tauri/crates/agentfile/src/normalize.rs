@@ -8,6 +8,48 @@ use kiki_aitool::AiTool;
 
 use crate::model::{clean_handoffs, custom_guide, Collaborator, File, Repository, Use, MAX_HANDOFF_LOOPS};
 
+/// Lowercase snake_case: a boundary between a letter or digit and a capital becomes `_`,
+/// and every other character becomes `_`.
+pub fn snake_case(raw: &str) -> String {
+    let mut split = String::new();
+    let mut chars = raw.trim().chars().peekable();
+    while let Some(ch) = chars.next() {
+        split.push(ch);
+        if let Some(&next) = chars.peek() {
+            let boundary = (ch.is_ascii_lowercase() || ch.is_ascii_digit()) && next.is_ascii_uppercase();
+            if boundary {
+                split.push('_');
+            }
+        }
+    }
+    let mut out = String::new();
+    let mut underscore = true;
+    for ch in split.to_ascii_lowercase().chars() {
+        if ch.is_ascii_lowercase() || ch.is_ascii_digit() {
+            out.push(ch);
+            underscore = false;
+        } else if !underscore {
+            out.push('_');
+            underscore = true;
+        }
+    }
+    while out.ends_with('_') {
+        out.pop();
+    }
+    out
+}
+
+/// `{snake_case(category)}_{snake_case(name)}`. Empty when either part has no letters or digits.
+pub fn new_id(category: &str, name: &str) -> String {
+    let category = snake_case(category);
+    let name = snake_case(name);
+    if category.is_empty() || name.is_empty() {
+        String::new()
+    } else {
+        format!("{category}_{name}")
+    }
+}
+
 /// True for ids that start with a lower case letter and use only lower case letters, digits and `_`.
 pub(crate) fn is_slug(s: &str) -> bool {
     let mut chars = s.chars();
@@ -16,6 +58,28 @@ pub(crate) fn is_slug(s: &str) -> bool {
         _ => return false,
     }
     chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// A repository id is lowercase, with words separated by a single `-` or `_`.
+fn is_repo_id(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_lowercase() => {}
+        _ => return false,
+    }
+    let mut separator = false;
+    for c in chars {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            separator = false;
+            continue;
+        }
+        if (c == '-' || c == '_') && !separator {
+            separator = true;
+            continue;
+        }
+        return false;
+    }
+    !separator
 }
 
 /// The AI tool an agent file names, when it is one Orca can start. The match is exact.
@@ -100,7 +164,7 @@ fn normalize_repos(list: &[Repository]) -> Result<Vec<Repository>> {
         if kind.is_empty() || seen.contains(kind) {
             continue;
         }
-        if !is_slug(kind) {
+        if !is_repo_id(kind) {
             return Err(anyhow!("repos must use folder-safe names"));
         }
         seen.insert(kind.to_string());

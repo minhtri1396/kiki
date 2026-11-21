@@ -1,4 +1,4 @@
-const state = { data: null, agentId: null, editingAgentId: "", busySetup: "", busyKind: "", pendingRepoIndex: null, checkingIndexes: new Set(), tab: "tasks", taskView: "board", workflowSelection: null, indexChoice: {}, taskId: "", taskQuery: "", taskDoneFrom: "", taskDoneTo: "" };
+const state = { data: null, agentId: null, editingAgentId: "", creatingAgent: false, setupBusy: new Set(), pendingRepoIndex: null, checkingIndexes: new Set(), tab: "tasks", taskView: "board", indexChoice: {}, taskId: "", taskQuery: "", taskDoneFrom: "", taskDoneTo: "" };
 let pageScrollLock = null;
 
 function lockPageScroll() {
@@ -60,8 +60,24 @@ let teamListedMembers = [];
 let agentMemberBusy = false;
 let agentMemberChoice = null;
 let agentMemberTeam = "";
-
 const repoLabel = { backend: "Backend", website: "Website", mobile: "Mobile", document: "Document" };
+
+function repoTitle(kind) {
+  const repos = (state.data && state.data.repos) || [];
+  const repo = repos.find((item) => item.kind === kind);
+  if (repo && String(repo.name || "").trim()) return repo.name;
+  return repoLabel[kind] || kind;
+}
+
+function agentRepoIds(agent) {
+  return (agent.repos || [])
+    .map((repo) => (typeof repo === "string" ? repo : repo && repo.kind))
+    .filter(Boolean);
+}
+
+function agentsUsingRepo(kind) {
+  return ((state.data && state.data.agents) || []).filter((agent) => agentRepoIds(agent).includes(kind));
+}
 const indexToolURL = {
   obsidian: "https://obsidian.md/help/cli",
   codegraph: "https://github.com/colbymchenry/codegraph",
@@ -211,7 +227,7 @@ function renderAgentSource(team) {
   const body = document.querySelector("#team-share-body");
   if (!body) return card;
   body.replaceChildren();
-  body.append(el("p", "hint", "Copy agents or repositories between this app and the team folder. Your own folder can go both ways. Another member's folder only copies into this app."));
+  body.append(el("p", "hint", "Copy agents or repositories between this app and the team folder. An arrow opens a list so you can choose what to include. Your own folder can go both ways. Another member's folder only copies into this app."));
   const picker = el("div", "team-share");
   const title = el("div", "team-share-title");
   title.append(el("h3", "", "Member"));
@@ -232,13 +248,13 @@ function renderAgentSource(team) {
     "user-compare",
     "This app and " + (team.user || "your folder"),
     true,
-    "Your folder in the team folder. Agents and repositories each have their own arrows. → copies this app into that folder, and ← copies that folder into this app. An arrow enables only when that row differs."
+    "Your folder in the team folder. → opens the agents or repositories that differ in this app, and ← opens the ones that differ in your folder. Choose which to copy. Anything you leave unticked stays as it is."
   ));
   const memberCompare = renderCompare(
     "member-compare",
     "This app and a member",
     false,
-    "Another member's folder. Choose a member above, then use ← to copy that member's agents or repositories into this app. An arrow enables only when that row differs."
+    "Another member's folder. Choose a member above, then use ←. The dialog lists the agents or repositories that differ so you can choose which to copy into this app. Anything you leave unticked stays as it is."
   );
   if (chosenMember(team) === String(team.user || "").trim()) memberCompare.hidden = true;
   body.append(memberCompare);
@@ -316,6 +332,12 @@ function chosenMember(team) {
 function renderAgents(data) {
   const panel = document.querySelector("#panel-agents");
   panel.replaceChildren();
+  const head = el("div", "agents-head");
+  const add = el("button", "primary", "New agent");
+  add.type = "button";
+  add.id = "agent-new";
+  head.append(add);
+  panel.append(head);
   const team = data.teamFolder || {};
   if (String(team.path || "").trim() && String(team.user || "").trim()) {
     panel.append(renderAgentSource(team));
@@ -327,6 +349,7 @@ function renderAgents(data) {
     const cards = el("div", "cards");
     for (const agent of group.agents) {
       const card = el("article", "card agent-card" + (agent.enabled === false ? " is-off" : ""));
+      card.dataset.editAgent = agent.id;
       const head = el("div", "card-head");
       const title = el("div", "card-title");
       title.append(el("h3", "", agent.title));
@@ -338,21 +361,24 @@ function renderAgents(data) {
       }
       head.append(title);
       const actions = el("div", "card-actions");
-      const edit = el("button", "text-button", "Edit");
-      edit.type = "button";
-      edit.dataset.editAgent = agent.id;
+      const remove = el("button", "icon-button danger");
+      remove.type = "button";
+      remove.dataset.deleteAgent = agent.id;
+      remove.setAttribute("aria-label", "Delete " + agent.title);
+      remove.title = "Delete";
+      remove.append(trashIcon());
       const prompt = el("button", "icon-button");
       prompt.type = "button";
       prompt.dataset.prompt = agent.id;
       prompt.setAttribute("aria-label", "Show the prompt for " + agent.title);
       prompt.append(promptIcon());
-      actions.append(edit, prompt);
+      actions.append(remove, prompt);
       head.append(actions);
       card.append(head);
       card.append(el("p", "id", "ID: " + agent.id));
       const body = el("div", "card-copy");
       body.append(el("p", "summary", agent.summary));
-      const repos = agent.repos.map((kind) => repoLabel[kind] || kind).join(", ");
+      const repos = agent.repos.map((kind) => repoTitle(kind)).join(", ");
       body.append(el("p", "hint", "Repository: " + repos));
       const peers = agent.worksWith || [];
       if (peers.length) {
@@ -373,7 +399,13 @@ function renderAgents(data) {
 function renderRepos(data) {
   const panel = document.querySelector("#panel-repos");
   panel.replaceChildren();
-  panel.append(el("p", "hint", "Each repository has an index and a folder. Turn the index on to use Obsidian or CodeGraph. A tool already in the folder is used as it is. Choose a folder and KIKI uses that path. Clone into it when the folder is empty. KIKI saves each repository in " + data.root + "/.kiki/repos."));
+  panel.append(el("p", "hint", "Each repository has a name, an index, and a folder. Add a repository, or rename and delete one. Turn the index on to use Obsidian or CodeGraph. A tool already in the folder is used as it is. Choose a folder and KIKI uses that path. Clone into it when the folder is empty. KIKI saves each repository in " + data.root + "/.kiki/repos."));
+  const bar = el("div", "repo-toolbar");
+  const add = el("button", "primary", "Add repository");
+  add.type = "button";
+  add.dataset.addRepo = "1";
+  bar.append(add);
+  panel.append(bar);
 
   const grid = el("div", "repo-grid");
   const rank = (kind) => {
@@ -384,14 +416,135 @@ function renderRepos(data) {
   for (const repo of repos) {
     const card = el("article", "card");
     const head = el("div", "repo-head");
-    head.append(el("h3", "", repoLabel[repo.kind] || repo.kind));
+    const title = el("div");
+    title.append(el("h3", "", repoTitle(repo.kind)));
+    title.append(el("p", "id", repo.kind));
+    head.append(title, repoNameActions(repo.kind));
     card.append(head, repoFolderSection(repo), repoIndexSection(repo));
     grid.append(card);
   }
   panel.append(grid);
   panel.append(saveButton());
   if (state.checkingIndexes.size) markIndexesChecking();
-  if (state.busySetup) paintRepoSetupButtons();
+  if (state.setupBusy.size) paintRepoSetupButtons();
+}
+
+function repoNameActions(kind) {
+  const actions = el("div", "card-actions");
+  const label = repoTitle(kind);
+  const rename = el("button", "icon-button");
+  rename.type = "button";
+  rename.dataset.renameRepo = kind;
+  rename.setAttribute("aria-label", "Rename " + label);
+  rename.title = "Rename";
+  rename.append(editIcon());
+  const remove = el("button", "icon-button danger");
+  remove.type = "button";
+  remove.dataset.deleteRepo = kind;
+  remove.setAttribute("aria-label", "Delete " + label);
+  remove.title = "Delete";
+  remove.append(trashIcon());
+  actions.append(rename, remove);
+  return actions;
+}
+
+function openRepoName(kind) {
+  const dialog = document.querySelector("#repo-name-dialog");
+  const input = document.querySelector("#repo-name-input");
+  const error = document.querySelector("#repo-name-error");
+  dialog.dataset.kind = kind || "";
+  document.querySelector("#repo-name-title").textContent = kind ? "Rename repository" : "Add repository";
+  document.querySelector("#repo-name-hint").textContent = kind
+    ? "This changes the name. The id stays the same."
+    : "The name starts with a letter and uses letters, digits, spaces, hyphens, or underscores. A new repository gets an id from that name.";
+  const save = document.querySelector("#repo-name-save");
+  save.textContent = kind ? "Rename" : "Add";
+  save.disabled = false;
+  input.value = kind ? repoTitle(kind) : "";
+  const repo = kind && state.data ? state.data.repos.find((item) => item.kind === kind) : null;
+  const divided = document.querySelector("#repo-name-divided");
+  divided.checked = !!(repo && repo.divided);
+  document.querySelector("#repo-name-divided-note").hidden = !divided.checked;
+  error.hidden = true;
+  dialog.showModal();
+  input.focus();
+  input.select();
+}
+
+function openDeleteRepo(kind) {
+  const dialog = document.querySelector("#repo-delete-dialog");
+  const label = repoTitle(kind);
+  dialog.dataset.kind = kind;
+  const users = agentsUsingRepo(kind);
+  const list = document.querySelector("#repo-delete-agents");
+  const note = document.querySelector("#repo-delete-note");
+  list.replaceChildren();
+  document.querySelector("#repo-delete-text").textContent = "Delete " + label + "? The folder on disk stays.";
+  if (users.length) {
+    for (const agent of users) {
+      list.append(el("li", "", agent.title || agent.id));
+    }
+    list.hidden = false;
+    note.hidden = false;
+    note.textContent = "These agents use this repository.";
+  } else {
+    list.hidden = true;
+    note.hidden = true;
+  }
+  document.querySelector("#repo-delete-error").hidden = true;
+  document.querySelector("#repo-delete-form button[value='confirm']").disabled = false;
+  dialog.showModal();
+}
+
+async function saveRepoName() {
+  const dialog = document.querySelector("#repo-name-dialog");
+  const input = document.querySelector("#repo-name-input");
+  const error = document.querySelector("#repo-name-error");
+  const current = dialog.dataset.kind || "";
+  const creating = current === "";
+  error.hidden = true;
+  const button = document.querySelector("#repo-name-save");
+  button.disabled = true;
+  try {
+    const data = await api(creating ? "/api/repos" : "/api/repos/" + encodeURIComponent(current), {
+      method: creating ? "POST" : "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: input.value,
+        divided: document.querySelector("#repo-name-divided").checked,
+      }),
+    });
+    dialog.close();
+    render(data);
+    showTab("repos");
+    banner(creating ? "Added the repository." : "Renamed the repository.");
+  } catch (err) {
+    error.hidden = false;
+    error.textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
+}
+
+async function confirmDeleteRepo() {
+  const dialog = document.querySelector("#repo-delete-dialog");
+  const error = document.querySelector("#repo-delete-error");
+  const kind = dialog.dataset.kind || "";
+  error.hidden = true;
+  const button = document.querySelector("#repo-delete-form button[value='confirm']");
+  button.disabled = true;
+  try {
+    const data = await api("/api/repos/" + encodeURIComponent(kind), { method: "DELETE" });
+    dialog.close();
+    render(data);
+    showTab("repos");
+    banner("Deleted the repository. The folder on disk stays.");
+  } catch (err) {
+    error.hidden = false;
+    error.textContent = err.message;
+  } finally {
+    button.disabled = false;
+  }
 }
 
 function renderConfig(data) {
@@ -690,7 +843,7 @@ function settingsPlaceFields(name) {
       label: "Board",
       placeholder: "Search Jira boards",
       value: () => saved().boardName || "",
-      load: (query) => fetchPlaces("/api/atlassian/jira/boards?q=" + encodeURIComponent(query)),
+      load: (query) => loadSettingsPlaces("jira", "/api/atlassian/jira/boards?q=" + encodeURIComponent(query)),
       onChoose: (item) => {
         saved().boardId = item ? item.id : "";
         saved().boardName = item ? (item.name || "") : "";
@@ -703,7 +856,7 @@ function settingsPlaceFields(name) {
     label: "Space",
     placeholder: "Search Confluence spaces",
     value: () => saved().spaceName || "",
-    load: (query) => fetchPlaces("/api/atlassian/confluence/spaces?q=" + encodeURIComponent(query)),
+    load: (query) => loadSettingsPlaces("confluence", "/api/atlassian/confluence/spaces?q=" + encodeURIComponent(query)),
     onChoose: (item) => {
       const current = saved();
       current.spaceId = item ? item.id : "";
@@ -723,7 +876,7 @@ function settingsPlaceFields(name) {
     load: (query) => {
       const current = saved();
       const params = new URLSearchParams({ space: current.spaceId || "", key: current.spaceKey || "", q: query });
-      return fetchPlaces("/api/atlassian/confluence/pages?" + params.toString());
+      return loadSettingsPlaces("confluence", "/api/atlassian/confluence/pages?" + params.toString());
     },
     onChoose: (item) => {
       saved().parentId = item ? item.id : "";
@@ -732,6 +885,35 @@ function settingsPlaceFields(name) {
     },
   });
   return [el("p", "hint", "Agents use this space and parent page unless an agent chooses another one."), space, parentField];
+}
+
+function settingsPlaceReady(name) {
+  const saved = (state.data && state.data.atlassian) || {};
+  const service = saved[name] || {};
+  const url = fieldValue("#mcp-" + name + "-url");
+  if (!validHttpUrl(url) || !mcpPressed("#mcp-atlassian") || !mcpPressed("#mcp-" + name)) return false;
+  if (mcpChecked("#mcp-" + name + "-own")) {
+    return mcpCredentialReady(
+      fieldValue("#mcp-" + name + "-username"),
+      fieldValue("#mcp-" + name + "-api-token"),
+      !!service.apiTokenSet,
+    );
+  }
+  return mcpCredentialReady(fieldValue("#mcp-username"), fieldValue("#mcp-api-token"), !!saved.apiTokenSet);
+}
+
+function loadSettingsPlaces(name, url) {
+  if (!settingsPlaceReady(name)) return Promise.reject(new Error("Enter the email, API token, and site URL."));
+  return fetchSettingsPlaces(url);
+}
+
+async function fetchSettingsPlaces(url) {
+  const data = await api(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(collectAtlassian() || {}),
+  });
+  return data.items || [];
 }
 
 function atlassianTokenHint() {
@@ -907,7 +1089,7 @@ function collectAtlassian() {
 function renderTeam(team) {
   const section = el("section", "team-setup wide");
   section.append(el("h3", "", "Team folder"));
-  section.append(el("p", "hint", "Choose a folder on this computer or type its full path. Your name appears after that folder is chosen. If it already has members, pick one as your name or enter a new name. Save copies this app's agents into your agents folder there. A name you type that already exists asks whether to enter a different name or use that folder."));
+  section.append(el("p", "hint", "Choose a folder on this computer or type its full path. Your name appears after that folder is chosen. If it already has members, pick one as your name or enter a new name. Save copies this app's agents into your agents folder there, and the repositories folder beside it. A name you type that already exists asks whether to enter a different name or use that folder."));
   const pathValue = (team.path || "").trim();
   const path = field("Team folder path", "text", "team-path", team.path || "");
   const pathInput = path.querySelector("input");
@@ -1149,36 +1331,121 @@ function agentFileChanged(agent, otherByID) {
   return String(other.hash || "") !== String(agent.hash || "");
 }
 
-function fillAgentList(list, agents, other, folder, part) {
+function shareOrder(left, right) {
+  const seen = new Set();
+  const order = [];
+  for (const item of [...(left || []), ...(right || [])]) {
+    if (!item || item.id == null || seen.has(item.id)) continue;
+    seen.add(item.id);
+    order.push(item.id);
+  }
+  return order;
+}
+
+function shareLabel(kind, item, id) {
+  if (kind === "repos") {
+    const named = item && String(item.name || "").trim();
+    if (named) return named;
+    return repoTitle((item && item.id) || id);
+  }
+  return (item && (item.name || item.id)) || id;
+}
+
+function fillAgentList(list, order, selfByID, otherByID, folder, part) {
   const kind = part === "repos" ? "repos" : "agents";
   list.replaceChildren();
-  if (!agents.length) {
+  if (!order.length) {
     list.append(el("li", "hint", kind === "repos" ? "No repositories." : "No agents."));
     return;
   }
-  const otherByID = other ? agentsByID(other) : null;
-  for (const agent of agents) {
+  for (const id of order) {
+    const self = selfByID.get(id);
+    const other = otherByID ? otherByID.get(id) : null;
     const item = el("li");
-    const label = kind === "repos" ? (repoLabel[agent.id] || agent.name || agent.id) : (agent.name || agent.id);
-    const name = el("span", "name", label);
-    const meta = kind === "agents" && agent.category ? el("span", "meta", agent.category) : null;
-    if (agentFileChanged(agent, otherByID)) {
-      item.classList.add("is-diff");
-      const button = el("button", "agent-diff");
-      button.type = "button";
-      button.dataset.agentDiff = agent.id;
-      button.dataset.folder = folder || "";
-      button.dataset.part = kind;
-      button.setAttribute("aria-label", "Show how " + label + " differs");
-      button.append(name);
-      if (meta) button.append(meta);
-      item.append(button);
-    } else {
-      item.append(name);
-      if (meta) item.append(meta);
+    if (!self) {
+      item.classList.add("is-missing");
+      item.dataset.shareId = id;
+      if (other && other.category) item.dataset.shareMeta = other.category;
+      const line = el("div", "agent-line");
+      line.append(el("span", "name", shareLabel(kind, other, id)));
+      line.append(el("span", "badge bad", "Deleted"));
+      item.append(line);
+      list.append(item);
+      continue;
     }
+    const label = shareLabel(kind, self, id);
+    const meta = kind === "agents" && self.category ? el("span", "meta", self.category) : null;
+    const changed = agentFileChanged(self, otherByID);
+    const line = changed ? el("button", "agent-diff") : el("div", "agent-line");
+    if (changed) {
+      item.classList.add("is-diff");
+      line.type = "button";
+      line.dataset.agentDiff = self.id;
+      line.dataset.folder = folder || "";
+      line.dataset.part = kind;
+      line.setAttribute("aria-label", "Show how " + label + " differs");
+    }
+    line.append(el("span", "name", label));
+    if (meta) line.append(meta);
+    item.append(line);
     list.append(item);
   }
+}
+
+function setColumnHeading(view, title) {
+  view.querySelector("h4").replaceChildren(el("span", "", title));
+}
+
+function sourceDiffs(row, side) {
+  const view = row && row.querySelectorAll(".team-view")[side === "folder" ? 1 : 0];
+  if (!view) return [];
+  const choices = [];
+  for (const item of view.querySelectorAll("li")) {
+    const name = item.querySelector(".name");
+    if (item.classList.contains("is-missing")) {
+      const id = item.dataset.shareId || "";
+      if (!id) continue;
+      choices.push({
+        id: id,
+        name: name ? name.textContent : id,
+        meta: item.dataset.shareMeta || "",
+        deleted: true,
+      });
+      continue;
+    }
+    if (!item.classList.contains("is-diff")) continue;
+    const button = item.querySelector("[data-agent-diff]");
+    const meta = item.querySelector(".meta");
+    const id = button ? button.dataset.agentDiff : "";
+    if (!id) continue;
+    choices.push({
+      id: id,
+      name: name ? name.textContent : id,
+      meta: meta ? meta.textContent : "",
+      deleted: false,
+    });
+  }
+  return choices;
+}
+
+function arrowChoiceLabel(part, direction, folderName, count) {
+  const many = part === "repos" ? "repositories" : "agents";
+  if (!count) return "Nothing to copy";
+  if (direction === "push") {
+    return folderName ? "Choose " + many + " to copy to " + folderName : "Choose " + many + " to copy to the folder";
+  }
+  return folderName ? "Choose " + many + " to copy from " + folderName : "Choose " + many + " to copy into this app";
+}
+
+function syncAgentArrows(row) {
+  if (!row) return;
+  const part = row.dataset.part === "repos" ? "repos" : "agents";
+  const sample = row.querySelector("[data-sync]");
+  const folder = sample ? sample.dataset.folder || "" : "";
+  const push = sourceDiffs(row, "app");
+  const pull = sourceDiffs(row, "folder");
+  setArrow(row.querySelector("[data-sync='push']"), !!folder && push.length > 0, arrowChoiceLabel(part, "push", folder, push.length));
+  setArrow(row.querySelector("[data-sync='pull']"), !!folder && pull.length > 0, arrowChoiceLabel(part, "pull", folder, pull.length));
 }
 
 function setArrow(button, enabled, label) {
@@ -1208,27 +1475,28 @@ function paintPair(id, title, folderHeading, app, side) {
   badge.textContent = matched ? "Matches" : "Not matched";
 }
 
-function paintShareRow(block, part, leftTitle, rightTitle, appItems, sideItems, differs, comparable, side) {
+function paintShareRow(block, part, leftTitle, rightTitle, appItems, sideItems, _differs, comparable, side) {
   const row = block.querySelector('[data-part="' + part + '"]');
   if (!row) return;
   const views = row.querySelectorAll(".team-view");
-  views[0].querySelector("h4").textContent = leftTitle;
-  views[1].querySelector("h4").textContent = rightTitle;
   const folderItems = comparable ? (sideItems || []) : null;
   const folderName = comparable ? side.name : "";
-  fillAgentList(views[0].querySelector("ul"), appItems || [], folderItems, folderName, part);
+  const appBy = agentsByID(appItems);
+  const folderBy = comparable ? agentsByID(sideItems) : null;
+  const order = shareOrder(appItems, comparable ? sideItems : null);
+  fillAgentList(views[0].querySelector("ul"), order, appBy, folderBy, folderName, part);
   if (!comparable) {
     views[1].querySelector("ul").replaceChildren(el("li", "hint", side && side.missing ? "This folder is not in the team folder." : "Choose a member."));
   } else {
-    fillAgentList(views[1].querySelector("ul"), sideItems || [], appItems || [], folderName, part);
+    fillAgentList(views[1].querySelector("ul"), order, folderBy, appBy, folderName, part);
   }
-  const noun = part === "repos" ? "repositories" : "agents";
+  setColumnHeading(views[0], leftTitle);
+  setColumnHeading(views[1], rightTitle);
   const toFolder = row.querySelector("[data-sync='push']");
   const toApp = row.querySelector("[data-sync='pull']");
   if (toFolder) toFolder.dataset.folder = folderName;
   if (toApp) toApp.dataset.folder = folderName;
-  setArrow(toFolder, comparable && differs && (appItems || []).length > 0, folderName ? "Copy this app's " + noun + " to " + folderName : "Copy this app's " + noun + " to the folder");
-  setArrow(toApp, comparable && differs && (sideItems || []).length > 0, folderName ? "Copy " + folderName + "'s " + noun + " to this app" : "Copy the folder's " + noun + " to this app");
+  syncAgentArrows(row);
 }
 
 function paintTeamShare() {
@@ -1283,11 +1551,18 @@ function sameNames(left, right) {
   return a.length === b.length && a.every((name, index) => name === b[index]);
 }
 
+function repoDividedBox(kind) {
+  return document.querySelector(`#panel-repos [data-repo-divided="${CSS.escape(kind)}"]`);
+}
+
 function reposDirty() {
   if (!state.data) return false;
   for (const repo of state.data.repos) {
-    if (repo.kind === "document") continue;
-    const tags = document.querySelector(`[data-services="${repo.kind}"]`);
+    const box = repoDividedBox(repo.kind);
+    if (!box) return false;
+    if (box.checked !== !!repo.divided) return true;
+    if (!box.checked) continue;
+    const tags = document.querySelector(`#panel-repos [data-services="${CSS.escape(repo.kind)}"]`);
     if (!tags) return false;
     const selected = [...tags.querySelectorAll("button[aria-pressed='true']")].map((item) => item.dataset.name);
     if (!sameNames(selected, repo.services || [])) return true;
@@ -1327,6 +1602,47 @@ function paintGenerateIcons() {
   for (const button of document.querySelectorAll(".field-generate")) paintGenerateButton(button);
 }
 
+function generateSubject(button) {
+  const current = button.dataset.generateSubject || "";
+  const kind = button.dataset.generate;
+  if ((kind !== "prompt" && kind !== "prompt_field" && kind !== "prompt_input" && kind !== "prompt_output") || !button.closest("#agent-dialog")) return current;
+  const name = document.querySelector("#agent-name").value.trim();
+  const id = state.creatingAgent ? newAgentId() : state.editingAgentId;
+  return name || id || current;
+}
+
+function agentBrief(name, id, description) {
+  const title = (name || "").trim();
+  const slug = (id || "").trim();
+  const who = title && slug && title !== slug ? title + " (" + slug + ")" : (title || slug);
+  const about = (description || "").trim();
+  if (!who) return about;
+  if (!about) return who;
+  return who + ": " + about;
+}
+
+function handoffValue(button, part) {
+  const row = button.closest(".handoff");
+  const area = row && row.querySelector("textarea[data-part='" + part + "']");
+  return area ? area.value.trim() : "";
+}
+
+function rewriteContext(button) {
+  const kind = button.dataset.generate;
+  if (!["teamwork", "teamwork_when", "teamwork_reply"].includes(kind)) return {};
+  const peerId = button.dataset.generateSubject || "";
+  const peer = agentById(peerId);
+  const name = document.querySelector("#agent-name").value.trim();
+  const id = state.creatingAgent ? newAgentId() : state.editingAgentId;
+  return {
+    prompt: agentPromptText(),
+    agent: agentBrief(name, id, document.querySelector("#agent-description").value),
+    peer: agentBrief((peer && (peer.title || peer.name)) || "", peerId, peer && peer.summary),
+    when: handoffValue(button, "when"),
+    send: handoffValue(button, "send"),
+  };
+}
+
 function generateButton(kind, subject) {
   const button = el("button", "field-generate", "Rewrite by AI");
   button.type = "button";
@@ -1337,7 +1653,7 @@ function generateButton(kind, subject) {
 }
 
 function placeGenerateButtons() {
-  for (const area of document.querySelectorAll("#agent-dialog .compose textarea, #task-dialog .compose textarea, #task-start-dialog .compose textarea")) {
+  for (const area of document.querySelectorAll("#agent-dialog .compose textarea, #agent-dialog .compose input:not([type='checkbox']), #task-dialog .compose textarea, #task-start-dialog .compose textarea")) {
     const compose = area.closest(".compose");
     if (!compose) continue;
     compose.classList.toggle("has-scroll", area.scrollHeight > area.clientHeight + 1);
@@ -1442,7 +1758,7 @@ function showTeamShareList() {
 async function openAgentDiff(id, folder, part) {
   const kind = part === "repos" ? "repos" : "agents";
   const data = await api("/api/team/diff?folder=" + encodeURIComponent(folder) + "&id=" + encodeURIComponent(id) + "&part=" + kind);
-  document.querySelector("#team-share-diff-title").textContent = kind === "repos" ? (repoLabel[data.name || id] || data.name || id) : (data.name || id);
+  document.querySelector("#team-share-diff-title").textContent = kind === "repos" ? repoTitle(id) : (data.name || id);
   const noun = kind === "repos" ? "repositories" : "agents";
   showSideBySideDiff(data.diff || [], {
     grid: document.querySelector("#team-share-diff-grid"),
@@ -1488,21 +1804,38 @@ function setGenerateValue(button, area, value) {
   area.value = value;
   storeGeneratedText(button, value);
   placeGenerateButtons();
+  if (area.closest("#agent-prompt-fields")) syncAgentPromptMirror();
+}
+
+function generateButtonFor(target) {
+  const block = target.closest && target.closest(".field");
+  const own = block && block.querySelector(".field-generate");
+  if (own) return own;
+  const item = target.closest && target.closest(".prompt-item");
+  return item && item.querySelector(".prompt-item-fields > .field-generate");
 }
 
 function resetGenerateUndo(target) {
-  const block = target.closest && target.closest(".field");
-  const button = block && block.querySelector(".field-generate");
+  const button = generateButtonFor(target);
   const step = button && generateUndo.get(button);
   if (!step) return;
-  const current = step.applied ? step.rewritten : step.previous;
-  if (target.value === current) return;
+  if (step.fields) {
+    const label = promptFieldLabel(target);
+    const stored = label && step.fields[label];
+    if (!stored || target.value === (step.applied ? stored.rewritten : stored.previous)) return;
+  } else if (target.value === (step.applied ? step.rewritten : step.previous)) {
+    return;
+  }
   generateUndo.delete(button);
   paintGenerateButton(button);
 }
 
 function prepareGenerate(button) {
   if (button.classList.contains("busy")) return;
+  if (button.dataset.generate === "prompt_input" || button.dataset.generate === "prompt_output") {
+    prepareItemGenerate(button);
+    return;
+  }
   const block = button.closest(".field");
   const area = block && block.querySelector("textarea, input");
   if (!area) return;
@@ -1535,58 +1868,114 @@ function stopGenerateRuns() {
   for (const controller of [...generateRuns.values()]) controller.abort();
 }
 
+async function readGenerateResult(response) {
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.error || response.statusText);
+  }
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result = null;
+  while (result === null) {
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffer += decoder.decode(chunk.value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop();
+    for (const line of lines) {
+      if (!line.trim()) continue;
+      const event = JSON.parse(line);
+      if (event.type === "error") throw new Error(event.error || "Generate failed.");
+      if (event.type === "done") {
+        result = event.text || "";
+        break;
+      }
+    }
+  }
+  if (result === null) throw new Error("Generate failed.");
+  return result;
+}
+
+function generateRequest(button, text) {
+  return {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      kind: button.dataset.generate,
+      subject: generateSubject(button),
+      text,
+      ...rewriteContext(button),
+    }),
+  };
+}
+
+function repoRewriteField(kind) {
+  if (!kind) return null;
+  const area = document.querySelector("#agent-repos textarea[data-repo='" + CSS.escape(kind) + "']");
+  if (!area) return null;
+  const compose = area.closest(".compose");
+  return { area, compose, button: compose && compose.querySelector(".field-generate") };
+}
+
+function releaseRewriteField(area, compose, button, readOnly) {
+  if (area) {
+    area.readOnly = readOnly;
+    area.removeAttribute("aria-busy");
+  }
+  if (compose) compose.classList.remove("ai-rewriting");
+  if (button && button.isConnected) {
+    button.disabled = false;
+    button.classList.remove("busy");
+    paintGenerateButton(button);
+  }
+}
+
+function resumeRepoRewrites() {
+  for (const button of generateRuns.keys()) {
+    if (button.dataset.generate !== "repo" || button.isConnected) continue;
+    const live = repoRewriteField(button.dataset.generateSubject);
+    if (!live) continue;
+    live.area.readOnly = true;
+    live.area.setAttribute("aria-busy", "true");
+    if (live.compose) live.compose.classList.add("ai-rewriting");
+    if (live.button) {
+      live.button.disabled = true;
+      live.button.classList.add("busy");
+    }
+  }
+}
+
 async function rewriteText(button, area, text, error) {
   const controller = new AbortController();
   generateRuns.set(button, controller);
   const wasReadOnly = area.readOnly;
   const compose = area.closest(".compose") || area;
   const previous = area.value;
+  const repoKind = button.dataset.generate === "repo" ? (button.dataset.generateSubject || area.dataset.repo) : "";
   area.readOnly = true;
   area.setAttribute("aria-busy", "true");
   compose.classList.add("ai-rewriting");
   button.disabled = true;
   button.classList.add("busy");
   try {
-    const response = await kikiFetch("/api/generate", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      signal: controller.signal,
-      body: JSON.stringify({
-        kind: button.dataset.generate,
-        subject: button.dataset.generateSubject || "",
-        text,
-      }),
-    });
-    if (!response.ok) {
-      const data = await response.json().catch(() => ({}));
-      throw new Error(data.error || response.statusText);
-    }
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let result = null;
-    while (result === null) {
-      const chunk = await reader.read();
-      if (chunk.done) break;
-      buffer += decoder.decode(chunk.value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop();
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        const event = JSON.parse(line);
-        if (event.type === "error") throw new Error(event.error || "Generate failed.");
-        if (event.type === "done") {
-          result = event.text || "";
-          break;
-        }
-      }
-    }
-    if (result === null) throw new Error("Generate failed.");
-    if (area.isConnected) {
-      let value = result;
-      if (area.tagName === "INPUT") value = value.replace(/\s+/g, " ").trim();
-      generateUndo.set(button, { previous, rewritten: value, applied: true });
-      setGenerateValue(button, area, value);
+    const response = await kikiFetch("/api/generate", { ...generateRequest(button, text), signal: controller.signal });
+    const result = await readGenerateResult(response);
+    let value = result;
+    const live = area.isConnected ? null : repoRewriteField(repoKind);
+    const targetArea = area.isConnected ? area : live && live.area;
+    const targetButton = area.isConnected ? button : (live && live.button) || button;
+    if (targetArea) {
+      if (targetArea.tagName === "INPUT") value = value.replace(/\s+/g, " ").trim();
+      generateUndo.set(targetButton, { previous, rewritten: value, applied: true });
+      setGenerateValue(targetButton, targetArea, value);
+      const block = targetArea.closest(".field");
+      const toggle = block && block.querySelector("[data-repo-preview]");
+      const preview = block && block.querySelector(".repo-preview");
+      if (toggle && preview && toggle.getAttribute("aria-pressed") === "true") preview.innerHTML = renderMarkdown(value);
+    } else if (repoKind) {
+      if (!state.repoNotes) state.repoNotes = {};
+      state.repoNotes[repoKind] = value;
     }
   } catch (err) {
     if (err.name === "AbortError") return;
@@ -1596,9 +1985,81 @@ async function rewriteText(button, area, text, error) {
     }
   } finally {
     if (generateRuns.get(button) === controller) generateRuns.delete(button);
-    area.readOnly = wasReadOnly;
-    area.removeAttribute("aria-busy");
-    compose.classList.remove("ai-rewriting");
+    releaseRewriteField(area, compose, button, wasReadOnly);
+    if (!area.isConnected && repoKind) {
+      const live = repoRewriteField(repoKind);
+      if (live) releaseRewriteField(live.area, live.compose, live.button, false);
+    }
+  }
+}
+
+function prepareItemGenerate(button) {
+  const item = button.closest(".prompt-item");
+  if (!item) return;
+  const host = button.closest("dialog");
+  const error = host ? host.querySelector(".result.error") : null;
+  const step = generateUndo.get(button);
+  if (step && step.fields) {
+    step.applied = !step.applied;
+    applyItemValues(item, step.fields, step.applied ? "rewritten" : "previous");
+    paintGenerateButton(button);
+    return;
+  }
+  if (!promptItemEntries(item).some((entry) => entry.control.value.trim())) {
+    if (error) {
+      error.hidden = false;
+      error.textContent = "Enter some text first.";
+    }
+    return;
+  }
+  if (error) {
+    error.hidden = true;
+    error.textContent = "";
+  }
+  rewriteItem(button, item, promptItemSource(item), error);
+}
+
+async function rewriteItem(button, item, text, error) {
+  const controller = new AbortController();
+  generateRuns.set(button, controller);
+  const entries = promptItemEntries(item);
+  const previous = {};
+  for (const entry of entries) {
+    previous[entry.label.toLowerCase()] = entry.control.value;
+    entry.control.readOnly = true;
+    entry.control.setAttribute("aria-busy", "true");
+    const compose = entry.control.closest(".compose");
+    if (compose) compose.classList.add("ai-rewriting");
+  }
+  button.disabled = true;
+  button.classList.add("busy");
+  try {
+    const response = await kikiFetch("/api/generate", { ...generateRequest(button, text), signal: controller.signal });
+    const result = await readGenerateResult(response);
+    if (!item.isConnected) return;
+    const rewritten = promptItemRewriteValues(item, result);
+    if (!rewritten) throw new Error("The rewrite did not keep the fields.");
+    const fields = {};
+    for (const entry of entries) {
+      const key = entry.label.toLowerCase();
+      fields[key] = { previous: previous[key], rewritten: rewritten[key] };
+    }
+    generateUndo.set(button, { fields, applied: true });
+    applyItemValues(item, fields, "rewritten");
+  } catch (err) {
+    if (err.name === "AbortError") return;
+    if (error && error.isConnected) {
+      error.hidden = false;
+      error.textContent = err.message;
+    }
+  } finally {
+    if (generateRuns.get(button) === controller) generateRuns.delete(button);
+    for (const entry of entries) {
+      entry.control.readOnly = false;
+      entry.control.removeAttribute("aria-busy");
+      const compose = entry.control.closest(".compose");
+      if (compose) compose.classList.remove("ai-rewriting");
+    }
     if (button.isConnected) {
       button.disabled = false;
       button.classList.remove("busy");
@@ -1671,7 +2132,7 @@ function repoIndexSection(repo) {
   const field = el("label", "field repo-index-field");
   const select = el("select");
   select.dataset.repoIndexChoice = repo.kind;
-  select.setAttribute("aria-label", "Index for " + (repoLabel[repo.kind] || repo.kind));
+  select.setAttribute("aria-label", "Index for " + (repoTitle(repo.kind)));
   for (const [value, label] of [["obsidian", "Obsidian"], ["codegraph", "CodeGraph"]]) {
     const option = el("option", "", label);
     option.value = value;
@@ -1701,7 +2162,7 @@ function repoFolderSection(repo) {
   input.value = repo.folder || "";
   input.dataset.repoFolder = repo.kind;
   input.dataset.saved = repo.folder || "";
-  input.setAttribute("aria-label", "Folder for " + (repoLabel[repo.kind] || repo.kind));
+  input.setAttribute("aria-label", "Folder for " + (repoTitle(repo.kind)));
   const browse = el("button", "", "Browse");
   browse.type = "button";
   browse.dataset.browseFolder = repo.kind;
@@ -1716,19 +2177,80 @@ function repoFolderSection(repo) {
     clone.dataset.clone = repo.kind;
     section.append(clone);
   }
-  if (repo.kind !== "document") {
-    const services = el("div", "services");
-    services.append(el("span", "hint", "Services"));
-    const tags = el("div", "service-tags");
-    tags.dataset.services = repo.kind;
-    services.append(tags);
-    const note = el("p", "hint", "");
-    note.dataset.serviceNote = repo.kind;
-    services.append(note);
-    fillServiceTags(tags, note, repo.available || [], repo.services || []);
-    section.append(services);
-  }
+  section.append(repoServicesSection(repo));
   return section;
+}
+
+function repoServicesSection(repo) {
+  const section = el("div", "services");
+  const choice = el("label", "check-line");
+  const box = el("input");
+  box.type = "checkbox";
+  box.dataset.repoDivided = repo.kind;
+  box.checked = !!repo.divided;
+  choice.append(box, el("span", "", "This repository is divided into services"));
+  section.append(choice);
+  const body = el("div", "repo-services-body");
+  body.dataset.repoServicesBody = repo.kind;
+  body.hidden = !repo.divided;
+  body.append(el("p", "hint", "KIKI finds services in this repository with Nx."));
+  const tags = el("div", "service-tags");
+  tags.dataset.services = repo.kind;
+  const note = el("p", "hint", "");
+  note.dataset.serviceNote = repo.kind;
+  body.append(tags, note);
+  section.append(body);
+  if (repo.divided) paintRepoServices(section, repo);
+  return section;
+}
+
+function paintRepoServices(section, repo) {
+  const tags = section.querySelector("[data-services]");
+  const note = section.querySelector("[data-service-note]");
+  if (!tags || !note) return;
+  if (!(repo.folder || "").trim()) {
+    note.textContent = "Set a folder before services can be found.";
+    tags.replaceChildren();
+    return;
+  }
+  fillServiceTags(tags, note, repo.available || [], repo.services || []);
+}
+
+async function toggleRepoDivided(box) {
+  const kind = box.dataset.repoDivided;
+  const section = box.closest(".services");
+  const body = section && section.querySelector("[data-repo-services-body]");
+  if (body) body.hidden = !box.checked;
+  if (box.checked && section) await loadRepoServices(kind, section);
+  syncSave();
+}
+
+async function loadRepoServices(kind, section) {
+  const tags = section.querySelector("[data-services]");
+  const note = section.querySelector("[data-service-note]");
+  if (!tags || !note) return;
+  const input = document.querySelector(`#panel-repos [data-repo-folder="${CSS.escape(kind)}"]`);
+  const folder = input ? input.value.trim() : "";
+  if (!folder) {
+    note.textContent = "Set a folder before services can be found.";
+    tags.replaceChildren();
+    return;
+  }
+  note.textContent = "Looking for Nx projects…";
+  try {
+    const data = await api("/api/repos/services", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ folder }),
+    });
+    const repo = (state.data.repos || []).find((item) => item.kind === kind);
+    const pressed = [...tags.querySelectorAll("button[aria-pressed='true']")].map((item) => item.dataset.name);
+    const chosen = pressed.length ? pressed : ((repo && repo.services) || []);
+    fillServiceTags(tags, note, data.services || [], chosen);
+  } catch (error) {
+    note.textContent = error.message;
+    tags.replaceChildren();
+  }
 }
 
 function paintRepoIndexes() {
@@ -1745,7 +2267,7 @@ function paintRepoIndex(section, repo) {
   const saved = repo.index || "";
   const dialog = document.querySelector("#repo-index-dialog");
   const confirming = dialog && dialog.open && dialog.dataset.kind === repo.kind;
-  const settingUp = !!state.busySetup && state.busyKind === repo.kind;
+  const settingUp = repoSettingUp(repo.kind);
   const pending = state.pendingRepoIndex && state.pendingRepoIndex.kind === repo.kind;
   const enabled = saved === "obsidian" || saved === "codegraph";
   const using = enabled || settingUp || pending || (confirming && !enabled);
@@ -1762,7 +2284,7 @@ function paintRepoIndex(section, repo) {
   if (toggle) {
     toggle.setAttribute("aria-pressed", using ? "true" : "false");
     toggle.disabled = locked;
-    const name = repoLabel[repo.kind] || repo.kind;
+    const name = repoTitle(repo.kind);
     toggle.setAttribute("aria-label", (using ? "Stop using the index on " : "Use the index on ") + name);
   }
   const item = indexItem(repo.kind);
@@ -1784,6 +2306,7 @@ function paintRepoIndex(section, repo) {
       actions.setAttribute("aria-label", "Setting up");
       actions.append(spin, el("span", "repo-index-loading", "Setting up…"));
     } else if (assigned) {
+      if (using && badgeText(item) === "Not ready") actions.append(indexSetupButton(item));
       const refresh = el("button", "icon-button");
       refresh.type = "button";
       refresh.dataset.refreshRepo = repo.kind;
@@ -1791,7 +2314,7 @@ function paintRepoIndex(section, repo) {
       refresh.disabled = busy;
       refresh.classList.toggle("spin", busy);
       refresh.setAttribute("aria-busy", busy ? "true" : "false");
-      refresh.setAttribute("aria-label", "Check " + indexLabel(item.index) + " on " + (repoLabel[repo.kind] || repo.kind));
+      refresh.setAttribute("aria-label", "Check " + indexLabel(item.index) + " on " + (repoTitle(repo.kind)));
       refresh.append(refreshIcon());
       actions.append(refresh, indexRemoveButton(item));
     }
@@ -1821,7 +2344,7 @@ function paintRepoIndex(section, repo) {
 function paintRepoSetupButtons() {
   for (const select of document.querySelectorAll("#panel-repos [data-repo-index-choice]")) {
     const kind = select.dataset.repoIndexChoice;
-    const settingUp = !!state.busySetup && state.busyKind === kind;
+    const settingUp = repoSettingUp(kind);
     const pending = state.pendingRepoIndex && state.pendingRepoIndex.kind === kind;
     select.disabled = settingUp || pending;
     if (settingUp) select.setAttribute("aria-busy", "true");
@@ -1829,7 +2352,7 @@ function paintRepoSetupButtons() {
   }
   for (const toggle of document.querySelectorAll("#panel-repos [data-repo-index-use]")) {
     const kind = toggle.dataset.repoIndexUse;
-    const settingUp = !!state.busySetup && state.busyKind === kind;
+    const settingUp = repoSettingUp(kind);
     const pending = state.pendingRepoIndex && state.pendingRepoIndex.kind === kind;
     toggle.disabled = settingUp || pending;
   }
@@ -1872,7 +2395,7 @@ function requestRepoIndex(select) {
   const repo = ((state.data && state.data.repos) || []).find((item) => item.kind === kind);
   const saved = repo ? (repo.index || "") : (select.dataset.saved || "");
   const shown = shownIndexTool(repo || { kind, index: saved });
-  if (state.busySetup || (state.pendingRepoIndex && state.pendingRepoIndex.kind === kind)) {
+  if (repoSettingUp(kind) || (state.pendingRepoIndex && state.pendingRepoIndex.kind === kind)) {
     select.value = state.pendingRepoIndex && state.pendingRepoIndex.kind === kind ? state.pendingRepoIndex.tool : shown;
     return;
   }
@@ -1892,7 +2415,7 @@ function requestRepoIndex(select) {
 
 function toggleRepoIndex(button) {
   const kind = button.dataset.repoIndexUse;
-  if (!kind || state.busySetup || state.checkingIndexes.has(kind)) return;
+  if (!kind || repoSettingUp(kind) || state.checkingIndexes.has(kind)) return;
   if (state.pendingRepoIndex && state.pendingRepoIndex.kind === kind) return;
   const section = button.closest("[data-repo-index]");
   const select = section && section.querySelector("[data-repo-index-choice]");
@@ -1912,7 +2435,7 @@ function toggleRepoIndex(button) {
 function openRepoIndexChoice(kind, tool) {
   const dialog = document.querySelector("#repo-index-choose-dialog");
   dialog.dataset.kind = kind;
-  const name = repoLabel[kind] || kind;
+  const name = repoTitle(kind);
   document.querySelector("#repo-index-choose-title").textContent = "Use an index";
   document.querySelector("#repo-index-choose-text").textContent = "Choose the index for " + name + ".";
   const select = document.querySelector("#repo-index-choose-tool");
@@ -1954,7 +2477,7 @@ function applyRepoIndexChoice(kind, tool) {
 }
 
 async function disableRepoIndex(kind) {
-  if (!kind || state.busySetup || state.checkingIndexes.has(kind)) return;
+  if (!kind || repoSettingUp(kind) || state.checkingIndexes.has(kind)) return;
   const repo = ((state.data && state.data.repos) || []).find((item) => item.kind === kind);
   const saved = repo ? (repo.index || "") : "";
   if (saved !== "obsidian" && saved !== "codegraph") {
@@ -1973,7 +2496,7 @@ async function disableRepoIndex(kind) {
     });
     state.data = data;
     paintRepoIndexes();
-    banner("Stopped using " + indexLabel(saved) + " on " + (repoLabel[kind] || kind) + ".");
+    banner("Stopped using " + indexLabel(saved) + " on " + (repoTitle(kind)) + ".");
   } catch (error) {
     banner(error.message, true);
     paintRepoIndexes();
@@ -1998,7 +2521,7 @@ async function adoptRepoIndex(kind, tool, saved, request) {
     const tab = (selected && selected.dataset.tab) || "repos";
     render(data);
     showTab(tab);
-    banner("Using " + indexLabel(tool) + " already in " + (repoLabel[kind] || kind) + ".");
+    banner("Using " + indexLabel(tool) + " already in " + (repoTitle(kind)) + ".");
   } catch (error) {
     if (request && state.pendingRepoIndex !== request) return;
     state.pendingRepoIndex = null;
@@ -2016,7 +2539,7 @@ function openRepoIndexConfirm(kind, tool, saved) {
   dialog.dataset.kind = kind;
   dialog.dataset.tool = tool;
   dialog.dataset.previous = saved || "";
-  const name = repoLabel[kind] || kind;
+  const name = repoTitle(kind);
   document.querySelector("#repo-index-dialog-title").textContent = "Set up " + indexLabel(tool);
   const text = "Set up " + indexLabel(tool) + " for " + name + ".";
   document.querySelector("#repo-index-dialog-text").textContent = saved && saved !== tool
@@ -2060,7 +2583,7 @@ async function applyRepoFolder(kind, folder) {
     const tab = (selected && selected.dataset.tab) || "repos";
     render(data);
     showTab(tab);
-    banner("Pointed " + (repoLabel[kind] || kind) + " at " + folder + ".");
+    banner("Pointed " + (repoTitle(kind)) + " at " + folder + ".");
   } catch (error) {
     banner(error.message, true);
     if (input && input.isConnected) {
@@ -2107,15 +2630,45 @@ function refreshIcon() {
   return svg;
 }
 
+function indexSetupButton(item) {
+  const button = el("button", "repo-index-setup", "Set up");
+  button.type = "button";
+  button.dataset.setupIndex = item.kind;
+  button.dataset.setupTool = item.index;
+  const name = repoTitle(item.kind);
+  button.setAttribute("aria-label", "Set up " + indexLabel(item.index) + " for " + name);
+  return button;
+}
+
 function indexRemoveButton(item) {
   const remove = el("button", "icon-button danger");
   remove.type = "button";
   remove.dataset.clearIndex = item.kind;
-  const label = "Remove " + (repoLabel[item.kind] || item.kind);
+  const label = "Remove " + (repoTitle(item.kind));
   remove.setAttribute("aria-label", label);
   remove.title = label;
   remove.append(trashIcon());
   return remove;
+}
+
+function editIcon() {
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  for (const d of [
+    "M12 20h9",
+    "M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z",
+  ]) {
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", d);
+    path.setAttribute("fill", "none");
+    path.setAttribute("stroke", "currentColor");
+    path.setAttribute("stroke-width", "1.7");
+    path.setAttribute("stroke-linecap", "round");
+    path.setAttribute("stroke-linejoin", "round");
+    svg.append(path);
+  }
+  return svg;
 }
 
 function trashIcon() {
@@ -2160,9 +2713,27 @@ function isFolderCheck(item) {
   return summary === ".obsidian exists" || summary === ".obsidian is missing" || summary === ".codegraph exists" || summary === ".codegraph is missing";
 }
 
-let workflowEdges = [];
+const pageWorkflow = {
+  name: "page",
+  root() { return document.querySelector("#panel-workflow"); },
+  edges: [],
+  selection: null,
+  draft: null,
+};
+const agentWorkflow = {
+  name: "agent",
+  root() { return document.querySelector("#agent-topology"); },
+  edges: [],
+  selection: null,
+  draft: null,
+};
 let workflowLoad = 0;
-const workflowObserver = new ResizeObserver(() => layoutWorkflow());
+const workflowObserver = new ResizeObserver(() => layoutWorkflow(pageWorkflow));
+const agentWorkflowObserver = new ResizeObserver(() => {
+  const root = agentWorkflow.root();
+  if (!root || root.closest("[hidden]")) return;
+  layoutWorkflow(agentWorkflow);
+});
 
 function agentTeamwork(agent) {
   if (Array.isArray(agent.teamwork)) return agent.teamwork;
@@ -2285,8 +2856,9 @@ function agentTitle(id) {
 
 function renderWorkflow(data) {
   const panel = document.querySelector("#panel-workflow");
-  state.workflowSelection = null;
-  workflowEdges = [];
+  pageWorkflow.selection = null;
+  pageWorkflow.draft = null;
+  pageWorkflow.edges = [];
   panel.replaceChildren();
   panel.append(el("p", "hint", "Select an agent. Lines go through the guardrail to the MCP servers, tools, repositories, and agents that agent may use."));
   const legend = el("div", "workflow-legend");
@@ -2306,11 +2878,11 @@ function renderWorkflow(data) {
   svg.setAttribute("aria-hidden", "true");
   const cols = el("div", "workflow-cols");
   cols.append(
-    workflowAgentColumn(data),
+    workflowAgentColumn(data, pageWorkflow.edges),
     workflowGuardrailColumn(),
     workflowUseColumn(data, "mcp", "MCP Servers", "No agent lists an MCP server."),
     workflowUseColumn(data, "tool", "Tools", "No agent lists a tool."),
-    workflowRepoColumn(data),
+    workflowRepoColumn(data, pageWorkflow.edges),
     workflowIndexColumn(data),
   );
   stage.append(svg, cols);
@@ -2321,8 +2893,8 @@ function renderWorkflow(data) {
   panel.append(detail);
   workflowObserver.disconnect();
   workflowObserver.observe(stage);
-  paintWorkflowDetail();
-  if (!panel.hidden) requestAnimationFrame(layoutWorkflow);
+  paintWorkflowDetail(pageWorkflow);
+  if (!panel.hidden) requestAnimationFrame(() => layoutWorkflow(pageWorkflow));
 }
 
 function workflowSwatch(kind, label) {
@@ -2333,7 +2905,7 @@ function workflowSwatch(kind, label) {
   return item;
 }
 
-function workflowAgentColumn(data) {
+function workflowAgentColumn(data, edges) {
   const col = el("div", "workflow-col");
   col.append(el("h2", "", "Agents"));
   const agents = data.agents || [];
@@ -2344,73 +2916,88 @@ function workflowAgentColumn(data) {
   for (const group of groups(agents)) {
     col.append(el("p", "workflow-group", categoryLabel(group.name)));
     for (const agent of group.agents) {
-      const card = el("div", "workflow-node" + (agent.enabled === false ? " is-off" : ""));
-      card.dataset.flow = "agent";
-      card.dataset.id = agent.id;
-      const open = el("button", "workflow-open");
-      open.type = "button";
-      open.setAttribute("aria-pressed", "false");
-      const row = el("span", "workflow-name-row");
-      const title = el("span", "workflow-title-line");
-      title.append(el("span", "workflow-name", agent.title));
-      if (agent.enabled === false) title.append(el("span", "badge bad", "Off"));
-      row.append(title);
-      open.append(row, el("span", "id", agent.id));
-      const choice = workflowChoice(agent);
-      if (choice) open.append(el("span", "workflow-meta", choice));
-      const prompt = el("button", "icon-button workflow-prompt");
-      prompt.type = "button";
-      prompt.dataset.prompt = agent.id;
-      prompt.setAttribute("aria-label", "Show the prompt for " + agent.title);
-      prompt.append(promptIcon());
-      card.append(open, prompt);
-      col.append(card);
-      for (const peer of agentTeamwork(agent)) {
-        if (!peer.id || peer.id === agent.id) continue;
-        workflowEdges.push({
-          kind: "teamwork",
-          fromType: "agent",
-          fromId: agent.id,
-          toType: "agent",
-          toId: peer.id,
-          fromKey: "agent:" + agent.id,
-          toKey: "agent:" + peer.id,
-          fromSide: "left",
-          toSide: "left",
-          kicker: "Agents Coordination",
-          title: agent.title + " → " + agentTitle(peer.id),
-          note: handoffsText(peer),
-        });
-      }
-      for (const use of agentRepositoryUses(agent)) {
-        if (!use.kind) continue;
-        workflowEdges.push({
-          kind: "repository",
-          fromType: "agent",
-          fromId: agent.id,
-          toType: "repo",
-          toId: use.kind,
-          fromKey: "agent:" + agent.id,
-          toKey: "repo:" + use.kind,
-          fromSide: "right",
-          toSide: "left",
-          kicker: "Repository",
-          title: agent.title + " → " + (repoLabel[use.kind] || use.kind),
-          note: repoNoteText(use),
-        });
-      }
-      pushWorkflowUses(agent, "mcp", configuredUses("mcp", agent.mcps || []));
-      pushWorkflowUses(agent, "tool", agent.tools || []);
+      col.append(workflowAgentNode(agent));
+      pushAgentWorkflowEdges(agent, edges);
     }
   }
   return col;
 }
 
-function pushWorkflowUses(agent, kind, items) {
+function workflowAgentNode(agent, options) {
+  const current = !!(options && options.current);
+  const showPrompt = !options || options.prompt !== false;
+  const card = el("div", "workflow-node" + (agent.enabled === false ? " is-off" : "") + (current ? " is-current" : ""));
+  card.dataset.flow = "agent";
+  card.dataset.id = agent.id;
+  const open = el("button", "workflow-open");
+  open.type = "button";
+  if (!showPrompt) open.classList.add("plain");
+  open.setAttribute("aria-pressed", "false");
+  const row = el("span", "workflow-name-row");
+  const title = el("span", "workflow-title-line");
+  title.append(el("span", "workflow-name", agent.title || agent.id));
+  if (current) title.append(el("span", "badge ok", "This agent"));
+  if (agent.enabled === false) title.append(el("span", "badge bad", "Off"));
+  row.append(title);
+  open.append(row, el("span", "id", agent.id));
+  const choice = workflowChoice(agent);
+  if (choice) open.append(el("span", "workflow-meta", choice));
+  card.append(open);
+  if (showPrompt) {
+    const prompt = el("button", "icon-button workflow-prompt");
+    prompt.type = "button";
+    prompt.dataset.prompt = agent.id;
+    prompt.setAttribute("aria-label", "Show the prompt for " + (agent.title || agent.id));
+    prompt.append(promptIcon());
+    card.append(prompt);
+  }
+  return card;
+}
+
+function pushAgentWorkflowEdges(agent, edges) {
+  for (const peer of agentTeamwork(agent)) {
+    if (!peer.id || peer.id === agent.id) continue;
+    edges.push({
+      kind: "teamwork",
+      fromType: "agent",
+      fromId: agent.id,
+      toType: "agent",
+      toId: peer.id,
+      fromKey: "agent:" + agent.id,
+      toKey: "agent:" + peer.id,
+      fromSide: "left",
+      toSide: "left",
+      kicker: "Agents Coordination",
+      title: agent.title + " → " + agentTitle(peer.id),
+      note: handoffsText(peer),
+    });
+  }
+  for (const use of agentRepositoryUses(agent)) {
+    if (!use.kind) continue;
+    edges.push({
+      kind: "repository",
+      fromType: "agent",
+      fromId: agent.id,
+      toType: "repo",
+      toId: use.kind,
+      fromKey: "agent:" + agent.id,
+      toKey: "repo:" + use.kind,
+      fromSide: "right",
+      toSide: "left",
+      kicker: "Repository",
+      title: agent.title + " → " + (repoTitle(use.kind)),
+      note: repoNoteText(use),
+    });
+  }
+  pushWorkflowUses(agent, "mcp", configuredUses("mcp", agent.mcps || []), edges);
+  pushWorkflowUses(agent, "tool", agent.tools || [], edges);
+}
+
+function pushWorkflowUses(agent, kind, items, edges) {
   const kicker = kind === "mcp" ? "MCP Servers" : "Tool";
   for (const item of items) {
     if (!item.id) continue;
-    workflowEdges.push({
+    edges.push({
       kind,
       fromType: "agent",
       fromId: agent.id,
@@ -2533,7 +3120,7 @@ function workflowUseName(kind, id) {
   return (found && found.name) || id;
 }
 
-function workflowRepoColumn(data) {
+function workflowRepoColumn(data, edges) {
   const col = el("div", "workflow-col");
   col.append(el("h2", "", "Repositories"));
   const kinds = workflowRepoOrder(data);
@@ -2543,7 +3130,7 @@ function workflowRepoColumn(data) {
   }
   for (const kind of kinds) {
     const repo = workflowRepo(kind);
-    const name = repoLabel[kind] || kind;
+    const name = repoTitle(kind);
     const card = workflowCard("repo", kind);
     const open = card.querySelector(".workflow-open");
     open.append(el("span", "workflow-name", name));
@@ -2552,7 +3139,7 @@ function workflowRepoColumn(data) {
     card.append(workflowAboutButton("repo", kind, name));
     col.append(card);
     const index = repo && repo.index ? repo.index : "none";
-    workflowEdges.push({
+    edges.push({
       kind: "index",
       fromType: "repo",
       fromId: kind,
@@ -2563,7 +3150,7 @@ function workflowRepoColumn(data) {
       fromSide: "right",
       toSide: "left",
       kicker: "Index",
-      title: (repoLabel[kind] || kind) + " → " + (index === "none" ? "Not set" : indexLabel(index)),
+      title: (repoTitle(kind)) + " → " + (index === "none" ? "Not set" : indexLabel(index)),
       note: index === "none"
         ? "No index is saved for this repository."
         : "The launch prompt tells the model to query " + indexLabel(index) + " for this repository.",
@@ -2610,36 +3197,37 @@ function workflowIndexColumn(data) {
   return col;
 }
 
-function layoutWorkflow() {
-  const stage = document.querySelector(".workflow-stage");
+function layoutWorkflow(view) {
+  const root = view.root();
+  const stage = root && root.querySelector(".workflow-stage");
   const svg = stage && stage.querySelector(".workflow-lines");
   if (!svg || stage.getClientRects().length === 0) return;
-  placeGuardrail(stage);
-  svg.replaceChildren(workflowMarkers());
-  if (state.workflowSelection) {
-    const show = workflowRelated(state.workflowSelection);
+  placeGuardrail(stage, view);
+  svg.replaceChildren(workflowMarkers(view.name));
+  if (view.selection) {
+    const show = workflowRelated(view.selection, view);
     const linked = new Set();
     const fan = {};
-    workflowEdges.forEach((edge, index) => {
+    view.edges.forEach((edge, index) => {
       if (!show.edges.has(index)) return;
       if (edge.kind === "repository" || edge.kind === "teamwork" || edge.kind === "mcp" || edge.kind === "tool") {
-        drawThroughGuardrail(stage, svg, edge, index, linked, fan);
+        drawThroughGuardrail(stage, svg, edge, index, linked, fan, view.name);
         return;
       }
-      drawWorkflowEdge(stage, svg, edge, index, true);
+      drawWorkflowEdge(stage, svg, edge, index, true, view.name);
     });
   }
-  paintWorkflowHighlight();
+  paintWorkflowHighlight(view);
 }
 
-function placeGuardrail(stage) {
+function placeGuardrail(stage, view) {
   const card = stage.querySelector(".workflow-guardrail");
   if (!card) return;
-  const sel = state.workflowSelection;
+  const sel = view.selection;
   let anchorId = "";
   if (sel && sel.kind === "agent") anchorId = sel.id;
   if (sel && sel.kind === "edge") {
-    const edge = workflowEdges[sel.id];
+    const edge = view.edges[sel.id];
     if (edge && edge.fromType === "agent") anchorId = edge.fromId;
   }
   const anchor = anchorId
@@ -2656,13 +3244,13 @@ function placeGuardrail(stage) {
   card.style.marginTop = Math.max(0, margin) + "px";
 }
 
-function drawThroughGuardrail(stage, svg, edge, index, linked, fan) {
+function drawThroughGuardrail(stage, svg, edge, index, linked, fan, marker) {
   const guard = stage.querySelector('.workflow-node[data-flow="guardrail"]');
   const from = stage.querySelector(`.workflow-node[data-flow="${edge.fromType}"][data-id="${CSS.escape(edge.fromId)}"]`);
   const to = stage.querySelector(`.workflow-node[data-flow="${edge.toType}"][data-id="${CSS.escape(edge.toId)}"]`);
   if (from && guard && !linked.has(edge.fromId)) {
     linked.add(edge.fromId);
-    drawCurve(svg, workflowAnchor(stage, from, "right"), workflowAnchor(stage, guard, "left"), "guardrail", -1, false);
+    drawCurve(svg, workflowAnchor(stage, from, "right"), workflowAnchor(stage, guard, "left"), "guardrail", -1, false, 0, marker);
   }
   if (!guard || !to) return;
   const back = edge.kind === "teamwork";
@@ -2670,17 +3258,17 @@ function drawThroughGuardrail(stage, svg, edge, index, linked, fan) {
   const end = workflowAnchor(stage, to, back ? "right" : "left");
   const n = fan[edge.fromId] || 0;
   fan[edge.fromId] = n + 1;
-  drawCurve(svg, start, end, edge.kind, index, true, (n - 1) * 14);
+  drawCurve(svg, start, end, edge.kind, index, true, (n - 1) * 14, marker);
 }
 
-function drawWorkflowEdge(stage, svg, edge, index, hittable) {
+function drawWorkflowEdge(stage, svg, edge, index, hittable, marker) {
   const from = stage.querySelector(`.workflow-node[data-flow="${edge.fromType}"][data-id="${CSS.escape(edge.fromId)}"]`);
   const to = stage.querySelector(`.workflow-node[data-flow="${edge.toType}"][data-id="${CSS.escape(edge.toId)}"]`);
   if (!from || !to) return;
-  drawCurve(svg, workflowAnchor(stage, from, edge.fromSide), workflowAnchor(stage, to, edge.toSide), edge.kind, index, hittable, 0);
+  drawCurve(svg, workflowAnchor(stage, from, edge.fromSide), workflowAnchor(stage, to, edge.toSide), edge.kind, index, hittable, 0, marker);
 }
 
-function drawCurve(svg, start, end, kind, index, hittable, bend = 0) {
+function drawCurve(svg, start, end, kind, index, hittable, bend = 0, marker = "page") {
   const svgNS = "http://www.w3.org/2000/svg";
   const c1 = start.x + (end.x - start.x) * 0.45;
   const c2 = end.x - (end.x - start.x) * 0.45;
@@ -2689,7 +3277,7 @@ function drawCurve(svg, start, end, kind, index, hittable, bend = 0) {
   path.setAttribute("d", d);
   path.setAttribute("class", "workflow-edge " + kind);
   if (index >= 0) path.dataset.edge = String(index);
-  path.setAttribute("marker-end", "url(#workflow-arrow-" + kind + ")");
+  path.setAttribute("marker-end", "url(#workflow-arrow-" + marker + "-" + kind + ")");
   svg.append(path);
   if (!hittable || index < 0) return;
   const hit = document.createElementNS(svgNS, "path");
@@ -2708,7 +3296,7 @@ function workflowAnchor(stage, node, side) {
   };
 }
 
-function workflowMarkers() {
+function workflowMarkers(prefix) {
   const svgNS = "http://www.w3.org/2000/svg";
   const defs = document.createElementNS(svgNS, "defs");
   for (const [kind, color] of [
@@ -2720,7 +3308,7 @@ function workflowMarkers() {
     ["index", "var(--warn)"],
   ]) {
     const marker = document.createElementNS(svgNS, "marker");
-    marker.id = "workflow-arrow-" + kind;
+    marker.id = "workflow-arrow-" + prefix + "-" + kind;
     marker.setAttribute("viewBox", "0 0 10 10");
     marker.setAttribute("refX", "8");
     marker.setAttribute("refY", "5");
@@ -2736,19 +3324,19 @@ function workflowMarkers() {
   return defs;
 }
 
-function selectWorkflow(next) {
-  const current = state.workflowSelection;
+function selectWorkflow(next, view) {
+  const current = view.selection;
   const same = current && next && current.kind === next.kind && String(current.id) === String(next.id);
-  state.workflowSelection = same ? null : next;
-  applyWorkflowSelection();
+  view.selection = same ? null : next;
+  applyWorkflowSelection(view);
 }
 
-function workflowRelated(sel) {
+function workflowRelated(sel, view) {
   const nodes = new Set();
   const edges = new Set();
   if (!sel) return { nodes, edges };
   if (sel.kind === "edge") {
-    const edge = workflowEdges[sel.id];
+    const edge = view.edges[sel.id];
     if (!edge) return { nodes, edges };
     edges.add(sel.id);
     nodes.add(edge.fromKey);
@@ -2765,7 +3353,7 @@ function workflowRelated(sel) {
     nodes.add(key);
     nodes.add("guardrail:guardrail");
     const repos = new Set();
-    workflowEdges.forEach((edge, index) => {
+    view.edges.forEach((edge, index) => {
       if (edge.kind === "teamwork" && edge.fromKey === key) {
         edges.add(index);
         nodes.add(edge.fromKey);
@@ -2781,7 +3369,7 @@ function workflowRelated(sel) {
         nodes.add(edge.toKey);
       }
     });
-    workflowEdges.forEach((edge, index) => {
+    view.edges.forEach((edge, index) => {
       if (edge.kind === "index" && repos.has(edge.fromKey)) {
         edges.add(index);
         nodes.add(edge.toKey);
@@ -2793,7 +3381,7 @@ function workflowRelated(sel) {
     const key = "repo:" + sel.id;
     nodes.add(key);
     nodes.add("guardrail:guardrail");
-    workflowEdges.forEach((edge, index) => {
+    view.edges.forEach((edge, index) => {
       if (edge.fromKey === key || edge.toKey === key) {
         edges.add(index);
         nodes.add(edge.fromKey);
@@ -2806,7 +3394,7 @@ function workflowRelated(sel) {
     const key = sel.kind + ":" + sel.id;
     nodes.add(key);
     nodes.add("guardrail:guardrail");
-    workflowEdges.forEach((edge, index) => {
+    view.edges.forEach((edge, index) => {
       if (edge.fromKey === key || edge.toKey === key) {
         edges.add(index);
         nodes.add(edge.fromKey);
@@ -2820,14 +3408,14 @@ function workflowRelated(sel) {
     nodes.add(key);
     nodes.add("guardrail:guardrail");
     const repos = new Set();
-    workflowEdges.forEach((edge, index) => {
+    view.edges.forEach((edge, index) => {
       if (edge.kind === "index" && edge.toKey === key) {
         edges.add(index);
         nodes.add(edge.fromKey);
         repos.add(edge.fromKey);
       }
     });
-    workflowEdges.forEach((edge, index) => {
+    view.edges.forEach((edge, index) => {
       if (edge.kind === "repository" && repos.has(edge.toKey)) {
         edges.add(index);
         nodes.add(edge.fromKey);
@@ -2837,16 +3425,16 @@ function workflowRelated(sel) {
   return { nodes, edges };
 }
 
-function applyWorkflowSelection() {
-  layoutWorkflow();
-  paintWorkflowDetail();
+function applyWorkflowSelection(view) {
+  layoutWorkflow(view);
+  paintWorkflowDetail(view);
 }
 
-function paintWorkflowHighlight() {
-  const panel = document.querySelector("#panel-workflow");
+function paintWorkflowHighlight(view) {
+  const panel = view.root();
   if (!panel) return;
-  const related = workflowRelated(state.workflowSelection);
-  const active = state.workflowSelection;
+  const related = workflowRelated(view.selection, view);
+  const active = view.selection;
   for (const node of panel.querySelectorAll(".workflow-node")) {
     const key = node.dataset.flow + ":" + node.dataset.id;
     const on = related.nodes.has(key);
@@ -2862,22 +3450,24 @@ function paintWorkflowHighlight() {
     path.classList.toggle("is-selected", !!active && active.kind === "edge" && Number(path.dataset.edge) === active.id);
     path.classList.toggle("is-dim", !!active && !on);
   }
-  paintGuardrailCard();
+  paintGuardrailCard(view);
 }
 
-function paintGuardrailCard() {
-  const card = document.querySelector('.workflow-node[data-flow="guardrail"] .workflow-meta');
+function paintGuardrailCard(view) {
+  const card = view.root() && view.root().querySelector('.workflow-node[data-flow="guardrail"] .workflow-meta');
   if (!card) return;
   card.textContent = "Before input and after output";
 }
 
-function paintWorkflowDetail() {
-  const box = document.querySelector("#workflow-detail");
+function paintWorkflowDetail(view) {
+  const box = view.root() && view.root().querySelector(".workflow-detail");
   if (!box) return;
   box.replaceChildren();
-  const sel = state.workflowSelection;
+  const sel = view.selection;
   if (!sel) {
-    box.append(el("p", "hint", "Select an agent. The guardrail is what KIKI checks before input and after output."));
+    box.append(el("p", "hint", view.draft
+      ? "Select a card or a line."
+      : "Select an agent. The guardrail is what KIKI checks before input and after output."));
     return;
   }
   if (sel.kind === "guardrail") {
@@ -2887,7 +3477,7 @@ function paintWorkflowDetail() {
     return;
   }
   if (sel.kind === "edge") {
-    const edge = workflowEdges[sel.id];
+    const edge = view.edges[sel.id];
     if (!edge) {
       box.append(el("p", "hint", "Select an agent, a repository, an index, or a line."));
       return;
@@ -2897,14 +3487,20 @@ function paintWorkflowDetail() {
     box.append(el("p", "workflow-note", edge.note || "No note is saved."));
     return;
   }
-  if (sel.kind === "agent") paintAgentWorkflow(box, sel.id);
-  else if (sel.kind === "repo") paintRepoWorkflow(box, sel.id);
-  else if (sel.kind === "mcp" || sel.kind === "tool") paintUseWorkflow(box, sel.kind, sel.id);
-  else if (sel.kind === "index") paintIndexWorkflow(box, sel.id);
+  if (sel.kind === "agent") paintAgentWorkflow(box, sel.id, view);
+  else if (sel.kind === "repo") paintRepoWorkflow(box, sel.id, view);
+  else if (sel.kind === "mcp" || sel.kind === "tool") paintUseWorkflow(box, sel.kind, sel.id, view);
+  else if (sel.kind === "index") paintIndexWorkflow(box, sel.id, view);
 }
 
-function paintAgentWorkflow(box, id) {
-  const agent = (state.data.agents || []).find((item) => item.id === id);
+function workflowAgentList(view) {
+  const agents = (state.data && state.data.agents) || [];
+  if (!view.draft) return agents;
+  return [view.draft, ...agents.filter((agent) => agent.id !== view.draft.id)];
+}
+
+function paintAgentWorkflow(box, id, view) {
+  const agent = workflowAgentList(view).find((item) => item.id === id);
   if (!agent) return;
   box.append(el("p", "workflow-kicker", categoryLabel(agent.group)));
   const head = el("div", "workflow-name-row");
@@ -2935,7 +3531,7 @@ function paintAgentWorkflow(box, id) {
     const repo = workflowRepo(use.kind);
     const index = repo && repo.index ? indexLabel(repo.index) : "not set";
     const block = el("div", "workflow-block");
-    block.append(el("p", "workflow-title", (repoLabel[use.kind] || use.kind) + " · " + index));
+    block.append(el("p", "workflow-title", (repoTitle(use.kind)) + " · " + index));
     block.append(el("p", "workflow-note", repoNoteText(use) || "No note is saved."));
     box.append(block);
   }
@@ -2955,12 +3551,12 @@ function paintUseList(box, title, items, kind) {
   }
 }
 
-function paintUseWorkflow(box, kind, id) {
+function paintUseWorkflow(box, kind, id, view) {
   box.append(el("p", "workflow-kicker", kind === "mcp" ? "MCP Servers" : "Tool"));
   box.append(el("h3", "", workflowUseName(kind, id)));
   box.append(el("p", "id", id));
   box.append(el("h4", "", "Used by"));
-  const users = (state.data.agents || []).filter((agent) => {
+  const users = workflowAgentList(view).filter((agent) => {
     const items = kind === "mcp" ? configuredUses("mcp", agent.mcps) : agent.tools;
     return (items || []).some((item) => item.id === id);
   });
@@ -2979,16 +3575,16 @@ function paintUseWorkflow(box, kind, id) {
   }
 }
 
-function paintRepoWorkflow(box, kind) {
+function paintRepoWorkflow(box, kind, view) {
   const repo = workflowRepo(kind);
   box.append(el("p", "workflow-kicker", "Repository"));
-  box.append(el("h3", "", repoLabel[kind] || kind));
+  box.append(el("h3", "", repoTitle(kind)));
   box.append(workflowPath(repo && repo.folder));
   const remote = workflowRemote(repo && repo.git);
   if (remote) box.append(remote);
   box.append(el("p", "hint", "Index: " + (repo && repo.index ? indexLabel(repo.index) : "not set")));
   box.append(el("h4", "", "Used by"));
-  const users = (state.data.agents || []).filter((agent) => agentRepositoryUses(agent).some((use) => use.kind === kind));
+  const users = workflowAgentList(view).filter((agent) => agentRepositoryUses(agent).some((use) => use.kind === kind));
   if (!users.length) box.append(el("p", "hint", "No agent lists this repository."));
   for (const agent of users) {
     const use = agentRepositoryUses(agent).find((item) => item.kind === kind);
@@ -2999,7 +3595,7 @@ function paintRepoWorkflow(box, kind) {
   }
 }
 
-function paintIndexWorkflow(box, id) {
+function paintIndexWorkflow(box, id, view) {
   box.append(el("p", "workflow-kicker", "Index"));
   box.append(el("h3", "", id === "none" ? "Not set" : indexLabel(id)));
   const url = indexToolURL[id];
@@ -3012,9 +3608,9 @@ function paintIndexWorkflow(box, id) {
   if (!kinds.length) box.append(el("p", "hint", "No repository uses this index."));
   for (const kind of kinds) {
     const repo = workflowRepo(kind);
-    const users = (state.data.agents || []).filter((agent) => agentRepositoryUses(agent).some((use) => use.kind === kind));
+    const users = workflowAgentList(view).filter((agent) => agentRepositoryUses(agent).some((use) => use.kind === kind));
     const block = el("div", "workflow-block");
-    block.append(el("p", "workflow-title", repoLabel[kind] || kind));
+    block.append(el("p", "workflow-title", repoTitle(kind)));
     block.append(workflowPath(repo && repo.folder));
     if (users.length) block.append(el("p", "hint", "Agents: " + users.map((agent) => agent.title).join(", ")));
     box.append(block);
@@ -3025,16 +3621,21 @@ document.querySelector("#panel-workflow").addEventListener("click", (event) => {
   if (event.target.closest("[data-prompt], [data-guardrail-view], [data-flow-about], .index-tool-link")) return;
   const edge = event.target.closest(".workflow-hit");
   if (edge) {
-    selectWorkflow({ kind: "edge", id: Number(edge.dataset.edge) });
+    selectWorkflow({ kind: "edge", id: Number(edge.dataset.edge) }, pageWorkflow);
     return;
   }
   const node = event.target.closest(".workflow-node");
   if (node) {
-    selectWorkflow({ kind: node.dataset.flow, id: node.dataset.id });
+    selectWorkflow({ kind: node.dataset.flow, id: node.dataset.id }, pageWorkflow);
     return;
   }
   if (event.target.closest("#workflow-detail")) return;
-  selectWorkflow(null);
+  selectWorkflow(null, pageWorkflow);
+});
+
+document.querySelector("#agent-topology").addEventListener("click", (event) => {
+  if (event.target.closest(".index-tool-link")) return;
+  if (event.target.closest(".workflow-node, .workflow-hit")) event.preventDefault();
 });
 
 function unlockNavigation() {
@@ -3058,7 +3659,7 @@ function showTab(name) {
   document.querySelector("#panel-workflow").hidden = name !== "workflow";
   if (enterRepos) checkIndexes();
   if (enterAgents) refreshTeamShare();
-  if (name === "workflow") requestAnimationFrame(layoutWorkflow);
+  if (name === "workflow") requestAnimationFrame(() => layoutWorkflow(pageWorkflow));
   if (enterWorkflow) refreshWorkflow();
 }
 
@@ -3080,13 +3681,22 @@ function collect() {
     orchestrator: document.querySelector("#orchestrator").value,
     generateTool: document.querySelector("#generate-tool").value,
     generateModel: document.querySelector("#generate-model").value,
-    repos: state.data.repos.map((repo) => ({
-      kind: repo.kind,
-      folder: repo.folder,
-      services: repo.kind === "document"
-        ? []
-        : [...document.querySelectorAll(`[data-services="${repo.kind}"] button[aria-pressed="true"]`)].map((item) => item.dataset.name),
-    })),
+    repos: state.data.repos.map((repo) => {
+      const box = repoDividedBox(repo.kind);
+      if (!box) {
+        return {
+          kind: repo.kind,
+          folder: repo.folder,
+          divided: !!repo.divided,
+          services: repo.divided ? (repo.services || []) : [],
+        };
+      }
+      const divided = box.checked;
+      const services = divided
+        ? [...document.querySelectorAll(`#panel-repos [data-services="${CSS.escape(repo.kind)}"] button[aria-pressed="true"]`)].map((item) => item.dataset.name)
+        : [];
+      return { kind: repo.kind, folder: repo.folder, divided, services };
+    }),
   };
   const dialog = document.querySelector("#settings-dialog");
   if (dialog && dialog.open) {
@@ -3337,15 +3947,17 @@ function openLaunch(id) {
   select.replaceChildren();
   for (const kind of agent.repos) {
     const repo = state.data.repos.find((item) => item.kind === kind);
-    const option = el("option", "", repoLabel[kind] || kind);
+    const option = el("option", "", repoTitle(kind));
     option.value = kind;
     select.append(option);
     const line = el("p", "");
     const folder = repo && repo.folder ? repo.folder : "(no folder)";
-    const services = repo && repo.services.length ? repo.services.join(", ") : "(none)";
-    line.textContent = kind === "document"
-      ? (repoLabel[kind] || kind) + ": " + folder
-      : (repoLabel[kind] || kind) + ": " + folder + " · services: " + services;
+    let text = repoTitle(kind) + ": " + folder;
+    if (repo && repo.divided) {
+      const services = repo.services.length ? repo.services.join(", ") : "(none)";
+      text += " · services: " + services;
+    }
+    line.textContent = text;
     repos.append(line);
   }
   showWorktree();
@@ -3376,7 +3988,10 @@ function showWorktree() {
     node.textContent = "This repository has no folder. Set it on the Repositories tab before starting.";
     return;
   }
-  node.textContent = orchestratorLabel() + " starts in " + repo.folder;
+  const select = document.querySelector("#launch-repo");
+  const several = select && select.options.length > 1;
+  const start = orchestratorLabel() + " starts in " + repo.folder;
+  node.textContent = several ? "Each repository has its own worktree. " + start + "." : start;
 }
 
 async function showPrompt(reveal = true) {
@@ -3578,7 +4193,7 @@ function toolAbout(id) {
 }
 
 function repoAbout(kind) {
-  const name = repoLabel[kind] || kind;
+  const name = repoTitle(kind);
   const repo = workflowRepo(kind);
   const folder = repo && repo.folder ? repo.folder : "The folder is not set.";
   const index = repo && repo.index ? indexLabel(repo.index) : "not set";
@@ -3984,10 +4599,13 @@ async function putTeam(body) {
   }
 }
 
-async function postMember(name, repos, direction, part) {
+async function postMember(name, repos, direction, part, agents, ids, remove) {
   const body = { name, direction: direction || "pull" };
   if (part) body.part = part;
   if (repos) body.repos = repos;
+  if (agents) body.agents = agents;
+  if (ids && ids.length) body.ids = ids;
+  if (remove && remove.length) body.remove = remove;
   try {
     return await api("/api/team/member", {
       method: "POST",
@@ -3998,24 +4616,66 @@ async function postMember(name, repos, direction, part) {
     if (part !== "repos" && direction !== "push" && error.payload && Array.isArray(error.payload.unknown) && error.payload.unknown.length) {
       const choices = await askRepoChoices(error.payload.unknown, error.payload.repos || []);
       if (!choices) return null;
-      return postMember(name, choices, direction, part);
+      return postMember(name, choices, direction, part, agents, ids, remove);
     }
     throw error;
   }
 }
 
-function confirmMemberSync(name, direction, part) {
+function confirmMemberSync(name, direction, part, candidates) {
   const dialog = document.querySelector("#team-member-dialog");
   const push = direction === "push";
   const repos = part === "repos";
-  dialog.querySelector("h2").textContent = push ? "Copy this app to " + name : "Copy " + name + " to this app";
+  const many = repos ? "repositories" : "agents";
+  dialog.querySelector("h2").textContent = push ? "Copy " + many + " to " + name : "Copy " + many + " from " + name;
   document.querySelector("#team-member-text").textContent = repos
     ? (push
-      ? "Replace " + name + "'s repositories with this app's repositories? Checkout folders are not copied."
-      : "Replace this app's repositories with " + name + "'s repositories? Checkout folders on this computer stay.")
+      ? "Choose which repositories to copy into " + name + "'s folder. A ticked Deleted repository is removed there. Unticked ones stay as they are. Checkout folders are not copied."
+      : "Choose which repositories to copy into this app. A ticked Deleted repository is removed here. Unticked ones stay as they are. Checkout folders on this computer stay.")
     : (push
-      ? "Replace " + name + "'s agents with this app's agents? This overwrites every agent file in that folder."
-      : "Replace this app's agents with " + name + "'s agents? This overwrites every agent in this app.");
+      ? "Choose which agents to copy into " + name + "'s folder. A ticked Deleted agent is removed there. Unticked ones stay as they are."
+      : "Choose which agents to copy into this app. A ticked Deleted agent is removed here. Unticked ones stay as they are.");
+  const allRow = document.querySelector("#team-member-all");
+  const list = document.querySelector("#team-member-picks");
+  const copyButton = document.querySelector("#team-member-replace");
+  allRow.replaceChildren();
+  list.replaceChildren();
+  const allLabel = el("label", "agent-pick-all");
+  const all = el("input");
+  all.type = "checkbox";
+  all.checked = true;
+  all.setAttribute("aria-label", repos ? "Select every repository" : "Select every agent");
+  allLabel.append(all, document.createTextNode("All"));
+  allRow.append(allLabel);
+  for (const candidate of candidates || []) {
+    const item = el("li");
+    const label = el("label", "copy-pick");
+    const box = el("input");
+    box.type = "checkbox";
+    box.checked = true;
+    box.dataset.copyId = candidate.id;
+    box.dataset.copyName = candidate.name || candidate.id;
+    if (candidate.deleted) box.dataset.copyDeleted = "1";
+    box.setAttribute("aria-label", (candidate.deleted ? "Remove " : "Include ") + (candidate.name || candidate.id));
+    label.append(box, el("span", "name", candidate.name || candidate.id));
+    if (candidate.meta) label.append(el("span", "meta", candidate.meta));
+    if (candidate.deleted) label.append(el("span", "badge bad", "Deleted"));
+    item.append(label);
+    list.append(item);
+  }
+  const boxes = () => [...list.querySelectorAll("[data-copy-id]")];
+  const syncCopy = () => {
+    const chosen = boxes().filter((box) => box.checked).length;
+    all.checked = boxes().length > 0 && chosen === boxes().length;
+    all.indeterminate = chosen > 0 && chosen < boxes().length;
+    copyButton.disabled = chosen === 0;
+  };
+  all.onchange = () => {
+    for (const box of boxes()) box.checked = all.checked;
+    syncCopy();
+  };
+  list.onchange = syncCopy;
+  syncCopy();
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value) => {
@@ -4024,27 +4684,33 @@ function confirmMemberSync(name, direction, part) {
       dialog.removeEventListener("close", onClose);
       resolve(value);
     };
-    const onClose = () => finish(false);
+    const onClose = () => finish(null);
     dialog.addEventListener("close", onClose);
-    document.querySelector("#team-member-replace").onclick = () => {
+    copyButton.onclick = () => {
+      const picked = boxes().filter((box) => box.checked).map((box) => ({
+        id: box.dataset.copyId,
+        name: box.dataset.copyName || box.dataset.copyId,
+        deleted: box.dataset.copyDeleted === "1",
+      }));
       dialog.removeEventListener("close", onClose);
       dialog.close();
-      finish(true);
+      finish(picked);
     };
     dialog.showModal();
   });
 }
 
-async function syncFolder(name, direction, part) {
+async function syncFolder(name, direction, part, candidates) {
   if (!name || agentMemberBusy) return;
   const team = (state.data && state.data.teamFolder) || {};
   if (direction === "push" && name !== (team.user || "")) return;
-  const confirmed = await confirmMemberSync(name, direction, part);
-  if (!confirmed) return;
-  await runAgentCopy(name, direction, part);
+  if (!candidates || !candidates.length) return;
+  const picked = await confirmMemberSync(name, direction, part, candidates);
+  if (!picked || !picked.length) return;
+  await runAgentCopy(name, direction, part, picked);
 }
 
-async function runAgentCopy(name, direction, part) {
+async function runAgentCopy(name, direction, part, picked) {
   if (!name || agentMemberBusy) return;
   const kind = part === "repos" ? "repos" : "agents";
   const select = document.querySelector("#agent-member");
@@ -4057,12 +4723,25 @@ async function runAgentCopy(name, direction, part) {
     if (button.dataset.folder === name && button.dataset.sync === direction && button.dataset.part === kind) button.classList.add("busy");
   }
   let copied = null;
+  const copies = (picked || []).filter((item) => !item.deleted);
+  const removals = (picked || []).filter((item) => item.deleted);
   try {
     const team = (state.data && state.data.teamFolder) || {};
     const ownPush = direction === "push" && name === (team.user || "");
+    const ids = copies.map((item) => item.id);
+    const remove = removals.map((item) => item.id);
+    const body = {};
+    if (kind === "agents") {
+      if (ids.length) body.agents = ids;
+    } else if (ids.length) body.ids = ids;
+    if (remove.length) body.remove = remove;
     copied = ownPush
-      ? await api(kind === "repos" ? "/api/team/repos" : "/api/team/agents", { method: "POST" })
-      : await postMember(name, null, direction, kind);
+      ? await api(kind === "repos" ? "/api/team/repos" : "/api/team/agents", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      : await postMember(name, null, direction, kind, kind === "agents" ? ids : null, kind === "repos" ? ids : null, remove);
   } catch (error) {
     banner(error.message, true);
   } finally {
@@ -4074,6 +4753,25 @@ async function runAgentCopy(name, direction, part) {
   }
   if (copied) {
     render(copied);
+    if (picked && picked.length) {
+      const many = kind === "repos" ? "repositories" : "agents";
+      const place = kind === "repos" ? "repositories" : "agents folder";
+      const labelFor = (items) => items.length === 1 ? items[0].name : items.length + " " + many;
+      if (copies.length && removals.length) {
+        banner("Copied " + labelFor(copies) + " and removed " + labelFor(removals) + ".");
+        return;
+      }
+      if (removals.length) {
+        banner(direction === "push"
+          ? "Removed " + labelFor(removals) + " from " + name + "'s " + place + "."
+          : "Removed " + labelFor(removals) + " from this app.");
+        return;
+      }
+      banner(direction === "push"
+        ? "Copied " + labelFor(copies) + " into " + name + "'s " + place + "."
+        : "Copied " + labelFor(copies) + " into this app.");
+      return;
+    }
     const noun = kind === "repos" ? "repositories" : "agents";
     banner(direction === "push"
       ? "Copied this app's " + noun + " into " + name + "'s " + noun + " folder."
@@ -4087,21 +4785,9 @@ async function chooseMember(select) {
   const name = select.value;
   const previous = select.dataset.kept || "";
   if (name === previous) return;
-  if (!name) {
-    agentMemberChoice = "";
-    select.dataset.kept = "";
-    loadAgentMembers("").catch((error) => banner(error.message, true));
-    return;
-  }
-  const confirmed = await confirmMemberSync(name, "pull");
-  if (!select.isConnected) return;
-  if (!confirmed) {
-    select.value = previous;
-    return;
-  }
   agentMemberChoice = name;
   select.dataset.kept = name;
-  await runAgentCopy(name, "pull");
+  loadAgentMembers(name).catch((error) => banner(error.message, true));
 }
 
 function askExistingName(name) {
@@ -4133,7 +4819,7 @@ function askExistingName(name) {
 
 function askSyncDirection(user) {
   const dialog = document.querySelector("#team-sync-dialog");
-  document.querySelector("#team-sync-text").textContent = user + " already has an agents folder in the team folder. Copy this app's agents into that folder, or copy that folder into this app.";
+  document.querySelector("#team-sync-text").textContent = user + " already has an agents folder in the team folder. Copy this app's agents and the repositories folder beside them into that folder, or copy those folders into this app.";
   return new Promise((resolve) => {
     let settled = false;
     const finish = (value) => {
@@ -4179,7 +4865,7 @@ function askRepoChoices(unknown, repos) {
     const select = el("select");
     select.dataset.repoFor = id;
     for (const kind of repos) {
-      const option = el("option", "", repoLabel[kind] || kind);
+      const option = el("option", "", repoTitle(kind));
       option.value = kind;
       select.append(option);
     }
@@ -4214,55 +4900,56 @@ function askRepoChoices(unknown, repos) {
   });
 }
 
-let timer = 0;
-let watchGeneration = 0;
+const setupWatches = new Map();
 
-function watchJob(id, which) {
-  if (timer) clearInterval(timer);
-  const generation = ++watchGeneration;
-  let settled = false;
+function repoSettingUp(kind) {
+  return state.setupBusy.has(kind);
+}
+
+function watchJob(id, kind) {
+  stopSetupWatch(id);
+  const watch = { stopped: false, timer: 0 };
   const tick = async () => {
-    if (settled || generation !== watchGeneration) return;
+    if (watch.stopped) return;
     try {
       const job = await api("/api/jobs/" + id);
-      if (settled || generation !== watchGeneration) return;
+      if (watch.stopped) return;
       if (job.status === "running") return;
-      settled = true;
-      clearInterval(timer);
-      timer = 0;
+      stopSetupWatch(id);
       const failed = job.status !== "ok";
       try {
-        const data = await api("/api/indexes/check", { method: "POST" });
-        if (generation !== watchGeneration) return;
-        state.data = data;
-        paintRepoIndexes();
+        const data = await api("/api/indexes/check/" + encodeURIComponent(kind), { method: "POST" });
+        applyCheckedIndexes(data, [kind]);
       } catch (error) {
-        if (generation !== watchGeneration) return;
         banner(error.message, true);
       }
-      if (generation !== watchGeneration) return;
-      markSetupBusy(which, false);
+      markSetupBusy(kind, false);
       const message = job.status === "cancelled" ? "Setup cancelled." : failed ? "Setup failed." : "Setup finished.";
       banner(message, failed);
     } catch (error) {
-      if (generation !== watchGeneration) return;
-      settled = true;
-      clearInterval(timer);
-      timer = 0;
-      markSetupBusy(which, false);
+      if (watch.stopped) return;
+      stopSetupWatch(id);
+      markSetupBusy(kind, false);
       banner(error.message, true);
     }
   };
+  watch.timer = setInterval(tick, 1000);
+  setupWatches.set(id, watch);
   tick();
-  timer = setInterval(tick, 1000);
 }
 
-function markSetupBusy(which, busy) {
-  if (busy) state.busySetup = which;
-  else if (state.busySetup === which) {
-    state.busySetup = "";
-    state.busyKind = "";
-  }
+function stopSetupWatch(id) {
+  const watch = setupWatches.get(id);
+  if (!watch) return;
+  watch.stopped = true;
+  clearInterval(watch.timer);
+  setupWatches.delete(id);
+}
+
+function markSetupBusy(kind, busy) {
+  if (!kind) return;
+  if (busy) state.setupBusy.add(kind);
+  else state.setupBusy.delete(kind);
   paintRepoSetupButtons();
   paintRepoIndexes();
 }
@@ -4394,13 +5081,13 @@ async function openIndexPage(url) {
 }
 
 function openRemoveIndex(kind) {
-  if (!kind || state.busySetup || state.checkingIndexes.has(kind)) return;
+  if (!kind || repoSettingUp(kind) || state.checkingIndexes.has(kind)) return;
   const item = ((state.data && state.data.indexes) || []).find((row) => row.kind === kind);
   if (!item || (item.index !== "obsidian" && item.index !== "codegraph")) return;
   const dialog = document.querySelector("#index-remove-dialog");
   dialog.dataset.kind = kind;
   const folderName = item.index === "obsidian" ? ".obsidian" : ".codegraph";
-  const label = repoLabel[kind] || kind;
+  const label = repoTitle(kind);
   document.querySelector("#index-remove-title").textContent = "Remove " + indexLabel(item.index);
   document.querySelector("#index-remove-text").textContent =
     "Remove " + indexLabel(item.index) + " from " + label + ". The launch prompt will no longer tell the model to query this index.";
@@ -4430,7 +5117,7 @@ async function confirmRemoveIndex() {
 }
 
 async function clearIndex(kind, deleteFolder) {
-  if (!kind || state.busySetup || state.checkingIndexes.has(kind)) return;
+  if (!kind || repoSettingUp(kind) || state.checkingIndexes.has(kind)) return;
   const buttons = [...document.querySelectorAll(`[data-clear-index="${CSS.escape(kind)}"]`)];
   for (const button of buttons) {
     button.disabled = true;
@@ -4444,7 +5131,7 @@ async function clearIndex(kind, deleteFolder) {
     });
     state.data = data;
     paintRepoIndexes();
-    const label = repoLabel[kind] || kind;
+    const label = repoTitle(kind);
     banner(deleteFolder ? "Removed the index from " + label + " and deleted its index folder." : "Removed the index from " + label + ".");
   } catch (error) {
     banner(error.message, true);
@@ -4456,10 +5143,10 @@ async function clearIndex(kind, deleteFolder) {
   }
 }
 
-function setupRepoIndex(kind, tool) {
-  if (!kind || state.busySetup) return;
+function setupRepoIndex(kind, tool, options) {
+  if (!kind || repoSettingUp(kind)) return;
   if (tool !== "obsidian" && tool !== "codegraph") return;
-  return startSetup(tool, kind);
+  return startSetup(tool, kind, options);
 }
 
 function refreshRepoIndex(kind, options = {}) {
@@ -4473,29 +5160,28 @@ function refreshAssignedRepoIndexes() {
   for (const kind of allIndexKeys()) refreshRepoIndex(kind, { announce: false });
 }
 
-async function startSetup(tool, kind) {
-  if (state.busySetup || !kind) return;
-  state.busyKind = kind;
-  markSetupBusy(tool, true);
+async function startSetup(tool, kind, options = {}) {
+  if (repoSettingUp(kind) || !kind) return;
+  markSetupBusy(kind, true);
   try {
     const path = tool === "obsidian" ? "/api/indexes/obsidian" : "/api/indexes/codegraph";
     const result = await api(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ repo: kind }),
+      body: JSON.stringify({ repo: kind, force: !!options.force }),
     });
     if (!result || !result.id) {
       if (result && Array.isArray(result.repos)) state.data = result;
-      markSetupBusy(tool, false);
+      markSetupBusy(kind, false);
       if (result && Array.isArray(result.repos)) {
         render(result);
-        banner("Using " + indexLabel(tool) + " already in " + (repoLabel[kind] || kind) + ".");
+        banner("Using " + indexLabel(tool) + " already in " + (repoTitle(kind)) + ".");
       }
       return;
     }
-    watchJob(result.id, tool);
+    watchJob(result.id, kind);
   } catch (error) {
-    markSetupBusy(tool, false);
+    markSetupBusy(kind, false);
     banner(error.message, true);
     try {
       const data = await api("/api/state");
@@ -4528,7 +5214,10 @@ function repoList(value) {
 }
 
 function repoChoices(repos) {
-  const kinds = repoKinds.slice();
+  const kinds = [];
+  for (const repo of (state.data && state.data.repos) || []) {
+    if (repo.kind && !kinds.includes(repo.kind)) kinds.push(repo.kind);
+  }
   for (const kind of repos || []) {
     if (!kinds.includes(kind)) kinds.push(kind);
   }
@@ -4539,13 +5228,13 @@ function rememberRepoNotes() {
   if (!state.repoNotes) state.repoNotes = {};
   if (!state.repoReadonly) state.repoReadonly = {};
   if (!state.repoGuides) state.repoGuides = {};
-  for (const area of document.querySelectorAll("#agent-repo-notes textarea")) {
+  for (const area of document.querySelectorAll("#agent-repos textarea[data-repo]")) {
     state.repoNotes[area.dataset.repo] = area.value;
   }
-  for (const input of document.querySelectorAll("#agent-repo-notes input[data-repo-guide]")) {
+  for (const input of document.querySelectorAll("#agent-repos input[data-repo-guide]")) {
     state.repoGuides[input.dataset.repoGuide] = input.value;
   }
-  for (const box of document.querySelectorAll("#agent-repo-notes [data-repo-readonly]")) {
+  for (const box of document.querySelectorAll("#agent-repos [data-repo-readonly]")) {
     state.repoReadonly[box.dataset.repoReadonly] = box.checked;
   }
 }
@@ -4553,24 +5242,36 @@ function rememberRepoNotes() {
 function paintScopeCount(selector, countId) {
   const node = document.querySelector(countId);
   if (!node) return;
-  const count = document.querySelectorAll(selector + " button[aria-pressed='true']").length;
+  const count = document.querySelectorAll(selector).length;
   node.textContent = count === 0 ? "None selected" : count === 1 ? "1 selected" : count + " selected";
   node.dataset.empty = count === 0 ? "true" : "false";
 }
 
-function renderRepoNotes() {
-  rememberRepoNotes();
-  const root = document.querySelector("#agent-repo-notes");
-  root.replaceChildren();
-  const selected = [...document.querySelectorAll("#agent-repos button[aria-pressed='true']")];
-  for (const button of selected) {
-    const kind = button.dataset.repo;
-    const wrap = el("div", "repo-block");
-    const head = el("div", "collab-names");
-    head.append(el("span", "collab-title", button.textContent));
-    head.append(el("span", "peer-id", kind));
-    wrap.append(head);
-    const guideField = el("div", "field repo-guide");
+function scopeSwitch(name, value, label, on) {
+  const button = el("button", "switch");
+  button.type = "button";
+  button.dataset[name] = value;
+  button.setAttribute("aria-pressed", on ? "true" : "false");
+  button.setAttribute("aria-label", label);
+  button.append(el("span", "switch-knob"));
+  return button;
+}
+
+function scopeCard(title, id, on, toggle, hint) {
+  const card = el("article", "scope-card" + (on ? " is-on" : ""));
+  const head = el("div", "scope-card-head");
+  const copy = el("div", "scope-card-copy");
+  copy.append(el("strong", "", title));
+  if (id && id !== title) copy.append(el("span", "peer-id", id));
+  if (hint) copy.append(el("span", "hint", hint));
+  head.append(copy, toggle);
+  card.append(head);
+  return card;
+}
+
+function repoDetail(kind) {
+  const wrap = el("div", "repo-block");
+  const guideField = el("div", "field repo-guide");
     guideField.append(el("span", "", "Guide file"));
     const guide = document.createElement("input");
     guide.type = "text";
@@ -4614,10 +5315,33 @@ function renderRepoNotes() {
     box.checked = !!(state.repoReadonly && state.repoReadonly[kind]);
     readonly.append(box, el("span", "", "Readonly"));
     block.append(compose, preview);
-    wrap.append(block, readonly);
-    root.append(wrap);
+  wrap.append(block, readonly);
+  return wrap;
+}
+
+function renderRepoNotes() {
+  rememberRepoNotes();
+  const root = document.querySelector("#agent-repos");
+  root.replaceChildren();
+  document.querySelector("#agent-repo-notes").replaceChildren();
+  const chosen = state.repoChosen || new Set();
+  const kinds = repoChoices([...chosen]);
+  if (!kinds.length) {
+    root.append(el("p", "hint", "No repositories are set up."));
   }
-  paintScopeCount("#agent-repos", "#agent-repo-count");
+  for (const kind of kinds) {
+    const on = chosen.has(kind);
+    const card = scopeCard(repoTitle(kind), kind, on, scopeSwitch("repo", kind, repoTitle(kind), on));
+    if (on) {
+      const body = el("div", "scope-card-body");
+      body.append(repoDetail(kind));
+      card.append(body);
+    }
+    root.append(card);
+  }
+  paintScopeCount("#agent-repos button[data-repo][aria-pressed='true']", "#agent-repo-count");
+  resumeRepoRewrites();
+  placeGenerateButtons();
 }
 
 function fillAgentCategories(selected) {
@@ -4634,6 +5358,43 @@ function fillAgentCategories(selected) {
     if (name === selected) option.selected = true;
     select.append(option);
   }
+  const fresh = el("option", "", "New category");
+  fresh.value = "";
+  select.append(fresh);
+  const custom = document.querySelector("#agent-category-custom");
+  custom.value = "";
+  custom.hidden = !!select.value;
+}
+
+function snakeCase(value) {
+  return String(value || "")
+    .trim()
+    .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .replace(/_+/g, "_");
+}
+
+function chosenCategory() {
+  const select = document.querySelector("#agent-category");
+  const value = select.value ? select.value : document.querySelector("#agent-category-custom").value;
+  return snakeCase(value);
+}
+
+function newAgentId() {
+  const category = chosenCategory();
+  const name = snakeCase(document.querySelector("#agent-name").value);
+  if (!category || !name) return "";
+  return category + "_" + name;
+}
+
+function paintNewAgentId() {
+  if (!state.creatingAgent) return;
+  const id = newAgentId();
+  const node = document.querySelector("#agent-id");
+  node.hidden = !id;
+  node.textContent = id;
 }
 
 function peerList(value) {
@@ -4646,17 +5407,26 @@ function peerList(value) {
     const pairs = Array.isArray(item && item.handoffs) ? item.handoffs : [];
     return {
       id: item && item.id,
-      handoffs: pairs.map((pair) => ({ when: (pair && pair.when) || "", send: (pair && pair.send) || "", reply: (pair && pair.reply) || "",
-        loop: !!(pair && pair.maxLoops > 0),
-        maxLoops: (pair && pair.maxLoops > 0) ? pair.maxLoops : defaultMaxLoops,
-      })),
+      handoffs: pairs.map((pair) => {
+        const when = (pair && pair.when) || "";
+        const send = (pair && pair.send) || "";
+        return {
+          when,
+          send,
+          reply: (pair && pair.reply) || "",
+          loop: !!(pair && pair.maxLoops > 0),
+          maxLoops: (pair && pair.maxLoops > 0) ? pair.maxLoops : defaultMaxLoops,
+          // Agents the app creates store the coordination note as what to send, with no condition.
+          whenOptional: !when.trim() && !!send.trim(),
+        };
+      }),
     };
   }).filter((item) => item.id);
 }
 
 function rememberCollaborations() {
   if (!state.peerPairs) state.peerPairs = {};
-  for (const block of document.querySelectorAll("#agent-collaborations .collab-peer")) {
+  for (const block of document.querySelectorAll("#agent-works-with .collab-peer")) {
     const pairs = [];
     for (const row of block.querySelectorAll(".handoff")) {
       const when = row.querySelector("textarea[data-part='when']");
@@ -4670,6 +5440,7 @@ function rememberCollaborations() {
         reply: reply ? reply.value : "",
         loop: !!(loop && loop.checked),
         maxLoops: loops ? loops.value : String(defaultMaxLoops),
+        whenOptional: row.dataset.whenOptional === "true",
       });
     }
     state.peerPairs[block.dataset.peer] = pairs;
@@ -4713,7 +5484,7 @@ function missingHandoff(worksWith) {
   for (const peer of worksWith) {
     for (let index = 0; index < peer.handoffs.length; index++) {
       const pair = peer.handoffs[index];
-      if (!pair.when) {
+      if (!pair.when && !pair.whenOptional) {
         return { id: peer.id, index, part: "when", message: "Enter Send when for message " + (index + 1) + " to " + peer.id + ", or remove the message." };
       }
       if (!pair.send) {
@@ -4725,11 +5496,12 @@ function missingHandoff(worksWith) {
 }
 
 function syncHandoffRows() {
-  for (const row of document.querySelectorAll("#agent-collaborations .handoff")) syncHandoffRow(row);
+  for (const row of document.querySelectorAll("#agent-works-with .handoff")) syncHandoffRow(row);
 }
 
 function handoffRow(id, index, pair) {
   const row = el("div", "handoff");
+  if (pair.whenOptional) row.dataset.whenOptional = "true";
   const head = el("div", "prompt-bar");
   head.append(el("span", "collab-title", "Message " + (index + 1)));
   const remove = el("button", "text-button", "Remove");
@@ -4742,7 +5514,7 @@ function handoffRow(id, index, pair) {
 
   const whenField = el("div", "field handoff-when");
   const whenBar = el("div", "prompt-bar");
-  whenBar.append(el("span", "", "Send when (required)"));
+  whenBar.append(el("span", "", pair.whenOptional ? "Send when" : "Send when (required)"));
   whenBar.append(previewSwitch(id));
   whenField.append(whenBar);
   const whenCompose = el("div", "compose");
@@ -4827,66 +5599,68 @@ function renderCollaborations() {
   paintCollaborations();
 }
 
-function paintCollaborations() {
-  const root = document.querySelector("#agent-collaborations");
-  root.replaceChildren();
-  const selected = [...document.querySelectorAll("#agent-works-with button[aria-pressed='true']")];
-  for (const button of selected) {
-    const id = button.dataset.peer;
-    if (state.peerPairs[id] === undefined) state.peerPairs[id] = [{ when: "", send: "", reply: "", loop: false, maxLoops: defaultMaxLoops }];
-    const pairs = state.peerPairs[id];
-    const block = el("div", "collab-peer");
-    block.dataset.peer = id;
-    const bar = el("div", "prompt-bar");
-    const names = el("span", "collab-names");
-    names.append(el("span", "collab-title", button.textContent));
-    names.append(el("span", "peer-id", id));
-    bar.append(names);
-    const add = el("button", "text-button", "Add message");
-    add.type = "button";
-    add.dataset.handoffAdd = id;
-    add.setAttribute("aria-label", "Add a message to " + id);
-    bar.append(add);
-    block.append(bar);
-    if (!pairs.length) block.append(el("p", "hint", "No message is set. This agent sends nothing to " + id + "."));
-    pairs.forEach((pair, index) => block.append(handoffRow(id, index, pair)));
-    root.append(block);
-  }
-  paintScopeCount("#agent-works-with", "#agent-peer-count");
-  placeGenerateButtons();
+function peerDetail(id) {
+  if (state.peerPairs[id] === undefined) state.peerPairs[id] = [{ when: "", send: "", reply: "", loop: false, maxLoops: defaultMaxLoops }];
+  const pairs = state.peerPairs[id];
+  const block = el("div", "collab-peer");
+  block.dataset.peer = id;
+  const bar = el("div", "prompt-bar");
+  bar.append(el("span", "", "Messages"));
+  const add = el("button", "text-button", "Add message");
+  add.type = "button";
+  add.dataset.handoffAdd = id;
+  add.setAttribute("aria-label", "Add a message to " + id);
+  bar.append(add);
+  block.append(bar);
+  if (!pairs.length) block.append(el("p", "hint", "No message is set. This agent sends nothing to " + id + "."));
+  pairs.forEach((pair, index) => block.append(handoffRow(id, index, pair)));
+  return block;
 }
 
-function fillAgentPeers(currentId, selectedIds) {
+function peerCard(id, title, on, hint) {
+  const card = scopeCard(title, id, on, scopeSwitch("peer", id, title, on), hint);
+  if (on) {
+    const body = el("div", "scope-card-body");
+    body.append(peerDetail(id));
+    card.append(body);
+  }
+  return card;
+}
+
+function paintCollaborations() {
   const root = document.querySelector("#agent-works-with");
   root.replaceChildren();
   document.querySelector("#agent-collaborations").replaceChildren();
-  const peers = peerList(selectedIds);
-  state.peerPairs = {};
-  for (const peer of peers) state.peerPairs[peer.id] = peer.handoffs;
-  const chosen = new Set(peers.map((peer) => peer.id));
-  const others = state.data.agents.filter((agent) => agent.id !== currentId);
+  const chosen = state.peerChosen || new Set();
+  const others = state.data.agents.filter((agent) => agent.id !== state.editingAgentId);
+  if (!others.length && !chosen.size) {
+    root.append(el("p", "hint", "No other agents to coordinate with."));
+  }
   for (const group of groups(others)) {
     const block = el("div", "peer-group");
     block.append(el("span", "peer-label", categoryLabel(group.name)));
-    const tags = el("div", "service-tags");
-    for (const agent of group.agents) {
-      const button = el("button", "tag", agent.title);
-      button.type = "button";
-      button.dataset.peer = agent.id;
-      button.setAttribute("aria-pressed", chosen.has(agent.id) ? "true" : "false");
-      tags.append(button);
-    }
-    block.append(tags);
+    for (const agent of group.agents) block.append(peerCard(agent.id, agent.title, chosen.has(agent.id)));
     root.append(block);
   }
   for (const id of chosen) {
     if (others.some((agent) => agent.id === id)) continue;
-    const button = el("button", "tag", id);
-    button.type = "button";
-    button.dataset.peer = id;
-    button.setAttribute("aria-pressed", "true");
-    root.append(button);
+    root.append(peerCard(id, id, true, "This agent is not in the list."));
   }
+  paintScopeCount("#agent-works-with button[data-peer][aria-pressed='true']", "#agent-peer-count");
+  placeGenerateButtons();
+}
+
+function fillAgentPeers(currentId, selectedIds) {
+  document.querySelector("#agent-works-with").replaceChildren();
+  document.querySelector("#agent-collaborations").replaceChildren();
+  const peers = peerList(selectedIds);
+  state.peerPairs = {};
+  state.peerChosen = new Set();
+  for (const peer of peers) {
+    state.peerPairs[peer.id] = peer.handoffs;
+    state.peerChosen.add(peer.id);
+  }
+  state.editingAgentId = currentId || "";
 }
 
 const useSections = {
@@ -4935,10 +5709,8 @@ function configuredChoices(key) {
 
 function fillUses(kind, selected) {
   const spec = useSections[kind];
-  const root = document.querySelector(spec.root);
-  const notes = spec.notes ? document.querySelector(spec.notes) : null;
-  root.replaceChildren();
-  if (notes) notes.replaceChildren();
+  document.querySelector(spec.root).replaceChildren();
+  if (spec.notes) document.querySelector(spec.notes).replaceChildren();
   const choices = configuredChoices(kind === "mcp" ? "mcps" : "toolChoices");
   const items = (kind === "mcp" ? expandLegacyAtlassian(useList(selected), choices) : useList(selected))
     .filter((item) => kind !== "tool" || !globalTool(item.id));
@@ -4958,101 +5730,81 @@ function fillUses(kind, selected) {
     if (offered.has(id) || kind === "mcp") continue;
     choices.push({ id, name: id, missing: true });
   }
-  if (!choices.length) {
-    root.classList.remove("tool-switches");
-    root.append(el("p", "hint", spec.empty));
-    return;
-  }
-  if (kind === "tool") {
-    root.classList.add("tool-switches");
-    for (const choice of choices) root.append(toolSwitchRow(choice, chosen.has(choice.id)));
-    return;
-  }
-  root.classList.remove("tool-switches");
-  for (const choice of choices) {
-    const button = el("button", choice.missing ? "tag missing" : "tag", choice.name);
-    button.type = "button";
-    button.dataset.use = choice.id;
-    button.setAttribute("aria-pressed", chosen.has(choice.id) ? "true" : "false");
-    root.append(button);
-  }
+  state[kind === "mcp" ? "mcpChoiceRows" : "toolChoiceRows"] = choices;
+  state[kind === "mcp" ? "mcpChosen" : "toolChosen"] = new Set([...chosen].filter((id) => choices.some((item) => item.id === id)));
 }
 
-function toolSwitchRow(choice, on) {
-  const row = el("div", "agent-tool" + (choice.missing ? " missing" : ""));
-  const copy = el("div", "agent-tool-copy");
-  copy.append(el("strong", "", choice.name));
-  const meta = ((state.data && state.data.toolChoices) || []).find((item) => item.id === choice.id) || {};
-  if (meta.detail) copy.append(el("span", "hint", meta.detail));
-  if (choice.missing) copy.append(el("span", "hint", "Not enabled in Settings."));
-  const button = el("button", "switch");
-  button.type = "button";
-  button.dataset.use = choice.id;
-  button.setAttribute("aria-pressed", on ? "true" : "false");
-  button.setAttribute("aria-label", choice.name);
-  button.append(el("span", "switch-knob"));
-  row.append(copy, button);
-  return row;
+function useDetail(kind, choice) {
+  const spec = useSections[kind];
+  const block = el("div", "field");
+  const bar = el("div", "prompt-bar");
+  bar.append(el("span", "", "How this agent uses it"));
+  const toggleWrap = el("span", "preview-toggle");
+  toggleWrap.append(el("span", "", "Preview"));
+  const toggle = document.createElement("button");
+  toggle.type = "button";
+  toggle.className = "switch";
+  toggle.dataset.usePreview = kind;
+  toggle.setAttribute("aria-pressed", "false");
+  toggle.setAttribute("aria-label", "Preview");
+  toggle.append(el("span", "switch-knob"));
+  toggleWrap.append(toggle);
+  bar.append(toggleWrap);
+  block.append(bar);
+  const fields = kind === "mcp" ? mcpPlaceFields(choice.id) : [];
+  for (const field of fields) block.append(field);
+  const area = document.createElement("textarea");
+  area.dataset.use = choice.id;
+  area.rows = 4;
+  area.placeholder = spec.placeholder(choice.name);
+  area.value = state[spec.state][choice.id] || "";
+  const compose = el("div", "compose");
+  compose.append(area, generateButton(spec.generate, choice.name));
+  const preview = el("div", "markdown repo-preview");
+  preview.hidden = true;
+  block.append(compose, preview);
+  if (fields.length) {
+    const row = useSettingsRow(choice.id, fields);
+    for (const field of fields) field.syncSettings = () => row.sync();
+    block.append(row);
+  }
+  return block;
 }
 
 function rememberUseNotes(kind) {
   const spec = useSections[kind];
+  if (!spec.notes) return;
   if (!state[spec.state]) state[spec.state] = {};
-  for (const area of document.querySelectorAll(spec.notes + " textarea")) {
+  for (const area of document.querySelectorAll(spec.root + " textarea[data-use]")) {
     state[spec.state][area.dataset.use] = area.value;
   }
 }
 
 function renderUseNotes(kind) {
   const spec = useSections[kind];
-  if (!spec.notes) {
-    paintScopeCount(spec.root, spec.count);
-    return;
-  }
-  rememberUseNotes(kind);
-  const root = document.querySelector(spec.notes);
+  if (spec.notes) rememberUseNotes(kind);
+  const root = document.querySelector(spec.root);
+  const notes = spec.notes ? document.querySelector(spec.notes) : null;
   root.replaceChildren();
-  const selected = [...document.querySelectorAll(spec.root + " button[aria-pressed='true']")];
-  for (const button of selected) {
-    const id = button.dataset.use;
-    const block = el("div", "field");
-    const bar = el("div", "prompt-bar");
-    const names = el("span", "collab-names");
-    names.append(el("span", "collab-title", button.textContent));
-    names.append(el("span", "peer-id", id));
-    bar.append(names);
-    const toggleWrap = el("span", "preview-toggle");
-    toggleWrap.append(el("span", "", "Preview"));
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "switch";
-    toggle.dataset.usePreview = kind;
-    toggle.setAttribute("aria-pressed", "false");
-    toggle.setAttribute("aria-label", "Preview");
-    toggle.append(el("span", "switch-knob"));
-    toggleWrap.append(toggle);
-    bar.append(toggleWrap);
-    block.append(bar);
-    const fields = kind === "mcp" ? mcpPlaceFields(id) : [];
-    for (const field of fields) block.append(field);
-    const area = document.createElement("textarea");
-    area.dataset.use = id;
-    area.rows = 4;
-    area.placeholder = spec.placeholder(button.textContent);
-    area.value = state[spec.state][id] || "";
-    const compose = el("div", "compose");
-    compose.append(area, generateButton(spec.generate, button.textContent));
-    const preview = el("div", "markdown repo-preview");
-    preview.hidden = true;
-    block.append(compose, preview);
-    if (fields.length) {
-      const row = useSettingsRow(id, fields);
-      for (const field of fields) field.syncSettings = () => row.sync();
-      block.append(row);
+  if (notes) notes.replaceChildren();
+  const choices = (kind === "mcp" ? state.mcpChoiceRows : state.toolChoiceRows) || [];
+  const chosen = (kind === "mcp" ? state.mcpChosen : state.toolChosen) || new Set();
+  if (!choices.length) root.append(el("p", "hint", spec.empty));
+  for (const choice of choices) {
+    const on = chosen.has(choice.id);
+    const meta = ((state.data && state.data.toolChoices) || []).find((item) => item.id === choice.id) || {};
+    const hint = choice.missing ? "Not enabled in Settings." : (kind === "tool" ? meta.detail : "");
+    const card = scopeCard(choice.name, choice.id, on, scopeSwitch("use", choice.id, choice.name, on), hint);
+    if (choice.missing) card.classList.add("missing");
+    if (on && spec.notes) {
+      const body = el("div", "scope-card-body");
+      body.append(useDetail(kind, choice));
+      card.append(body);
     }
-    root.append(block);
+    root.append(card);
   }
-  paintScopeCount(spec.root, spec.count);
+  paintScopeCount(spec.root + " button[data-use][aria-pressed='true']", spec.count);
+  placeGenerateButtons();
 }
 
 function expandLegacyAtlassian(items, choices) {
@@ -5074,7 +5826,7 @@ function expandLegacyAtlassian(items, choices) {
 function selectedUses(kind) {
   const spec = useSections[kind];
   if (spec.notes) rememberUseNotes(kind);
-  const picked = [...document.querySelectorAll(spec.root + " button[aria-pressed='true']")].map((button) => {
+  const picked = [...document.querySelectorAll(spec.root + " button[data-use][aria-pressed='true']")].map((button) => {
     const id = button.dataset.use;
     const description = spec.notes ? (state[spec.state][id] || "").trim() : "";
     if (kind !== "mcp") return { id, description };
@@ -5387,66 +6139,911 @@ function searchSelect(options) {
 }
 
 function fillAgentRepos(selected) {
-  const repos = document.querySelector("#agent-repos");
-  repos.replaceChildren();
+  document.querySelector("#agent-repos").replaceChildren();
   document.querySelector("#agent-repo-notes").replaceChildren();
   const items = repoList(selected);
   state.repoNotes = {};
   state.repoReadonly = {};
   state.repoGuides = {};
+  state.repoChosen = new Set();
   for (const repo of items) {
     state.repoGuides[repo.kind] = repo.guide;
     state.repoNotes[repo.kind] = repo.description;
     state.repoReadonly[repo.kind] = !!repo.readonly;
+    state.repoChosen.add(repo.kind);
   }
-  const chosen = new Set(items.map((repo) => repo.kind));
-  for (const kind of repoChoices([...chosen])) {
-    const button = el("button", "tag", repoLabel[kind] || kind);
-    button.type = "button";
-    button.dataset.repo = kind;
-    button.setAttribute("aria-pressed", chosen.has(kind) ? "true" : "false");
-    repos.append(button);
+}
+
+const promptFieldOrder = ["role", "input", "output", "startup", "principles"];
+
+function emptyPromptModel() {
+  return {
+    title: "",
+    order: promptFieldOrder.slice(),
+    role: "",
+    principles: "",
+    startup: "",
+    inputs: [],
+    outputs: [],
+    extras: [],
+  };
+}
+
+function blankPromptItem(kind) {
+  return kind === "input" ? { name: "", description: "", defaultValue: "", required: false } : { name: "", description: "" };
+}
+
+function promptSectionKey(title) {
+  const name = title.trim().toLowerCase();
+  if (name === "role") return "role";
+  if (name === "principles") return "principles";
+  if (name === "startup behavior" || name === "startup") return "startup";
+  if (name === "input") return "input";
+  if (name === "output") return "output";
+  // The launch prompt writes the app root, the setup file, and repository indexes. It asks for
+  // required inputs itself. These sections are not part of the prompt the user edits.
+  if (name === "setup" || name === "boundaries" || name === "repository indexes" || name === "repository index" || name.startsWith("ask the user") || name === "workflow") return "drop";
+  return "";
+}
+
+function inputLabel(phrase) {
+  const text = phrase.trim();
+  if (/status/i.test(text)) return "Status";
+  if (/surface/i.test(text)) return "Surfaces";
+  if (/rule/i.test(text)) return "Rules and limits";
+  if (/scope/i.test(text)) return "Out of scope";
+  if (/link|file/i.test(text)) return "Links and files";
+  return text.charAt(0).toUpperCase() + text.slice(1);
+}
+
+function outputLabel(text) {
+  const rules = [
+    [/requirement folder/i, "Requirement folder"],
+    [/path of each file|file you wrote|HTML file/i, "Files"],
+    [/PR-xxx[`\s]*items you wrote/i, "Items"],
+    [/affected scope/i, "Affected scope"],
+    [/repository index/i, "Index"],
+    [/question still open|open questions/i, "Open question"],
+    [/surface and the UI/i, "Surface"],
+    [/items you designed/i, "Designed items"],
+    [/items you skipped/i, "Skipped items"],
+    [/sent the report/i, "Report sent"],
+    [/parent ticket key/i, "Parent"],
+    [/each sub-task/i, "Sub-tasks"],
+    [/reviewed \(LGTM\)/i, "Review"],
+    [/parent PR is approved/i, "Parent PR"],
+    [/Final Jira status/i, "Jira status"],
+    [/\bstatus\b/i, "Status"],
+  ];
+  for (const [pattern, name] of rules) {
+    if (pattern.test(text)) return name;
+  }
+  return text.replace(/^The\s+/i, "").split(/\s+/).slice(0, 4).join(" ").replace(/[,.:]$/, "");
+}
+
+function alsoGivenInputs(lead, source) {
+  const parts = lead.split(/\n\s*\n/);
+  const kept = [];
+  const items = [];
+  for (const part of parts) {
+    const match = /^The user may also give:\s*([\s\S]+)$/.exec(part.trim());
+    if (!match) {
+      kept.push(part);
+      continue;
+    }
+    const dot = match[1].indexOf(".");
+    const list = (dot >= 0 ? match[1].slice(0, dot) : match[1]).trim();
+    const tail = dot >= 0 ? match[1].slice(dot + 1).trim() : "";
+    const bits = list.split(/,\s*/).map((bit) => bit.replace(/^and\s+/i, "").trim()).filter(Boolean);
+    bits.forEach((bit, index) => {
+      const name = inputLabel(bit);
+      let description = bit.charAt(0).toUpperCase() + bit.slice(1);
+      if (!/[.!?]$/.test(description)) description += ".";
+      if (index === bits.length - 1 && tail) description += " " + tail;
+      const defaultValue = name === "Status" && /status:\s*`?draft`?/i.test(source) ? "draft" : "";
+      items.push({ name, description, defaultValue, required: false });
+    });
+  }
+  return { lead: kept.join("\n\n").trim(), items };
+}
+
+function parseInputBody(body, source) {
+  const items = [];
+  const lead = [];
+  let item = null;
+  const finish = () => {
+    if (!item) return;
+    item.description = item.description.trim();
+    item.defaultValue = item.defaultValue.trim();
+    if (item.name || item.description || item.defaultValue || item.required) items.push(item);
+    item = null;
+  };
+  for (const raw of body.split("\n")) {
+    const line = raw.trim();
+    const named = /^- \*\*([^*]+)\*\*\s*$/.exec(line);
+    const legacy = /^- \*\*(.+?):\*\*\s*(.*)$/.exec(line);
+    const given = /^Default:\s*(.*)$/.exec(line);
+    const required = /^Required:\s*/.test(line);
+    if (named) {
+      finish();
+      item = { name: named[1].trim(), description: "", defaultValue: "", required: false };
+      continue;
+    }
+    if (legacy) {
+      finish();
+      items.push({ name: legacy[1].trim(), description: legacy[2].trim(), defaultValue: "", required: false });
+      continue;
+    }
+    if (item && given) {
+      item.defaultValue = given[1].trim() === "(none)" ? "" : given[1].trim();
+      continue;
+    }
+    if (item && required) {
+      item.required = true;
+      continue;
+    }
+    if (item) {
+      item.description += (item.description ? "\n" : "") + line;
+      continue;
+    }
+    lead.push(raw);
+  }
+  finish();
+  const extra = alsoGivenInputs(lead.join("\n").trim(), source);
+  return { lead: extra.lead, items: items.concat(extra.items) };
+}
+
+function parseOutputBody(body) {
+  const items = [];
+  const lead = [];
+  let item = null;
+  const finish = () => {
+    if (!item) return;
+    item.description = item.description.trim();
+    if (item.name || item.description) items.push(item);
+    item = null;
+  };
+  for (const raw of body.split("\n")) {
+    const line = raw.trim();
+    const named = /^- \*\*([^*]+)\*\*\.?\s*(.*)$/.exec(line);
+    const plain = /^- (.+)$/.exec(line);
+    if (named) {
+      finish();
+      item = { name: named[1].replace(/:$/, "").trim(), description: named[2].trim() };
+      continue;
+    }
+    if (plain) {
+      finish();
+      items.push({ name: outputLabel(plain[1].trim()), description: plain[1].trim() });
+      continue;
+    }
+    if (item && line) {
+      item.description += "\n" + line;
+      continue;
+    }
+    if (line) lead.push(line);
+  }
+  finish();
+  return { lead: lead.join("\n").trim(), items };
+}
+
+function parseAgentPrompt(markdown) {
+  const text = String(markdown || "").replace(/\r\n/g, "\n").trim();
+  const model = emptyPromptModel();
+  if (!text) {
+    model.inputs = [blankPromptItem("input")];
+    model.outputs = [blankPromptItem("output")];
+    return model;
+  }
+  const lines = text.split("\n");
+  const chunks = [];
+  let current = null;
+  for (const line of lines) {
+    const heading = /^##\s+(.+)$/.exec(line);
+    const title = /^#\s+Agent:\s*(.*)$/.exec(line);
+    if (title && !current && !chunks.length) {
+      model.title = title[1].trim();
+      continue;
+    }
+    if (heading) {
+      if (current) chunks.push(current);
+      current = { title: heading[1].trim(), body: [] };
+      continue;
+    }
+    if (current) current.body.push(line);
+  }
+  if (current) chunks.push(current);
+  model.order = [];
+  chunks.forEach((chunk) => {
+    const key = promptSectionKey(chunk.title);
+    const body = chunk.body.join("\n").trim();
+    if (key === "input") {
+      const parsed = parseInputBody(body, text);
+      model.inputs = parsed.items;
+      model.order.push("input");
+      return;
+    }
+    if (key === "output") {
+      const parsed = parseOutputBody(body);
+      model.outputs = parsed.items;
+      model.order.push("output");
+      return;
+    }
+    if (key === "drop") return;
+    if (key) {
+      model[key] = body;
+      model.order.push(key);
+      return;
+    }
+    model.extras.push({ title: chunk.title, body });
+    model.order.push("extra:" + (model.extras.length - 1));
+  });
+  for (const key of promptFieldOrder) {
+    if (!model.order.includes(key)) model.order.push(key);
+  }
+  return model;
+}
+
+function sectionFilled(model, key) {
+  if (key === "input") return !!model.inputs.some((item) => item.name.trim() || item.description.trim() || item.defaultValue.trim() || item.required);
+  if (key === "output") return !!model.outputs.some((item) => item.name.trim() || item.description.trim());
+  return !!(model[key] || "").trim();
+}
+
+function compileSequence(model) {
+  const order = model.order.length ? model.order.slice() : promptFieldOrder.slice();
+  promptFieldOrder.forEach((key, index) => {
+    if (order.includes(key) || !sectionFilled(model, key)) return;
+    let at = order.length;
+    for (let previous = index - 1; previous >= 0; previous -= 1) {
+      const found = order.indexOf(promptFieldOrder[previous]);
+      if (found >= 0) {
+        at = found + 1;
+        break;
+      }
+    }
+    order.splice(at, 0, key);
+  });
+  return order;
+}
+
+function compileInput(model) {
+  const items = model.inputs.filter((item) => item.name.trim() || item.description.trim() || item.defaultValue.trim() || item.required);
+  if (!items.length) return "";
+  const lines = [];
+  items.forEach((item) => {
+    const name = item.name.trim() || "Input";
+    lines.push("- **" + name + "**");
+    if (item.description.trim()) lines.push("  " + item.description.trim().replace(/\n/g, "\n  "));
+    if (item.required) lines.push("  Required:");
+    else if (item.defaultValue.trim()) lines.push("  Default: " + item.defaultValue.trim());
+    lines.push("");
+  });
+  return lines.join("\n").trim();
+}
+
+function compileOutput(model) {
+  const items = model.outputs.filter((item) => item.name.trim() || item.description.trim());
+  if (!items.length) return "";
+  const lines = [];
+  items.forEach((item) => {
+    const name = item.name.trim() || "Output";
+    const description = item.description.trim();
+    lines.push(description ? "- **" + name + "**. " + description.replace(/\n/g, " ") : "- **" + name + "**");
+  });
+  return lines.join("\n").trim();
+}
+
+function compileAgentPrompt(model, fallbackTitle) {
+  const title = model.title.trim() || (fallbackTitle || "").trim() || "Agent";
+  const parts = ["# Agent: " + title];
+  const headings = {
+    role: "Role",
+    principles: "Principles",
+    startup: "Startup behavior",
+  };
+  compileSequence(model).forEach((key) => {
+    if (key === "input") {
+      const body = compileInput(model);
+      if (body) parts.push("## Input\n\n" + body);
+      return;
+    }
+    if (key === "output") {
+      const body = compileOutput(model);
+      if (body) parts.push("## Output\n\n" + body);
+      return;
+    }
+    if (key.startsWith("extra:")) {
+      const extra = model.extras[Number(key.slice(6))];
+      if (!extra || (!extra.title.trim() && !extra.body.trim())) return;
+      parts.push("## " + (extra.title.trim() || "Notes") + "\n\n" + extra.body.trim());
+      return;
+    }
+    const body = (model[key] || "").trim();
+    if (body && headings[key]) parts.push("## " + headings[key] + "\n\n" + body);
+  });
+  return parts.join("\n\n").replace(/\n{3,}/g, "\n\n") + "\n";
+}
+
+function promptPreviewToggle(scope) {
+  const wrap = el("span", "preview-toggle");
+  wrap.append(el("span", "", "Preview"));
+  const toggle = el("button", "switch");
+  toggle.type = "button";
+  toggle.dataset.promptPreview = scope || "field";
+  toggle.setAttribute("aria-pressed", "false");
+  toggle.setAttribute("aria-label", "Preview");
+  toggle.append(el("span", "switch-knob"));
+  wrap.append(toggle);
+  return wrap;
+}
+
+function promptControl(label, control) {
+  const wrap = el("div", "field");
+  const bar = el("div", "prompt-bar");
+  bar.append(el("span", "", label));
+  bar.append(promptPreviewToggle());
+  wrap.append(bar);
+  control.setAttribute("aria-label", label);
+  const compose = el("div", "compose");
+  compose.append(control, generateButton("prompt_field"));
+  const preview = el("div", "markdown prompt-preview");
+  preview.hidden = true;
+  wrap.append(compose, preview);
+  return wrap;
+}
+
+function promptTextarea(label, value, rows, part) {
+  const area = el("textarea");
+  area.rows = rows;
+  area.value = value || "";
+  area.dataset.promptPart = part;
+  return promptControl(label, area);
+}
+
+function promptLine(label, part, value) {
+  const input = el("input");
+  input.type = "text";
+  input.value = value || "";
+  input.dataset.promptPart = part;
+  return promptControl(label, input);
+}
+
+function promptRequiredToggle(item) {
+  const label = el("label", "repo-readonly prompt-required");
+  label.title = "If the user leaves this out of a task, the agent asks for it.";
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.dataset.promptRequired = "true";
+  box.checked = !!item.required;
+  label.append(box, el("span", "", "Required"));
+  return label;
+}
+
+function promptItemControl(label, control) {
+  const wrap = el("div", "field");
+  const bar = el("div", "prompt-bar");
+  bar.append(el("span", "", label));
+  wrap.append(bar);
+  control.setAttribute("aria-label", label);
+  const compose = el("div", "compose");
+  compose.append(control);
+  wrap.append(compose);
+  return wrap;
+}
+
+function promptItemLine(label, part, value) {
+  const input = el("input");
+  input.type = "text";
+  input.value = value || "";
+  input.dataset.promptPart = part;
+  return promptItemControl(label, input);
+}
+
+function promptItemText(label, value, rows, part) {
+  const area = el("textarea");
+  area.rows = rows;
+  area.value = value || "";
+  area.dataset.promptPart = part;
+  return promptItemControl(label, area);
+}
+
+function promptItemRow(kind, item) {
+  const row = el("div", "prompt-item");
+  row.dataset.promptItem = kind;
+  const bar = el("div", "prompt-bar");
+  if (kind === "input") bar.append(promptRequiredToggle(item));
+  bar.append(promptPreviewToggle("item"));
+  const remove = el("button", "text-button", "Remove");
+  remove.type = "button";
+  remove.dataset.promptRemove = kind;
+  bar.append(remove);
+  row.append(bar);
+  const body = el("div", "prompt-item-fields");
+  body.append(promptItemLine("Name", "name", item.name));
+  body.append(promptItemText("Description", item.description, 3, "description"));
+  if (kind === "input") {
+    const fallback = promptItemLine("Default value", "default", item.defaultValue);
+    fallback.dataset.promptDefault = "true";
+    fallback.hidden = !!item.required;
+    body.append(fallback);
+  }
+  body.append(generateButton(kind === "input" ? "prompt_input" : "prompt_output"));
+  const preview = el("div", "markdown prompt-preview");
+  preview.hidden = true;
+  row.append(body, preview);
+  return row;
+}
+
+function promptSection(title, hint, action) {
+  const section = el("section", "prompt-section");
+  if (action) {
+    const head = el("div", "prompt-bar");
+    head.append(el("h3", "", title), action);
+    section.append(head);
+  } else {
+    section.append(el("h3", "", title));
+  }
+  if (hint) section.append(el("p", "hint", hint));
+  return section;
+}
+
+function paintPromptFields(model) {
+  const root = document.querySelector("#agent-prompt-fields");
+  root.replaceChildren();
+  root.dataset.promptTitle = model.title || "";
+  const extras = model.order.filter((key) => key.startsWith("extra:"));
+  root.dataset.promptOrder = promptFieldOrder.concat(extras).join("|");
+  const role = promptSection("Role", "Who the agent is and what it produces.");
+  role.append(promptTextarea("Role", model.role, 12, "role"));
+  const principles = promptSection("Principles", "The rules it follows on every task.");
+  principles.append(promptTextarea("Principles", model.principles, 18, "principles"));
+  const startup = promptSection("Startup behavior", "What it does before the user has given a task.");
+  startup.append(promptTextarea("Startup behavior", model.startup, 16, "startup"));
+  const addInput = el("button", "text-button", "Add input");
+  addInput.type = "button";
+  addInput.dataset.promptAdd = "input";
+  const input = promptSection("Input", "Each item is one thing the user can give. Required means the agent asks if they leave it out of a task. Otherwise the default is used.", addInput);
+  const inputRows = el("div", "prompt-items");
+  inputRows.dataset.promptList = "input";
+  (model.inputs.length ? model.inputs : [blankPromptItem("input")]).forEach((item) => inputRows.append(promptItemRow("input", item)));
+  input.append(inputRows);
+  const addOutput = el("button", "text-button", "Add output");
+  addOutput.type = "button";
+  addOutput.dataset.promptAdd = "output";
+  const output = promptSection("Output", "What it reports when the work is done.", addOutput);
+  const outputRows = el("div", "prompt-items");
+  outputRows.dataset.promptList = "output";
+  (model.outputs.length ? model.outputs : [blankPromptItem("output")]).forEach((item) => outputRows.append(promptItemRow("output", item)));
+  output.append(outputRows);
+  root.append(role, input, output, startup, principles);
+  model.extras.forEach((extra, index) => {
+    const section = promptSection(extra.title || "Other", "Kept from the current prompt.");
+    section.dataset.promptExtra = String(index);
+    section.append(promptLine("Section", "title", extra.title));
+    section.append(promptTextarea("Text", extra.body, 6, "body"));
+    root.append(section);
+  });
+  syncAgentPromptMirror();
+  placeGenerateButtons();
+}
+
+function readPromptItems(kind) {
+  return [...document.querySelectorAll("#agent-prompt-fields [data-prompt-item='" + kind + "']")].map((row) => {
+    const value = (part) => {
+      const field = row.querySelector("[data-prompt-part='" + part + "']");
+      return field ? field.value : "";
+    };
+    const item = { name: value("name").trim(), description: value("description").trim() };
+    if (kind === "input") {
+      item.defaultValue = value("default").trim();
+      const required = row.querySelector("[data-prompt-required]");
+      item.required = !!(required && required.checked);
+    }
+    return item;
+  });
+}
+
+function readPromptFields() {
+  const root = document.querySelector("#agent-prompt-fields");
+  const value = (part) => {
+    const field = root.querySelector("textarea[data-prompt-part='" + part + "'], input[data-prompt-part='" + part + "']");
+    return field ? field.value : "";
+  };
+  const extras = [...root.querySelectorAll("[data-prompt-extra]")].map((section) => ({
+    title: (section.querySelector("[data-prompt-part='title']") || {}).value || "",
+    body: (section.querySelector("[data-prompt-part='body']") || {}).value || "",
+  }));
+  return {
+    title: root.dataset.promptTitle || "",
+    order: (root.dataset.promptOrder || "").split("|").filter(Boolean),
+    role: value("role"),
+    principles: value("principles"),
+    startup: value("startup"),
+    inputs: readPromptItems("input"),
+    outputs: readPromptItems("output"),
+    extras,
+  };
+}
+
+function syncAgentPromptMirror() {
+  const area = document.querySelector("#agent-prompt");
+  const root = document.querySelector("#agent-prompt-fields");
+  if (!area || !root || !root.childElementCount) return;
+  const name = document.querySelector("#agent-name");
+  area.value = compileAgentPrompt(readPromptFields(), name && name.value);
+}
+
+function agentPromptText() {
+  syncAgentPromptMirror();
+  return document.querySelector("#agent-prompt").value.trim();
+}
+
+function promptFieldLabel(target) {
+  const field = target.closest && target.closest(".field");
+  const span = field && field.querySelector(".prompt-bar > span");
+  return span ? span.textContent.trim().toLowerCase() : "";
+}
+
+function promptItemEntries(item) {
+  return [...item.querySelectorAll(".prompt-item-fields .field")].filter((field) => !field.hidden).map((field) => {
+    const control = field.querySelector("textarea, input:not([type='checkbox'])");
+    const span = field.querySelector(".prompt-bar > span");
+    return { control, label: span ? span.textContent.trim() : "" };
+  }).filter((entry) => entry.control && entry.label);
+}
+
+function promptItemSource(item) {
+  return promptItemEntries(item).map((entry) => "## " + entry.label + "\n" + entry.control.value.trim()).join("\n\n");
+}
+
+function promptItemMarkdown(item) {
+  return promptItemEntries(item).map((entry) => "**" + entry.label + "**\n\n" + entry.control.value.trim()).join("\n\n");
+}
+
+function parsePromptItemRewrite(text) {
+  const fields = [];
+  let current = null;
+  for (const line of String(text || "").replace(/\r\n/g, "\n").split("\n")) {
+    const heading = line.match(/^##\s+(.+?)\s*:?\s*$/);
+    if (heading) {
+      current = { label: heading[1].trim().toLowerCase(), lines: [] };
+      fields.push(current);
+      continue;
+    }
+    if (current) current.lines.push(line);
+  }
+  return fields.map((field) => ({ label: field.label, value: field.lines.join("\n").trim() }));
+}
+
+function promptItemRewriteValues(item, text) {
+  const parsed = parsePromptItemRewrite(text);
+  const entries = promptItemEntries(item);
+  if (!entries.length) return null;
+  const values = {};
+  for (const entry of entries) {
+    const found = parsed.find((field) => field.label === entry.label.toLowerCase());
+    if (!found) return null;
+    let value = found.value;
+    if (entry.control.tagName === "INPUT") value = value.replace(/\s+/g, " ").trim();
+    values[entry.label.toLowerCase()] = value;
+  }
+  return values;
+}
+
+function applyItemValues(item, fields, key) {
+  for (const entry of promptItemEntries(item)) {
+    const stored = fields[entry.label.toLowerCase()];
+    if (!stored) continue;
+    entry.control.value = stored[key];
+  }
+  const toggle = item.querySelector("[data-prompt-preview='item']");
+  if (toggle && toggle.getAttribute("aria-pressed") === "true") refreshPromptItemPreview(item);
+  placeGenerateButtons();
+  syncAgentPromptMirror();
+}
+
+function refreshPromptItemPreview(item) {
+  const preview = item.querySelector(":scope > .prompt-preview");
+  if (preview) preview.innerHTML = renderMarkdown(promptItemMarkdown(item));
+}
+
+function showPromptItemPreview(item, on) {
+  const body = item.querySelector(".prompt-item-fields");
+  const preview = item.querySelector(":scope > .prompt-preview");
+  if (!body || !preview) return;
+  if (on) {
+    const height = body.getBoundingClientRect().height;
+    preview.style.height = height + "px";
+    preview.style.maxHeight = height + "px";
+    preview.innerHTML = renderMarkdown(promptItemMarkdown(item));
+    preview.hidden = false;
+    body.hidden = true;
+  } else {
+    preview.hidden = true;
+    preview.style.height = "";
+    preview.style.maxHeight = "";
+    preview.replaceChildren();
+    body.hidden = false;
+    placeGenerateButtons();
   }
 }
 
 function showMarkdownPreview(area, preview, on) {
   const compose = area.closest(".compose") || area;
   if (on) {
+    const height = compose.getBoundingClientRect().height;
+    preview.style.height = height + "px";
+    preview.style.maxHeight = height + "px";
     preview.innerHTML = renderMarkdown(area.value);
     preview.hidden = false;
     compose.hidden = true;
   } else {
     preview.hidden = true;
+    preview.style.height = "";
+    preview.style.maxHeight = "";
     preview.replaceChildren();
     compose.hidden = false;
     placeGenerateButtons();
   }
 }
 
-function showAgentPromptPreview(on) {
-  showMarkdownPreview(
-    document.querySelector("#agent-prompt"),
-    document.querySelector("#agent-prompt-preview"),
-    on,
-  );
-  document.querySelector("#agent-prompt-toggle").setAttribute("aria-pressed", on ? "true" : "false");
+function blankAgent() {
+  const tool = usableTool((state.data && state.data.generateTool) || "");
+  return {
+    id: "",
+    name: "",
+    description: "",
+    category: "",
+    enabled: true,
+    tool,
+    model: defaultModel(tool),
+    repos: [],
+    worksWith: [],
+    mcps: [],
+    tools: [],
+    prompt: "",
+  };
 }
 
 async function openAgentEditor(id) {
   const data = await api("/api/agents/" + encodeURIComponent(id));
-  state.editingAgentId = data.id;
-  document.querySelector("#agent-dialog-title").textContent = "Agent: " + (data.name || data.id);
+  showAgentEditor(data, false);
+}
+
+function openNewAgent() {
+  showAgentEditor(blankAgent(), true);
+}
+
+function showAgentEditorTab(id) {
+  for (const tab of document.querySelectorAll("#agent-editor-tabs [data-agent-tab]")) {
+    tab.setAttribute("aria-selected", tab.dataset.agentTab === id ? "true" : "false");
+  }
+  for (const panel of document.querySelectorAll("#agent-dialog [data-agent-panel]")) {
+    panel.hidden = panel.dataset.agentPanel !== id;
+  }
+  if (id === "topology") renderAgentTopology();
+}
+
+function editorAgentDraft() {
+  rememberRepoNotes();
+  rememberCollaborations();
+  rememberUseNotes("mcp");
+  const name = document.querySelector("#agent-name").value.trim();
+  const id = state.creatingAgent ? (newAgentId() || "new-agent") : (state.editingAgentId || "new-agent");
+  const repos = [...(state.repoChosen || [])].map((kind) => ({
+    kind,
+    guide: ((state.repoGuides || {})[kind] || "").trim() || defaultGuideFile,
+    description: ((state.repoNotes || {})[kind] || "").trim(),
+    readonly: !!(state.repoReadonly && state.repoReadonly[kind]),
+  }));
+  const teamwork = [...(state.peerChosen || [])].filter((peerId) => peerId && peerId !== id).map((peerId) => ({
+    id: peerId,
+    handoffs: ((state.peerPairs || {})[peerId] || []).map((pair) => ({
+      when: pair.when || "",
+      send: pair.send || "",
+      reply: pair.reply || "",
+      maxLoops: (pair.reply || "").trim() && pair.loop ? (Number(pair.maxLoops) || defaultMaxLoops) : 0,
+    })),
+  }));
+  const mcps = [...(state.mcpChosen || [])].map((mcpId) => ({
+    id: mcpId,
+    description: ((state.mcpNotes || {})[mcpId] || "").trim(),
+  }));
+  const tools = [...(state.toolChosen || [])].map((toolId) => ({ id: toolId }));
+  return {
+    id,
+    title: name || "New agent",
+    name,
+    group: chosenCategory(),
+    enabled: document.querySelector("#agent-enabled").getAttribute("aria-pressed") === "true",
+    summary: document.querySelector("#agent-description").value.trim(),
+    tool: document.querySelector("#agent-tool").value,
+    model: document.querySelector("#agent-model").value,
+    teamwork,
+    repositoryUses: repos,
+    mcps,
+    tools,
+  };
+}
+
+function renderAgentTopology() {
+  const root = document.querySelector("#agent-topology");
+  const draft = editorAgentDraft();
+  agentWorkflow.edges = [];
+  agentWorkflow.draft = draft;
+  agentWorkflow.selection = { kind: "agent", id: draft.id };
+  root.replaceChildren();
+  root.append(el("p", "hint", "This agent as the dialog is filled in now. Lines go through the guardrail to the repositories, agents, MCP servers, and tools that are turned on."));
+  const legend = el("div", "workflow-legend");
+  legend.append(
+    workflowSwatch("guardrail", "Guardrail"),
+    workflowSwatch("mcp", "MCP Servers"),
+    workflowSwatch("tool", "Tool"),
+    workflowSwatch("repository", "Repository"),
+    workflowSwatch("teamwork", "Agents Coordination"),
+    workflowSwatch("index", "Index"),
+  );
+  root.append(legend);
+  const scroll = el("div", "workflow-scroll");
+  const stage = el("div", "workflow-stage");
+  const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svg.classList.add("workflow-lines");
+  svg.setAttribute("aria-hidden", "true");
+  const cols = el("div", "workflow-cols");
+  cols.append(
+    agentTopologyAgentColumn(draft),
+    agentTopologyGuardrailColumn(),
+    agentTopologyUseColumn(draft, "mcp", "MCP Servers"),
+    agentTopologyUseColumn(draft, "tool", "Tools"),
+    agentTopologyRepoColumn(draft, agentWorkflow.edges),
+    agentTopologyIndexColumn(draft),
+  );
+  stage.append(svg, cols);
+  scroll.append(stage);
+  root.append(scroll);
+  for (const open of root.querySelectorAll(".workflow-node:not(.is-current) .workflow-open")) open.tabIndex = -1;
+  const detail = el("div", "card workflow-detail");
+  root.append(detail);
+  pushAgentWorkflowEdges(draft, agentWorkflow.edges);
+  agentWorkflowObserver.disconnect();
+  agentWorkflowObserver.observe(stage);
+  paintWorkflowDetail(agentWorkflow);
+  requestAnimationFrame(() => layoutWorkflow(agentWorkflow));
+}
+
+function agentTopologyGuardrailColumn() {
+  const col = workflowGuardrailColumn();
+  const view = col.querySelector("[data-guardrail-view]");
+  if (view) view.remove();
+  const open = col.querySelector(".workflow-open");
+  if (open) open.classList.add("plain");
+  return col;
+}
+
+function agentTopologyAgentColumn(draft) {
+  const col = el("div", "workflow-col");
+  col.append(el("h2", "", "Agents"));
+  const saved = new Map(((state.data && state.data.agents) || []).map((agent) => [agent.id, agent]));
+  const peers = [];
+  for (const peer of draft.teamwork) {
+    if (peers.some((agent) => agent.id === peer.id)) continue;
+    peers.push(saved.get(peer.id) || { id: peer.id, title: peer.id, group: "", enabled: true });
+  }
+  for (const group of groups([draft, ...peers])) {
+    col.append(el("p", "workflow-group", categoryLabel(group.name)));
+    for (const agent of group.agents) {
+      col.append(workflowAgentNode(agent, { current: agent.id === draft.id, prompt: false }));
+    }
+  }
+  return col;
+}
+
+function agentTopologyUseColumn(draft, kind, title) {
+  const col = el("div", "workflow-col");
+  col.append(el("h2", "", title));
+  const items = kind === "mcp" ? configuredUses("mcp", draft.mcps) : (draft.tools || []);
+  if (!items.length) {
+    col.append(el("p", "hint", "None turned on."));
+    return col;
+  }
+  for (const item of items) {
+    const name = workflowUseName(kind, item.id);
+    const card = workflowCard(kind, item.id);
+    const open = card.querySelector(".workflow-open");
+    open.classList.add("plain");
+    open.append(el("span", "workflow-name", name));
+    open.append(el("span", "id", item.id));
+    col.append(card);
+  }
+  return col;
+}
+
+function agentTopologyRepoColumn(draft, edges) {
+  const col = el("div", "workflow-col");
+  col.append(el("h2", "", "Repositories"));
+  const uses = agentRepositoryUses(draft);
+  if (!uses.length) {
+    col.append(el("p", "hint", "None turned on."));
+    return col;
+  }
+  for (const use of uses) {
+    const repo = workflowRepo(use.kind);
+    const name = repoTitle(use.kind);
+    const card = workflowCard("repo", use.kind);
+    const open = card.querySelector(".workflow-open");
+    open.classList.add("plain");
+    open.append(el("span", "workflow-name", name));
+    open.append(el("span", "workflow-meta", repo && repo.index ? indexLabel(repo.index) : "No index"));
+    col.append(card);
+    const index = repo && repo.index ? repo.index : "none";
+    edges.push({
+      kind: "index",
+      fromType: "repo",
+      fromId: use.kind,
+      toType: "index",
+      toId: index,
+      fromKey: "repo:" + use.kind,
+      toKey: "index:" + index,
+      fromSide: "right",
+      toSide: "left",
+      kicker: "Index",
+      title: name + " → " + (index === "none" ? "Not set" : indexLabel(index)),
+      note: index === "none"
+        ? "No index is saved for this repository."
+        : "The launch prompt tells the model to query " + indexLabel(index) + " for this repository.",
+    });
+  }
+  return col;
+}
+
+function agentTopologyIndexColumn(draft) {
+  const col = el("div", "workflow-col");
+  col.append(el("h2", "", "Indexes"));
+  const ids = [];
+  const seen = new Set();
+  for (const use of agentRepositoryUses(draft)) {
+    const repo = workflowRepo(use.kind);
+    const id = repo && repo.index ? repo.index : "none";
+    if (seen.has(id)) continue;
+    seen.add(id);
+    ids.push(id);
+  }
+  if (!ids.length) {
+    col.append(el("p", "hint", "None turned on."));
+    return col;
+  }
+  for (const id of ids) {
+    const name = id === "none" ? "Not set" : indexLabel(id);
+    const card = el("div", "workflow-node");
+    card.dataset.flow = "index";
+    card.dataset.id = id;
+    const open = el("button", "workflow-open plain");
+    open.type = "button";
+    open.setAttribute("aria-pressed", "false");
+    open.append(el("span", "workflow-name", name));
+    card.append(open);
+    const url = indexToolURL[id];
+    if (url) card.append(workflowIndexLink(url, "index-tool-link workflow-index-link"));
+    col.append(card);
+  }
+  return col;
+}
+
+function showAgentEditor(data, creating) {
+  state.creatingAgent = creating;
+  state.editingAgentId = creating ? "" : data.id;
+  document.querySelector("#agent-dialog-title").textContent = creating ? "New agent" : "Agent: " + (data.name || data.id);
   document.querySelector("#agent-enabled").setAttribute("aria-pressed", data.enabled !== false ? "true" : "false");
   document.querySelector("#agent-name").value = data.name || "";
-  document.querySelector("#agent-id").textContent = data.id || "";
-  fillAgentCategories(data.category || "");
-  fillAgentPeers(data.id, data.worksWith);
+  const idText = document.querySelector("#agent-id");
+  idText.hidden = creating || !data.id;
+  idText.textContent = creating ? "" : (data.id || "");
+  fillAgentCategories(creating ? "" : (data.category || ""));
+  fillAgentPeers(creating ? "" : data.id, data.worksWith);
   renderCollaborations();
   document.querySelector("#agent-description").value = data.description || "";
-  document.querySelector("#agent-prompt").value = data.prompt || "";
-  const promptGenerate = document.querySelector("#agent-prompt").closest(".field").querySelector("[data-generate]");
-  if (promptGenerate) promptGenerate.dataset.generateSubject = data.id || "";
-  showAgentPromptPreview(false);
+  paintPromptFields(parseAgentPrompt(data.prompt || ""));
   fillAgentRepos(data.repos);
   renderRepoNotes();
   fillUses("mcp", data.mcps);
@@ -5456,16 +7053,23 @@ async function openAgentEditor(id) {
   const tool = document.querySelector("#agent-tool");
   const toolName = usableTool(data.tool);
   fillToolSelect(tool, toolName);
-  fillModels(document.querySelector("#agent-model"), toolName, data.model);
+  fillModels(document.querySelector("#agent-model"), toolName, creating ? defaultModel(toolName) : data.model);
   const error = document.querySelector("#agent-error");
   error.hidden = true;
   error.textContent = "";
   const save = document.querySelector("#agent-save");
   save.disabled = false;
-  save.textContent = "Save";
+  save.textContent = creating ? "Add" : "Save";
+  document.querySelector("#agent-delete").hidden = creating;
+  showAgentEditorTab("prompt");
   document.querySelector("#agent-dialog").showModal();
+  if (creating) paintNewAgentId();
   document.querySelector("#agent-name").focus();
   requestAnimationFrame(placeGenerateButtons);
+}
+
+function agentSaveLabel() {
+  return state.creatingAgent ? "Add" : "Save";
 }
 
 async function saveAgent() {
@@ -5475,14 +7079,14 @@ async function saveAgent() {
   button.disabled = true;
   button.textContent = "Saving…";
   rememberRepoNotes();
-  const repos = [...document.querySelectorAll("#agent-repos button[aria-pressed='true']")].map((button) => ({
+  const repos = [...document.querySelectorAll("#agent-repos button[data-repo][aria-pressed='true']")].map((button) => ({
     kind: button.dataset.repo,
     guide: ((state.repoGuides || {})[button.dataset.repo] || "").trim() || defaultGuideFile,
     description: (state.repoNotes[button.dataset.repo] || "").trim(),
     readonly: !!(state.repoReadonly && state.repoReadonly[button.dataset.repo]),
   }));
   rememberCollaborations();
-  const worksWith = [...document.querySelectorAll("#agent-works-with button[aria-pressed='true']")].map((button) => ({
+  const worksWith = [...document.querySelectorAll("#agent-works-with button[data-peer][aria-pressed='true']")].map((button) => ({
     id: button.dataset.peer,
     handoffs: ((state.peerPairs || {})[button.dataset.peer] || [])
       .map((pair) => ({
@@ -5490,6 +7094,7 @@ async function saveAgent() {
         send: (pair.send || "").trim(),
         reply: (pair.reply || "").trim(),
         maxLoops: (pair.reply || "").trim() && pair.loop ? loopLimit(pair.maxLoops) : 0,
+        whenOptional: !!pair.whenOptional,
       })),
   }));
   const missing = missingHandoff(worksWith);
@@ -5497,8 +7102,8 @@ async function saveAgent() {
     error.hidden = false;
     error.textContent = missing.message;
     button.disabled = false;
-    button.textContent = "Save";
-    const rows = document.querySelectorAll("#agent-collaborations .collab-peer[data-peer='" + missing.id + "'] .handoff");
+    button.textContent = agentSaveLabel();
+    const rows = document.querySelectorAll("#agent-works-with .collab-peer[data-peer='" + missing.id + "'] .handoff");
     const field = rows[missing.index] && rows[missing.index].querySelector("textarea[data-part='" + missing.part + "']");
     if (field) {
       const preview = field.closest(".field") && field.closest(".field").querySelector("[data-collab-preview]");
@@ -5510,15 +7115,24 @@ async function saveAgent() {
   const mcps = selectedUses("mcp");
   const tools = selectedUses("tool");
   const name = document.querySelector("#agent-name").value.trim();
+  const creating = state.creatingAgent;
+  const id = creating ? newAgentId() : state.editingAgentId;
+  if (creating && !id) {
+    error.hidden = false;
+    error.textContent = "Enter a category and a name.";
+    button.disabled = false;
+    button.textContent = agentSaveLabel();
+    return;
+  }
   try {
-    const data = await api("/api/agents/" + encodeURIComponent(state.editingAgentId), {
-      method: "PUT",
+    const data = await api(creating ? "/api/agents" : "/api/agents/" + encodeURIComponent(id), {
+      method: creating ? "POST" : "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        id: state.editingAgentId,
+        id,
         name,
         description: document.querySelector("#agent-description").value.trim(),
-        category: document.querySelector("#agent-category").value.trim(),
+        category: chosenCategory(),
         enabled: document.querySelector("#agent-enabled").getAttribute("aria-pressed") === "true",
         tool: document.querySelector("#agent-tool").value,
         model: document.querySelector("#agent-model").value,
@@ -5526,7 +7140,7 @@ async function saveAgent() {
         worksWith,
         mcps,
         tools,
-        prompt: document.querySelector("#agent-prompt").value,
+        prompt: agentPromptText(),
       }),
     });
     const selected = document.querySelector("[data-tab][aria-selected='true']");
@@ -5534,13 +7148,52 @@ async function saveAgent() {
     render(data);
     showTab(tab);
     document.querySelector("#agent-dialog").close();
-    banner("Saved " + name + ".");
+    banner((creating ? "Added " : "Saved ") + name + ".");
   } catch (err) {
     error.hidden = false;
     error.textContent = err.message;
     button.disabled = false;
-    button.textContent = "Save";
+    button.textContent = agentSaveLabel();
   }
+}
+
+function confirmAgentDelete(agent) {
+  const dialog = document.querySelector("#agent-delete-dialog");
+  const title = (agent && (agent.title || agent.name)) || (agent && agent.id) || "this agent";
+  document.querySelector("#agent-delete-title").textContent = "Delete " + title;
+  document.querySelector("#agent-delete-text").textContent =
+    "Remove " + title + " from this app? Other agents stop working with it. Tasks that already name it keep that record.";
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      dialog.removeEventListener("close", onClose);
+      resolve(value);
+    };
+    const onClose = () => finish(false);
+    dialog.addEventListener("close", onClose);
+    document.querySelector("#agent-delete-confirm").onclick = () => {
+      dialog.removeEventListener("close", onClose);
+      dialog.close();
+      finish(true);
+    };
+    dialog.showModal();
+  });
+}
+
+async function deleteAgent(id) {
+  const agent = agentById(id) || { id, title: id };
+  const confirmed = await confirmAgentDelete(agent);
+  if (!confirmed) return;
+  const data = await api("/api/agents/" + encodeURIComponent(id), { method: "DELETE" });
+  const editor = document.querySelector("#agent-dialog");
+  if (editor.open && state.editingAgentId === id) editor.close();
+  const selected = document.querySelector("[data-tab][aria-selected='true']");
+  const tab = (selected && selected.dataset.tab) || "tasks";
+  render(data);
+  showTab(tab);
+  banner("Deleted " + (agent.title || agent.name || id) + ".");
 }
 
 document.body.addEventListener("click", (event) => {
@@ -5568,8 +7221,17 @@ document.body.addEventListener("click", (event) => {
     return;
   }
   const editAgent = event.target.closest("[data-edit-agent]");
-  if (editAgent) {
+  if (editAgent && !event.target.closest("button, select, input, textarea, a, label")) {
     openAgentEditor(editAgent.dataset.editAgent).catch((error) => banner(error.message, true));
+    return;
+  }
+  if (event.target.closest("#agent-new")) {
+    openNewAgent();
+    return;
+  }
+  const deleteAgentButton = event.target.closest("[data-delete-agent]");
+  if (deleteAgentButton) {
+    deleteAgent(deleteAgentButton.dataset.deleteAgent).catch((error) => banner(error.message, true));
     return;
   }
   const promptButton = event.target.closest("[data-prompt]");
@@ -5614,6 +7276,12 @@ document.body.addEventListener("click", (event) => {
     if (cardNote) cardNote.hidden = true;
     syncMCP();
     syncSave();
+    return;
+  }
+  const agentTab = event.target.closest("#agent-editor-tabs [data-agent-tab]");
+  if (agentTab) {
+    event.preventDefault();
+    showAgentEditorTab(agentTab.dataset.agentTab);
     return;
   }
   const taskTab = event.target.closest("[data-task-tab]");
@@ -5673,19 +7341,30 @@ document.body.addEventListener("click", (event) => {
     button.setAttribute("aria-pressed", button.getAttribute("aria-pressed") === "true" ? "false" : "true");
     return;
   }
-  const repoTag = event.target.closest("#agent-repos button, #agent-works-with button");
-  if (repoTag) {
-    repoTag.setAttribute("aria-pressed", repoTag.getAttribute("aria-pressed") === "true" ? "false" : "true");
-    if (repoTag.closest("#agent-works-with")) renderCollaborations();
-    if (repoTag.closest("#agent-repos")) renderRepoNotes();
-    return;
-  }
-  const useTag = event.target.closest("#agent-mcps button, #agent-tools button, #agent-tools .agent-tool");
-  if (useTag) {
-    const button = useTag.matches("button") ? useTag : useTag.querySelector("button");
-    if (!button) return;
-    button.setAttribute("aria-pressed", button.getAttribute("aria-pressed") === "true" ? "false" : "true");
-    renderUseNotes(button.closest("#agent-mcps") ? "mcp" : "tool");
+  const scopeToggle = event.target.closest("#agent-repos .switch[data-repo], #agent-works-with .switch[data-peer], #agent-mcps .switch[data-use], #agent-tools .switch[data-use]");
+  if (scopeToggle) {
+    const turnOn = scopeToggle.getAttribute("aria-pressed") !== "true";
+    if (scopeToggle.dataset.repo) {
+      if (!state.repoChosen) state.repoChosen = new Set();
+      if (turnOn) state.repoChosen.add(scopeToggle.dataset.repo);
+      else state.repoChosen.delete(scopeToggle.dataset.repo);
+      renderRepoNotes();
+    } else if (scopeToggle.dataset.peer) {
+      if (!state.peerChosen) state.peerChosen = new Set();
+      const id = scopeToggle.dataset.peer;
+      if (turnOn) {
+        state.peerChosen.add(id);
+        if (state.peerPairs[id] === undefined) state.peerPairs[id] = [{ when: "", send: "", reply: "", loop: false, maxLoops: defaultMaxLoops }];
+      } else state.peerChosen.delete(id);
+      renderCollaborations();
+    } else {
+      const mcp = !!scopeToggle.closest("#agent-mcps");
+      const setName = mcp ? "mcpChosen" : "toolChosen";
+      if (!state[setName]) state[setName] = new Set();
+      if (turnOn) state[setName].add(scopeToggle.dataset.use);
+      else state[setName].delete(scopeToggle.dataset.use);
+      renderUseNotes(mcp ? "mcp" : "tool");
+    }
     return;
   }
   const generate = event.target.closest("[data-generate]");
@@ -5693,9 +7372,46 @@ document.body.addEventListener("click", (event) => {
     prepareGenerate(generate);
     return;
   }
-  if (event.target.closest("#agent-prompt-toggle")) {
-    const button = document.querySelector("#agent-prompt-toggle");
-    showAgentPromptPreview(button.getAttribute("aria-pressed") !== "true");
+  const promptToggle = event.target.closest("[data-prompt-preview]");
+  if (promptToggle) {
+    const on = promptToggle.getAttribute("aria-pressed") !== "true";
+    if (promptToggle.dataset.promptPreview === "item") {
+      const item = promptToggle.closest(".prompt-item");
+      if (!item) return;
+      showPromptItemPreview(item, on);
+    } else {
+      const block = promptToggle.closest(".field");
+      const area = block && block.querySelector("textarea, input");
+      const preview = block && block.querySelector(".prompt-preview");
+      if (!area || !preview) return;
+      showMarkdownPreview(area, preview, on);
+    }
+    promptToggle.setAttribute("aria-pressed", on ? "true" : "false");
+    return;
+  }
+  const promptAdd = event.target.closest("[data-prompt-add]");
+  if (promptAdd) {
+    const model = readPromptFields();
+    const kind = promptAdd.dataset.promptAdd;
+    const list = kind === "input" ? model.inputs : model.outputs;
+    list.push(blankPromptItem(kind));
+    paintPromptFields(model);
+    const rows = document.querySelectorAll("#agent-prompt-fields [data-prompt-item='" + kind + "']");
+    const field = rows[rows.length - 1] && rows[rows.length - 1].querySelector("[data-prompt-part='name']");
+    if (field) field.focus();
+    return;
+  }
+  const promptRemove = event.target.closest("[data-prompt-remove]");
+  if (promptRemove) {
+    const row = promptRemove.closest("[data-prompt-item]");
+    const kind = promptRemove.dataset.promptRemove;
+    const rows = [...document.querySelectorAll("#agent-prompt-fields [data-prompt-item='" + kind + "']")];
+    const index = rows.indexOf(row);
+    const model = readPromptFields();
+    const list = kind === "input" ? model.inputs : model.outputs;
+    if (index >= 0) list.splice(index, 1);
+    if (!list.length) list.push(blankPromptItem(kind));
+    paintPromptFields(model);
     return;
   }
   const repoToggle = event.target.closest("[data-repo-preview]");
@@ -5734,7 +7450,7 @@ document.body.addEventListener("click", (event) => {
     const id = handoffAdd.dataset.handoffAdd;
     state.peerPairs[id] = (state.peerPairs[id] || []).concat([{ when: "", send: "", reply: "", loop: false, maxLoops: defaultMaxLoops }]);
     paintCollaborations();
-    const rows = document.querySelectorAll("#agent-collaborations .collab-peer[data-peer='" + id + "'] .handoff");
+    const rows = document.querySelectorAll("#agent-works-with .collab-peer[data-peer='" + id + "'] .handoff");
     const last = rows[rows.length - 1];
     const field = last && last.querySelector("textarea[data-part='when']");
     if (field) field.focus();
@@ -5774,6 +7490,11 @@ document.body.addEventListener("click", (event) => {
     refreshRepoIndex(refreshRepo.dataset.refreshRepo);
     return;
   }
+  const setupIndex = event.target.closest("[data-setup-index]");
+  if (setupIndex) {
+    setupRepoIndex(setupIndex.dataset.setupIndex, setupIndex.dataset.setupTool, { force: true });
+    return;
+  }
   const indexUse = event.target.closest("[data-repo-index-use]");
   if (indexUse) {
     toggleRepoIndex(indexUse);
@@ -5782,6 +7503,20 @@ document.body.addEventListener("click", (event) => {
   const browseFolder = event.target.closest("[data-browse-folder]");
   if (browseFolder) {
     browseRepoFolder(browseFolder.dataset.browseFolder);
+    return;
+  }
+  if (event.target.closest("[data-add-repo]")) {
+    openRepoName("");
+    return;
+  }
+  const renameRepo = event.target.closest("[data-rename-repo]");
+  if (renameRepo) {
+    openRepoName(renameRepo.dataset.renameRepo);
+    return;
+  }
+  const deleteRepo = event.target.closest("[data-delete-repo]");
+  if (deleteRepo) {
+    openDeleteRepo(deleteRepo.dataset.deleteRepo);
     return;
   }
   const clear = event.target.closest("[data-clear-index]");
@@ -5831,6 +7566,14 @@ document.body.addEventListener("focusout", (event) => {
 });
 
 document.body.addEventListener("change", (event) => {
+  if (event.target.id === "repo-name-divided") {
+    document.querySelector("#repo-name-divided-note").hidden = !event.target.checked;
+    return;
+  }
+  if (event.target.matches("[data-repo-divided]")) {
+    toggleRepoDivided(event.target);
+    return;
+  }
   if (event.target.id === "appearance") {
     applyTheme(event.target.value);
     return;
@@ -5910,7 +7653,7 @@ function openClone(kind) {
   if (!repo) return;
   const dialog = document.querySelector("#clone-dialog");
   dialog.dataset.kind = kind;
-  document.querySelector("#clone-title").textContent = "Clone " + repoLabel[kind];
+  document.querySelector("#clone-title").textContent = "Clone " + repoTitle(kind);
   document.querySelector("#clone-path").textContent = "KIKI clones this repository into " + repo.folder + ".";
   const input = document.querySelector("#clone-url");
   input.value = "";
@@ -5986,6 +7729,19 @@ document.querySelector("#agent-form").addEventListener("submit", (event) => {
   event.preventDefault();
   saveAgent();
 });
+document.querySelector("#agent-prompt-fields").addEventListener("input", () => {
+  syncAgentPromptMirror();
+});
+document.querySelector("#agent-prompt-fields").addEventListener("change", (event) => {
+  const box = event.target.closest("[data-prompt-required]");
+  if (!box) return;
+  const row = box.closest("[data-prompt-item]");
+  const field = row && row.querySelector("[data-prompt-default]");
+  if (field) field.hidden = box.checked;
+  const toggle = row && row.querySelector("[data-prompt-preview='item']");
+  if (toggle && toggle.getAttribute("aria-pressed") === "true") refreshPromptItemPreview(row);
+  syncAgentPromptMirror();
+});
 
 document.querySelector("#clone-form").addEventListener("submit", (event) => {
   if (event.submitter && event.submitter.value === "cancel") return;
@@ -6030,6 +7786,24 @@ document.querySelector("#index-remove-form").addEventListener("submit", (event) 
   confirmRemoveIndex();
 });
 
+document.querySelector("#repo-name-input").addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  saveRepoName();
+});
+
+document.querySelector("#repo-name-form").addEventListener("submit", (event) => {
+  if (event.submitter && event.submitter.value === "cancel") return;
+  event.preventDefault();
+  saveRepoName();
+});
+
+document.querySelector("#repo-delete-form").addEventListener("submit", (event) => {
+  if (event.submitter && event.submitter.value === "cancel") return;
+  event.preventDefault();
+  confirmDeleteRepo();
+});
+
 document.querySelector("#launch-go").addEventListener("click", launch);
 document.querySelector("#prompt-toggle").addEventListener("click", () => {
   const view = document.querySelector("#launch-prompt");
@@ -6047,14 +7821,32 @@ document.querySelector("#prompt-reader-close").addEventListener("click", () => {
   document.querySelector("#prompt-reader").close();
 });
 document.querySelector("#agent-dialog").addEventListener("input", (event) => {
-  if (event.target.closest(".compose textarea")) placeGenerateButtons();
+  if (state.creatingAgent && event.target.matches("#agent-name, #agent-category-custom")) paintNewAgentId();
+  if (event.target.closest(".compose textarea, .compose input")) placeGenerateButtons();
   if (event.target.matches("textarea[data-part='reply']")) {
     const row = event.target.closest(".handoff");
     if (row) syncHandoffRow(row);
   }
   resetGenerateUndo(event.target);
 });
-document.querySelector("#agent-dialog").addEventListener("close", stopGenerateRuns);
+document.querySelector("#agent-category").addEventListener("change", () => {
+  const custom = document.querySelector("#agent-category-custom");
+  custom.hidden = !!document.querySelector("#agent-category").value;
+  if (!custom.hidden) custom.focus();
+  paintNewAgentId();
+});
+document.querySelector("#agent-delete").addEventListener("click", () => {
+  if (!state.editingAgentId || state.creatingAgent) return;
+  deleteAgent(state.editingAgentId).catch((error) => {
+    const note = document.querySelector("#agent-error");
+    note.hidden = false;
+    note.textContent = error.message;
+  });
+});
+document.querySelector("#agent-dialog").addEventListener("close", () => {
+  stopGenerateRuns();
+  state.creatingAgent = false;
+});
 function syncTaskLaunchPreview(target) {
   if (!target) return;
   if (target.id === "task-group-search") paintTaskGroups();
@@ -6144,8 +7936,9 @@ document.querySelector("#team-share-dialog").addEventListener("click", (event) =
     return;
   }
   const arrow = event.target.closest(".team-arrows button");
-  if (!arrow) return;
-  syncFolder(arrow.dataset.folder, arrow.dataset.sync, arrow.dataset.part).catch((error) => banner(error.message, true));
+  if (!arrow || arrow.disabled) return;
+  const side = arrow.dataset.sync === "push" ? "app" : "folder";
+  syncFolder(arrow.dataset.folder, arrow.dataset.sync, arrow.dataset.part, sourceDiffs(arrow.closest(".team-compare"), side)).catch((error) => banner(error.message, true));
 });
 document.querySelector("#team-share-back").addEventListener("click", showTeamShareList);
 document.querySelector("#team-share-dialog").addEventListener("close", showTeamShareList);
@@ -6241,7 +8034,8 @@ function applySyncedTasks(tasks) {
 
 function followKey(agent, run) {
   const options = (run && run.askOptions) || [];
-  return agent.status + "\n" + ((run && run.askPrompt) || "") + "\n" + options.join("\n");
+  const questions = (run && run.askQuestions) || [];
+  return agent.status + "\n" + ((run && run.askPrompt) || "") + "\n" + options.join("\n") + "\n" + JSON.stringify(questions);
 }
 
 function paintTaskColumn(column) {
@@ -6297,6 +8091,18 @@ function paintTaskLogs(task) {
 function taskAnswerText(agentId) {
   const host = document.querySelector(`#task-dialog [data-task-follow="${CSS.escape(agentId)}"]`);
   if (!host) return "";
+  const questions = host.querySelectorAll("[data-task-question]");
+  if (questions.length) {
+    const lines = [];
+    for (const item of questions) {
+      const chosen = item.querySelector('input[type="radio"]:checked');
+      const area = item.querySelector("textarea");
+      const value = chosen ? chosen.value.trim() : (area ? area.value.trim() : "");
+      if (!value) return "";
+      lines.push(item.dataset.taskQuestion + ": " + value);
+    }
+    return lines.join("\n");
+  }
   const radios = host.querySelectorAll('input[type="radio"]');
   if (radios.length) {
     const chosen = host.querySelector('input[type="radio"]:checked');
@@ -6310,8 +8116,9 @@ async function sendTaskAgent(agentId, text, button, choosing) {
   const value = String(text || "").trim();
   if (!value) {
     const host = document.querySelector(`#task-dialog [data-task-follow="${CSS.escape(agentId)}"]`);
+    const questions = host && host.querySelector("[data-task-question]");
     const radios = host && host.querySelector('input[type="radio"]');
-    taskError(choosing ? (radios ? "Choose an answer." : "Enter an answer.") : "Enter a comment.");
+    taskError(choosing ? (questions ? "Answer every question." : (radios ? "Choose an answer." : "Enter an answer.")) : "Enter a comment.");
     return;
   }
   if (!state.taskId) return;
@@ -7144,11 +8951,50 @@ async function saveTaskForm() {
   return data.task;
 }
 
+function taskQuestionItem(agentId, question, index) {
+  const item = el("div", "task-question");
+  const name = (question.prompt || "").trim() || "Question " + (index + 1);
+  item.dataset.taskQuestion = name;
+  item.append(el("p", "task-ask-prompt", name));
+  if ((question.detail || "").trim()) item.append(el("p", "hint", question.detail.trim()));
+  const suggestion = (question.suggestion || "").trim();
+  if (suggestion) item.append(el("p", "hint", "Suggested: " + suggestion));
+  const options = question.options || [];
+  if (options.length) {
+    for (const option of options) {
+      const label = el("label", "task-choice");
+      const input = el("input");
+      input.type = "radio";
+      input.name = "ask-" + agentId + "-" + index;
+      input.value = option;
+      input.checked = suggestion === option;
+      label.append(input, document.createTextNode(" " + option));
+      item.append(label);
+    }
+  } else {
+    const area = el("textarea");
+    area.rows = 2;
+    area.placeholder = "Your answer";
+    area.value = suggestion;
+    item.append(area);
+  }
+  return item;
+}
+
 function taskFollowup(agentId, run, locked) {
   const box = el("div", "task-followup");
   box.dataset.taskFollow = agentId;
+  const questions = (run && run.askQuestions) || [];
   const options = (run && run.askOptions) || [];
-  if (run && run.askPrompt) {
+  if (questions.length) {
+    const ask = el("div", "task-ask");
+    questions.forEach((question, index) => ask.append(taskQuestionItem(agentId, question, index)));
+    const submit = el("button", "", "Submit");
+    submit.type = "button";
+    submit.dataset.taskAskSubmit = agentId;
+    ask.append(submit);
+    box.append(ask);
+  } else if (run && run.askPrompt) {
     const ask = el("div", "task-ask");
     ask.append(el("p", "task-ask-prompt", run.askPrompt));
     if (options.length) {

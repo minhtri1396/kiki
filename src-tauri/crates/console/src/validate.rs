@@ -43,25 +43,14 @@ fn validate_options(snap: &Snapshot) -> Result<()> {
     Ok(())
 }
 
-/// The four fixed repositories in order, then any extra repositories with distinct ids.
+/// Distinct repository ids. A document repository carries service names only when it is divided into services.
 fn validate_repos(repos: &[Repo]) -> Result<()> {
-    if repos.len() < toolchain::KINDS.len() {
-        return Err(anyhow!("need backend, website, mobile, and document"));
-    }
     let mut seen_kind: BTreeSet<String> = BTreeSet::new();
-    for (repo, kind) in repos.iter().zip(toolchain::KINDS) {
-        if repo.kind != *kind {
-            return Err(anyhow!("repo order must be backend, website, mobile, document"));
-        }
-        validate_repo(repo, *kind == "document")?;
-        seen_kind.insert(kind.to_string());
-    }
-    for repo in &repos[toolchain::KINDS.len()..] {
-        if !toolchain::repo_id(&repo.kind) || seen_kind.contains(&repo.kind) {
+    for repo in repos {
+        if !toolchain::repo_id(&repo.kind) || !seen_kind.insert(repo.kind.clone()) {
             return Err(anyhow!("repository {} is not valid", repo.kind));
         }
-        seen_kind.insert(repo.kind.clone());
-        validate_repo(repo, false)?;
+        validate_repo(repo, repo.kind == "document")?;
     }
     Ok(())
 }
@@ -70,7 +59,7 @@ fn validate_repo(repo: &Repo, document: bool) -> Result<()> {
     if let Err(err) = validate_folder(&repo.folder) {
         return Err(anyhow!("{}: {:#}", repo.kind, err));
     }
-    if document && !repo.services.is_empty() {
+    if document && !repo.divided && !repo.services.is_empty() {
         return Err(anyhow!("document does not use service names"));
     }
     let mut seen: BTreeSet<&str> = BTreeSet::new();
@@ -158,13 +147,16 @@ mod tests {
     }
 
     #[test]
-    fn repositories_keep_their_order_and_ids() {
+    fn repositories_keep_distinct_ids() {
         let mut snap = valid();
         snap.repos.truncate(3);
-        assert_eq!(message(&snap), "need backend, website, mobile, and document");
+        validate(&snap).unwrap();
         let mut snap = valid();
         snap.repos.swap(0, 1);
-        assert_eq!(message(&snap), "repo order must be backend, website, mobile, document");
+        validate(&snap).unwrap();
+        let mut snap = valid();
+        snap.repos.clear();
+        validate(&snap).unwrap();
         let mut snap = valid();
         snap.repos.push(repo("backend"));
         assert_eq!(message(&snap), "repository backend is not valid");
@@ -173,6 +165,9 @@ mod tests {
         validate(&snap).unwrap();
         snap.repos.push(repo("extra"));
         assert_eq!(message(&snap), "repository extra is not valid");
+        let mut snap = valid();
+        snap.repos.push(repo("Bad Id"));
+        assert_eq!(message(&snap), "repository Bad Id is not valid");
     }
 
     #[test]

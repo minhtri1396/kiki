@@ -18,6 +18,7 @@ struct RepoForm {
     folder: String,
     #[serde(deserialize_with = "null_default")]
     services: Vec<String>,
+    divided: bool,
 }
 
 /// The body the web UI sends when Settings is saved.
@@ -38,22 +39,28 @@ pub(crate) struct SetupForm {
 }
 
 impl SetupForm {
-    /// The setup the form describes: the built-in repositories first, then any other repository id, in order.
-    /// Indexes and sparse folders are not part of the form; see [`SetupForm::keep_saved`].
+    /// The setup the form describes: built-in repositories that the form still has, then any other repository id.
+    /// A repository the form leaves out is removed. Indexes and sparse folders are not part of the form; see [`SetupForm::keep_saved`].
     pub(super) fn snapshot(&self, root: &str) -> console::Snapshot {
         let by_kind: BTreeMap<&str, console::Repo> = self
             .repos
             .iter()
             .map(|repo| {
-                let services = repo
-                    .services
-                    .iter()
-                    .map(|name| name.trim())
-                    .filter(|name| !name.is_empty());
+                let services = if repo.divided {
+                    repo.services
+                        .iter()
+                        .map(|name| name.trim())
+                        .filter(|name| !name.is_empty())
+                        .map(str::to_string)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let row = console::Repo {
                     kind: repo.kind.clone(),
                     folder: repo.folder.trim().to_string(),
-                    services: services.map(str::to_string).collect(),
+                    services,
+                    divided: repo.divided,
                     ..Default::default()
                 };
                 (repo.kind.as_str(), row)
@@ -68,11 +75,9 @@ impl SetupForm {
             ..Default::default()
         };
         for kind in toolchain::KINDS {
-            let repo = by_kind.get(kind).cloned().unwrap_or_else(|| console::Repo {
-                kind: kind.to_string(),
-                ..Default::default()
-            });
-            snap.repos.push(repo);
+            if let Some(repo) = by_kind.get(kind) {
+                snap.repos.push((*repo).clone());
+            }
         }
         let extras = by_kind
             .iter()
@@ -81,11 +86,12 @@ impl SetupForm {
         snap
     }
 
-    /// Keeps what the form cannot change: each repository's index and sparse folders, and the saved orchestrator
-    /// when the form names none.
+    /// Keeps what the form cannot change: each repository's name, index and sparse folders, and the saved
+    /// orchestrator when the form names none.
     pub(super) fn keep_saved(snap: &mut console::Snapshot, current: &console::Snapshot) {
         for repo in snap.repos.iter_mut() {
             let kept = current.repo(&repo.kind);
+            repo.name = kept.name;
             repo.index = kept.index;
             repo.sparse = kept.sparse;
         }

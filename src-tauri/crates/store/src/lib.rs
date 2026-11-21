@@ -16,7 +16,7 @@ mod tasks;
 
 pub use groups::{is_group_not_found, ErrGroupNotFound, Group, GroupInput};
 pub use launches::{is_not_found, ErrNotFound, Launch};
-pub use runs::{RunUpdate, TaskRun};
+pub use runs::{AskQuestion, RunUpdate, TaskRun};
 pub use setup::{migrate, remove_index_folder, TeamFolder};
 pub use store::{data_dir, detail_limit, open, path, Store};
 pub use tasks::{

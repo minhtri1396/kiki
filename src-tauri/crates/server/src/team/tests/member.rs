@@ -344,7 +344,7 @@ fn team_repos_compare_copy_and_keep_the_checkout_folder() {
 
     write(
         &team.join("alice/repos/backend.yaml"),
-        "id: backend\nservices:\n  - billing\nindex: codegraph\n",
+        "id: backend\nname: Backend\nservices:\n  - billing\nindex: codegraph\n",
     );
     let req = post_json(
         "/api/team/member",
@@ -364,5 +364,280 @@ fn team_repos_compare_copy_and_keep_the_checkout_folder() {
     assert!(
         after["user"]["reposDiffer"] != true,
         "repositories still differ: {body}"
+    );
+}
+
+const DOCUMENT_AGENT_FILE: &str = "---\nid: requirement_document\nname: Document Writer\ndescription: Shared copy.\nenabled: true\nai_tool: cursor\nmodel: auto\nrepos:\n  - document\n---\n\nFrom the app.\n";
+
+const PLANNER_AGENT_FILE: &str = "---\nid: requirement_planner\nname: Planner\ndescription: Plans.\nenabled: true\nai_tool: cursor\nmodel: auto\nrepos:\n  - id: payments\n    description: Take payments.\n---\n\nPlan.\n";
+
+#[test]
+fn team_agents_copy_only_the_chosen_ids() {
+    let app = new_team_test_server();
+    let local = app.root.join(".kiki/agents");
+    mkdirs(&local.join("backend"));
+    mkdirs(&local.join("requirement"));
+    write(&local.join("backend/backend_runner.md"), LOCAL_AGENT_FILE);
+    write(&local.join("requirement/requirement_document.md"), DOCUMENT_AGENT_FILE);
+    let team_dir = tempfile::tempdir().unwrap();
+    let team = team_dir.path().to_path_buf();
+    mkdirs(&team.join("alice/agents/backend"));
+    write(&team.join("alice/agents/backend/backend_runner.md"), "old runner");
+    write(&team.join("alice/agents/old.md"), "old");
+    app.store
+        .save_team_folder(&TeamFolder {
+            path: s(&team).to_string(),
+            user: "alice".into(),
+            member: "alice".into(),
+        })
+        .unwrap();
+
+    let (status, body) = text(app.handle(&post_json("/api/team/agents", r#"{"agents":[]}"#)));
+    assert!(
+        status == 400 && body.contains("at least one"),
+        "empty status = {status} body = {body}"
+    );
+    assert_eq!(
+        fs::read_to_string(team.join("alice/agents/backend/backend_runner.md")).unwrap(),
+        "old runner"
+    );
+
+    let (status, body) = text(app.handle(&post_json("/api/team/agents", r#"{"agents":["requirement_document"]}"#)));
+    assert_eq!(status, 200, "copy status = {status} body = {body}");
+    assert_eq!(
+        fs::read_to_string(team.join("alice/agents/requirement/requirement_document.md")).unwrap(),
+        DOCUMENT_AGENT_FILE
+    );
+    assert_eq!(
+        fs::read_to_string(team.join("alice/agents/backend/backend_runner.md")).unwrap(),
+        "old runner"
+    );
+    assert_eq!(fs::read_to_string(team.join("alice/agents/old.md")).unwrap(), "old");
+    assert_eq!(
+        fs::read_to_string(local.join("backend/backend_runner.md")).unwrap(),
+        LOCAL_AGENT_FILE
+    );
+}
+
+#[test]
+fn team_member_pulls_only_the_chosen_agent() {
+    let app = new_team_test_server();
+    let team_dir = tempfile::tempdir().unwrap();
+    let team = team_dir.path().to_path_buf();
+    let member = team.join("bob/agents/requirement");
+    mkdirs(&member);
+    write(&member.join("requirement_document.md"), DOCUMENT_AGENT_FILE);
+    write(&member.join("requirement_planner.md"), PLANNER_AGENT_FILE);
+    let local = app.root.join(".kiki/agents");
+    mkdirs(&local.join("backend"));
+    write(&local.join("backend/backend_runner.md"), LOCAL_AGENT_FILE);
+    write(&local.join("notes.txt"), "notes");
+    app.store
+        .save_team_folder(&TeamFolder {
+            path: s(&team).to_string(),
+            user: "alice".into(),
+            member: "alice".into(),
+        })
+        .unwrap();
+
+    let req = post_json(
+        "/api/team/member",
+        r#"{"name":"bob","direction":"pull","part":"agents","agents":["requirement_document"]}"#,
+    );
+    let (status, body) = text(app.handle(&req));
+    assert_eq!(status, 200, "pull status = {status} body = {body}");
+    assert_eq!(
+        fs::read_to_string(local.join("requirement/requirement_document.md")).unwrap(),
+        DOCUMENT_AGENT_FILE
+    );
+    assert!(!exists(&local.join("requirement/requirement_planner.md")));
+    assert_eq!(
+        fs::read_to_string(local.join("backend/backend_runner.md")).unwrap(),
+        LOCAL_AGENT_FILE
+    );
+    assert_eq!(fs::read_to_string(local.join("notes.txt")).unwrap(), "notes");
+
+    let req = post_json(
+        "/api/team/member",
+        r#"{"name":"bob","direction":"pull","part":"agents","agents":["requirement_planner"]}"#,
+    );
+    let (status, body) = text(app.handle(&req));
+    assert!(
+        status == 409 && body.contains("payments"),
+        "planner status = {status} body = {body}"
+    );
+    assert!(!exists(&local.join("requirement/requirement_planner.md")));
+}
+
+#[test]
+fn team_member_push_copies_only_the_chosen_agent() {
+    let app = new_team_test_server();
+    let local = app.root.join(".kiki/agents");
+    mkdirs(&local.join("backend"));
+    mkdirs(&local.join("requirement"));
+    write(&local.join("backend/backend_runner.md"), LOCAL_AGENT_FILE);
+    write(&local.join("requirement/requirement_document.md"), DOCUMENT_AGENT_FILE);
+    let team_dir = tempfile::tempdir().unwrap();
+    let team = team_dir.path().to_path_buf();
+    mkdirs(&team.join("cara/agents/backend"));
+    write(&team.join("cara/agents/backend/backend_runner.md"), "old runner");
+    app.store
+        .save_team_folder(&TeamFolder {
+            path: s(&team).to_string(),
+            user: "alice".into(),
+            member: "alice".into(),
+        })
+        .unwrap();
+
+    let req = post_json(
+        "/api/team/member",
+        r#"{"name":"cara","direction":"push","part":"agents","agents":["requirement_document"]}"#,
+    );
+    let (status, body) = text(app.handle(&req));
+    assert_eq!(status, 200, "push status = {status} body = {body}");
+    assert_eq!(
+        fs::read_to_string(team.join("cara/agents/requirement/requirement_document.md")).unwrap(),
+        DOCUMENT_AGENT_FILE
+    );
+    assert_eq!(
+        fs::read_to_string(team.join("cara/agents/backend/backend_runner.md")).unwrap(),
+        "old runner"
+    );
+}
+
+#[test]
+fn team_repos_copy_only_the_chosen_ids() {
+    let app = new_team_test_server();
+    let checkout = app.root.join("backend");
+    mkdirs(&checkout);
+    let mut snap = app.load().unwrap();
+    for repo in snap.repos.iter_mut() {
+        if repo.kind == "backend" {
+            repo.folder = s(&checkout).to_string();
+            repo.services = vec!["api".to_string()];
+            repo.index = "codegraph".to_string();
+        }
+        if repo.kind == "website" {
+            repo.services = vec!["local-site".to_string()];
+        }
+    }
+    app.store.save(&snap).unwrap();
+    let team_dir = tempfile::tempdir().unwrap();
+    let team = team_dir.path().to_path_buf();
+    let repos = team.join("alice/repos");
+    mkdirs(&repos);
+    let kept_site = "id: website\nservices:\n  - keep-me\n";
+    write(&repos.join("backend.yaml"), "id: backend\nservices:\n  - old\n");
+    write(&repos.join("website.yaml"), kept_site);
+    app.store
+        .save_team_folder(&TeamFolder {
+            path: s(&team).to_string(),
+            user: "alice".into(),
+            member: "alice".into(),
+        })
+        .unwrap();
+
+    let (status, body) = text(app.handle(&post_json("/api/team/repos", r#"{"ids":[]}"#)));
+    assert!(
+        status == 400 && body.contains("at least one"),
+        "empty status = {status} body = {body}"
+    );
+    assert_eq!(
+        fs::read_to_string(repos.join("backend.yaml")).unwrap(),
+        "id: backend\nservices:\n  - old\n"
+    );
+
+    let (status, body) = text(app.handle(&post_json("/api/team/repos", r#"{"ids":["missing"]}"#)));
+    assert!(
+        status == 400 && body.contains("missing"),
+        "unknown status = {status} body = {body}"
+    );
+
+    let (status, body) = text(app.handle(&post_json("/api/team/repos", r#"{"ids":["backend"]}"#)));
+    assert_eq!(status, 200, "push status = {status} body = {body}");
+    let pushed = fs::read_to_string(repos.join("backend.yaml")).unwrap();
+    assert!(
+        pushed.contains("api") && !pushed.contains("folder:"),
+        "pushed = {pushed}"
+    );
+    assert_eq!(fs::read_to_string(repos.join("website.yaml")).unwrap(), kept_site);
+
+    let req = post_json(
+        "/api/team/member",
+        r#"{"name":"alice","direction":"push","part":"repos","ids":["website"]}"#,
+    );
+    let (status, body) = text(app.handle(&req));
+    assert_eq!(status, 200, "member push status = {status} body = {body}");
+    let site_file = fs::read_to_string(repos.join("website.yaml")).unwrap();
+    assert!(site_file.contains("local-site"), "site = {site_file}");
+    let backend_file = fs::read_to_string(repos.join("backend.yaml")).unwrap();
+    assert!(
+        backend_file.contains("api") && !backend_file.contains("old"),
+        "backend = {backend_file}"
+    );
+
+    write(
+        &repos.join("backend.yaml"),
+        "id: backend\nservices:\n  - billing\nindex: codegraph\n",
+    );
+    write(&repos.join("website.yaml"), kept_site);
+    let req = post_json(
+        "/api/team/member",
+        r#"{"name":"alice","direction":"pull","part":"repos","ids":["backend"]}"#,
+    );
+    let (status, body) = text(app.handle(&req));
+    assert_eq!(status, 200, "pull status = {status} body = {body}");
+    let snap = app.load().unwrap();
+    let got = snap.repo("backend");
+    assert!(
+        got.folder == s(&checkout) && got.services == vec!["billing".to_string()] && got.index == "codegraph",
+        "backend = {got:?}"
+    );
+    let site = snap.repo("website");
+    assert_eq!(site.services, vec!["local-site".to_string()], "website = {site:?}");
+    assert_eq!(fs::read_to_string(repos.join("website.yaml")).unwrap(), kept_site);
+}
+
+#[test]
+fn team_copy_removes_only_the_ticked_deleted_items() {
+    let app = new_team_test_server();
+    let local = app.root.join(".kiki/agents");
+    mkdirs(&local.join("requirement"));
+    write(&local.join("requirement/requirement_document.md"), DOCUMENT_AGENT_FILE);
+    let team_dir = tempfile::tempdir().unwrap();
+    let team = team_dir.path().to_path_buf();
+    mkdirs(&team.join("alice/agents/backend"));
+    write(&team.join("alice/agents/backend/backend_runner.md"), LOCAL_AGENT_FILE);
+    write(&team.join("alice/agents/notes.txt"), "notes");
+    let repos = team.join("alice/repos");
+    mkdirs(&repos);
+    write(&repos.join("backend.yaml"), "id: backend\nservices:\n  - keep\n");
+    write(&repos.join("legacy.yaml"), "id: legacy\nservices:\n  - old\n");
+    app.store
+        .save_team_folder(&TeamFolder {
+            path: s(&team).to_string(),
+            user: "alice".into(),
+            member: "alice".into(),
+        })
+        .unwrap();
+
+    let (status, body) = text(app.handle(&post_json("/api/team/agents", r#"{"remove":["backend_runner"]}"#)));
+    assert_eq!(status, 200, "agent status = {status} body = {body}");
+    assert!(!exists(&team.join("alice/agents/backend/backend_runner.md")));
+    assert_eq!(
+        fs::read_to_string(team.join("alice/agents/notes.txt")).unwrap(),
+        "notes"
+    );
+    assert_eq!(
+        fs::read_to_string(local.join("requirement/requirement_document.md")).unwrap(),
+        DOCUMENT_AGENT_FILE
+    );
+
+    let (status, body) = text(app.handle(&post_json("/api/team/repos", r#"{"remove":["legacy"]}"#)));
+    assert_eq!(status, 200, "repo status = {status} body = {body}");
+    assert!(!exists(&repos.join("legacy.yaml")));
+    assert!(
+        fs::read_to_string(repos.join("backend.yaml")).unwrap().contains("keep"),
+        "backend was removed"
     );
 }

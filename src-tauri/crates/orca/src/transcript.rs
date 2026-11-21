@@ -3,11 +3,24 @@
 use regex::Regex;
 use std::sync::LazyLock;
 
+/// One question in a questions block. Empty `options` means the user types an answer.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Question {
+    pub prompt: String,
+    pub detail: String,
+    pub options: Vec<String>,
+    /// An answer the agent suggests. Empty when it has none.
+    pub suggestion: String,
+}
+
 /// Ask is a question an agent left for the user.
+/// `questions` is the questions block. `prompt` and `options` are the single question
+/// recognized when the agent did not use that block.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Ask {
     pub prompt: String,
     pub options: Vec<String>,
+    pub questions: Vec<Question>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -31,6 +44,24 @@ static USER_ASK: LazyLock<Regex> = LazyLock::new(|| {
 
 /// Transcript keeps an agent's thinking and replies, and a question when the agent is waiting.
 pub fn transcript(screen: &str) -> (String, Ask) {
+    if let Some((questions, range)) = questions_block(screen) {
+        let mut cleaned = String::new();
+        cleaned.push_str(&screen[..range.start]);
+        cleaned.push_str(&screen[range.end..]);
+        let (text, _) = transcript_body(&cleaned);
+        return (
+            text,
+            Ask {
+                questions,
+                ..Ask::default()
+            },
+        );
+    }
+    transcript_body(screen)
+}
+
+/// The transcript without looking for a questions block.
+fn transcript_body(screen: &str) -> (String, Ask) {
     let mut lines = spoken_lines(screen);
     let ask = match question_at_end(&lines) {
         Some((ask, at)) => {
@@ -114,6 +145,7 @@ fn question_at_end(lines: &[Spoken]) -> Option<(Ask, usize)> {
         Ask {
             prompt: question.clone(),
             options,
+            ..Ask::default()
         },
         at,
     ))
@@ -159,6 +191,111 @@ fn option_line(line: &str) -> Option<String> {
 
 fn user_question(line: &str) -> bool {
     USER_ASK.is_match(line)
+}
+
+const QUESTIONS_START: &str = "===== QUESTIONS =====";
+const QUESTIONS_END: &str = "===== END QUESTIONS =====";
+
+/// The last finished questions block, when nothing the agent said comes after it.
+fn questions_block(screen: &str) -> Option<(Vec<Question>, std::ops::Range<usize>)> {
+    let start = screen.rfind(QUESTIONS_START)?;
+    let body_at = start + QUESTIONS_START.len();
+    let end_rel = screen[body_at..].find(QUESTIONS_END)?;
+    let body_end = body_at + end_rel;
+    let end = body_end + QUESTIONS_END.len();
+    let questions = parse_questions(&screen[body_at..body_end]);
+    if questions.is_empty() {
+        return None;
+    }
+    let trailing = screen[end..].lines().any(|line| {
+        let line = line.trim();
+        !line.is_empty() && !chrome_line(line)
+    });
+    if trailing {
+        return None;
+    }
+    Some((questions, start..end))
+}
+
+/// Questions inside one block. `A: choice` takes the following `-` lines; anything else is typed.
+fn parse_questions(body: &str) -> Vec<Question> {
+    let mut questions = Vec::new();
+    let mut current: Option<Question> = None;
+    let mut choosing = false;
+    let mut suggesting = false;
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some(name) = line.strip_prefix("Q:") {
+            push_question(&mut questions, current.take());
+            choosing = false;
+            suggesting = false;
+            let prompt = name.trim();
+            if !prompt.is_empty() {
+                current = Some(Question {
+                    prompt: prompt.to_string(),
+                    ..Question::default()
+                });
+            }
+            continue;
+        }
+        let Some(question) = current.as_mut() else {
+            continue;
+        };
+        if let Some(kind) = line.strip_prefix("A:") {
+            suggesting = false;
+            choosing = matches!(kind.trim().to_ascii_lowercase().as_str(), "choice" | "choose");
+            if !choosing {
+                question.options.clear();
+            }
+            continue;
+        }
+        if let Some(text) = line.strip_prefix("S:") {
+            suggesting = true;
+            append_suggestion(question, text.trim());
+            continue;
+        }
+        if choosing {
+            if let Some(option) = line.strip_prefix("- ").or_else(|| line.strip_prefix("* ")) {
+                suggesting = false;
+                let option = option.trim();
+                if !option.is_empty() {
+                    question.options.push(option.to_string());
+                }
+                continue;
+            }
+        }
+        if suggesting {
+            append_suggestion(question, line);
+            continue;
+        }
+        if !question.detail.is_empty() {
+            question.detail.push(' ');
+        }
+        question.detail.push_str(line);
+    }
+    push_question(&mut questions, current);
+    questions
+}
+
+fn append_suggestion(question: &mut Question, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if !question.suggestion.is_empty() {
+        question.suggestion.push(' ');
+    }
+    question.suggestion.push_str(text);
+}
+
+fn push_question(questions: &mut Vec<Question>, current: Option<Question>) {
+    if let Some(question) = current {
+        if !question.prompt.trim().is_empty() {
+            questions.push(question);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -217,5 +354,63 @@ mod tests {
         let (text, ask) = transcript("1. only\n2. choices");
         assert_eq!(ask, Ask::default());
         assert_eq!(text, "1. only\n2. choices");
+    }
+
+    #[test]
+    fn transcript_reads_a_questions_block() {
+        let screen = [
+            "Thinking",
+            "Two things are missing.",
+            "===== QUESTIONS =====",
+            "Q: Ticket",
+            "The Jira key.",
+            "A: text",
+            "S: PROJ-12",
+            "",
+            "Q: Scope",
+            "What should this cover?",
+            "A: choice",
+            "- Website only",
+            "- Website and mobile",
+            "S: Website only",
+            "===== END QUESTIONS =====",
+            "Auto",
+        ]
+        .join("\n");
+        let (text, ask) = transcript(&screen);
+        assert_eq!(text, "Thinking\nTwo things are missing.", "text = {text:?}");
+        assert_eq!(ask.prompt, "");
+        assert_eq!(
+            ask.questions,
+            vec![
+                Question {
+                    prompt: "Ticket".into(),
+                    detail: "The Jira key.".into(),
+                    options: Vec::new(),
+                    suggestion: "PROJ-12".into(),
+                },
+                Question {
+                    prompt: "Scope".into(),
+                    detail: "What should this cover?".into(),
+                    options: vec!["Website only".into(), "Website and mobile".into()],
+                    suggestion: "Website only".into(),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn an_unfinished_questions_block_stays_in_the_transcript() {
+        let (text, ask) = transcript("Working.\n===== QUESTIONS =====\nQ: Ticket\nThe Jira key.\nA: text\n");
+        assert!(ask.questions.is_empty(), "ask = {ask:?}");
+        assert!(text.contains("Q: Ticket"), "text = {text:?}");
+    }
+
+    #[test]
+    fn the_launch_instruction_is_not_a_question() {
+        let screen = "The block begins with this line:\n===== QUESTIONS =====\nThe block ends with this line:\n===== END QUESTIONS =====\n";
+        let (text, ask) = transcript(screen);
+        assert!(ask.questions.is_empty(), "ask = {ask:?}");
+        assert!(text.contains("The block begins"), "text = {text:?}");
     }
 }

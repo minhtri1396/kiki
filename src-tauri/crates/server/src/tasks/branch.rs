@@ -117,6 +117,7 @@ impl Server {
                     kind: "branch",
                     subject: "",
                     text: name,
+                    context: console::RewriteContext::default(),
                 };
                 console::generate_text(&ctx.with_timeout(NAMING_TIMEOUT), &request)?
             }

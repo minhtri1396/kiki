@@ -134,7 +134,7 @@ Open the **Repositories** tab. KIKI keeps four repositories as folders next to t
 
 - **Browse** points a repository at another folder.
 - **Clone repository** fills an empty folder from a Git URL. Fill **Folder** to check out only that folder (plus files at the repository root). Commit, push, and pull then use that checkout.
-- A code repository can be one project or an Nx monorepo. Each Nx project has a `project.json`, and its `name` is the service name. The services you select are what the agents for that repository are told to work with. Agents confirm a project with `npx nx show projects`.
+- A repository can be one project or an Nx monorepo. Turn on “This repository is divided into services” when it is split into Nx projects. KIKI finds those projects from each `project.json` `name`. The ones you select are what agents for that repository may use. Agents confirm a project with `npx nx show projects`.
 
 ### 3. Indexes
 
@@ -210,8 +210,8 @@ The writer turns a feature into `business_requirement.md` and `product_requireme
 
 The prompt sent to Orca is the single source of truth for an agent's setup. The agent documents do not hold paths, Jira values, or MCP file names of their own. The prompt contains:
 
-- The agent's id, the repository root, the Orca worktree, the setup file path, and the workspace id.
-- For each repository: its folder, the guide file to read and follow (`AGENTS.md` unless you change it), the services, the work note, and the index query instructions. A sparse checkout names the one folder that is checked out, and **Readonly** tells the agent not to change, commit, or push.
+- The agent's id, the folder root, the Orca worktree, the setup file path, and the workspace id.
+- For each repository: its folder, the guide file to read and follow (`AGENTS.md` unless you change it), the Nx services when the repository is divided into them, the work note, and the index query instructions. A sparse checkout names the one folder that is checked out, and **Readonly** tells the agent not to change, commit, or push.
 - For each collaborator: its agent id and its messages (when to send, what to send, whether to ask for a report and what it must contain, and the loop limit when an exchange can go back and forth). The agent sends a message when its condition is met, not only when its work is done.
 - The MCP servers set on the agent. Jira names the board, and Confluence names the space and parent page.
 - The tools set on the agent.

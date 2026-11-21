@@ -22,9 +22,7 @@ fn write_repo(b: &mut String, item: &agentdef::Repo, snap: &Snapshot) {
     w!(b, "- {}\n", kind);
     write_folder_and_guide(b, &repo, &agentdef::guide_file(&item.guide));
     write_access(b, &repo, item.readonly);
-    if kind != "document" {
-        write_services(b, &repo);
-    }
+    write_services(b, &repo);
     write_note(b, &item.description);
 }
 
@@ -63,11 +61,16 @@ fn write_access(b: &mut String, repo: &Repo, readonly: bool) {
 }
 
 fn write_services(b: &mut String, repo: &Repo) {
+    if !repo.uses_services() {
+        return;
+    }
     if repo.services.is_empty() {
         b.push_str("  services: (none)\n");
-    } else {
-        w!(b, "  services: {}\n", repo.services.join(", "));
+        b.push_str("  This repository is divided into Nx services. None are selected, so do not use a service.\n");
+        return;
     }
+    w!(b, "  services: {}\n", repo.services.join(", "));
+    b.push_str("  These are the Nx services this agent may use in this repository.\n");
 }
 
 /// What the agent does in this repository, one indented line per line of the note.

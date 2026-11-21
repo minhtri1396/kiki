@@ -179,6 +179,25 @@ fn open_vault_code_quotes_path() {
 }
 
 #[test]
+fn open_vault_uses_the_active_vault_when_the_name_is_shared() {
+    let _g = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("docs");
+    std::fs::create_dir(&vault).unwrap();
+    let vault = vault.to_string_lossy().to_string();
+    let opened = dir.path().join("opened");
+    let script = dir.path().join("obsidian");
+    let body = format!(
+        "#!/bin/sh\nopened=\"{}\"\nif [ \"$1\" = \"eval\" ]; then echo '=> true'; exit 0; fi\nif [ \"$1\" = \"{vault}\" ]; then touch \"$opened\"; echo \"{vault}\"; exit 0; fi\nif [ -f \"$opened\" ] && [ \"$1\" = \"vault\" ]; then echo \"{vault}\"; exit 0; fi\necho \"/other/docs\"\n",
+        opened.display()
+    );
+    write_script(&script, &body);
+    obsidian(TestEnv::default())
+        .open_vault(&script.to_string_lossy(), &vault)
+        .unwrap();
+}
+
+#[test]
 fn open_vault_rejects_empty_cli() {
     let err = obsidian(TestEnv::default())
         .open_vault(" ", "/tmp")

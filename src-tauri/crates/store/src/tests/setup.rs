@@ -456,9 +456,48 @@ fn setup_files_match_yaml_v3_layout() {
     assert_eq!(
         backend,
         format!(
-            "# Repository backend. KIKI stores this in .kiki/repos. The index is what the launch prompt tells the model to query.\nid: backend\nfolder: {root}/backend\nservices:\n    - api\n    - worker\n"
+            "# Repository backend. KIKI stores this in .kiki/repos. The index is what the launch prompt tells the model to query.\nid: backend\nname: Backend\nfolder: {root}/backend\nservices:\n    - api\n    - worker\n"
         )
     );
+}
+
+#[test]
+fn dividing_a_repository_is_saved_when_no_service_is_selected() {
+    let (_dir, root, db) = open_root();
+    db.ensure_layout(&root).unwrap();
+    let mut snap = db.load().unwrap();
+    for repo in snap.repos.iter_mut() {
+        if repo.kind == "website" {
+            repo.divided = true;
+        }
+        if repo.kind == "document" {
+            repo.divided = true;
+            repo.services = vec!["notes".into()];
+        }
+    }
+    db.save(&snap).unwrap();
+    let loaded = db.load().unwrap();
+    let site = loaded.repo("website");
+    assert!(site.divided && site.services.is_empty() && site.uses_services());
+    let docs = loaded.repo("document");
+    assert!(
+        docs.divided && docs.services == ["notes".to_string()],
+        "document = {docs:?}"
+    );
+    let text = fs::read_to_string(FsPath::new(&root).join(".kiki").join("repos").join("website.yaml")).unwrap();
+    assert!(text.contains("divided: true\n"), "website =\n{text}");
+}
+
+#[test]
+fn a_saved_service_list_still_divides_the_repository() {
+    let (_dir, root, db) = open_root();
+    db.ensure_layout(&root).unwrap();
+    let mut snap = db.load().unwrap();
+    set_services(&mut snap, "backend", &["api"]);
+    db.save(&snap).unwrap();
+    let backend = db.load().unwrap().repo("backend");
+    assert!(!backend.divided && backend.uses_services());
+    assert_eq!(backend.services, ["api".to_string()]);
 }
 
 #[test]

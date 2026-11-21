@@ -18,10 +18,17 @@ use kiki_util::path;
 pub struct Repo {
     #[serde(rename = "Kind")]
     pub kind: String,
+    /// The name shown in the Repositories tab. Empty uses the built-in label, or the id.
+    #[serde(rename = "Name")]
+    pub name: String,
     #[serde(rename = "Folder")]
     pub folder: String,
     #[serde(rename = "Services")]
     pub services: Vec<String>,
+    /// The repository is split into Nx services. A saved service list also counts, so a setup from
+    /// before this checkbox still limits the agent to those services.
+    #[serde(rename = "Divided")]
+    pub divided: bool,
     #[serde(rename = "Index")]
     pub index: String,
     #[serde(rename = "Sparse")]
@@ -50,6 +57,28 @@ pub struct Snapshot {
     pub generate_model: String,
     #[serde(rename = "Repos")]
     pub repos: Vec<Repo>,
+}
+
+impl Repo {
+    /// The name shown for this repository. A saved name wins. The four built-in repositories use their labels.
+    pub fn title(&self) -> String {
+        let name = self.name.trim();
+        if !name.is_empty() {
+            return name.to_string();
+        }
+        match self.kind.as_str() {
+            "backend" => "Backend".to_string(),
+            "website" => "Website".to_string(),
+            "mobile" => "Mobile".to_string(),
+            "document" => "Document".to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    /// True when agents for this repository are told which Nx services they may use.
+    pub fn uses_services(&self) -> bool {
+        self.divided || !self.services.is_empty()
+    }
 }
 
 impl Snapshot {
@@ -89,9 +118,9 @@ pub fn sparse_path(raw: &str) -> Result<String> {
     Ok(cleaned)
 }
 
-/// Gives every repository a folder and creates any folder that is missing.
-/// A saved absolute path stays. An empty path uses the directory under the app root.
-/// Saved service names are kept.
+/// Gives each saved repository a folder and creates any folder that is missing.
+/// A repository that is not in the snapshot is left out. A saved absolute path stays.
+/// An empty path uses the directory under the app root. Saved service names are kept.
 pub fn apply_root(root: &str, mut snap: Snapshot) -> Result<Snapshot> {
     let root = root.trim();
     if root.is_empty() || !path::is_abs(root) {
@@ -104,18 +133,19 @@ pub fn apply_root(root: &str, mut snap: Snapshot) -> Result<Snapshot> {
         .map(|repo| (repo.kind.clone(), repo.clone()))
         .collect();
     snap.root = root.clone();
-    snap.repos = Vec::with_capacity(toolchain::KINDS.len());
+    snap.repos = Vec::new();
     for kind in toolchain::KINDS {
-        let mut repo = by_kind.get(*kind).cloned().unwrap_or_default();
+        let Some(saved) = by_kind.get(*kind) else { continue };
+        let mut repo = saved.clone();
         repo.kind = kind.to_string();
         repo.folder = repo_folder(&root, kind, &repo.folder);
-        if *kind == "document" {
+        if *kind == "document" && !repo.divided {
             repo.services = Vec::new();
         }
         fs::create_dir_all(&repo.folder)?;
         snap.repos.push(repo);
     }
-    // The extra repositories follow the fixed ones, sorted by kind.
+    // Other repositories follow the built-in kinds that are still present, sorted by id.
     for (kind, saved) in &by_kind {
         if toolchain::known(kind) || !toolchain::repo_id(kind) {
             continue;
@@ -183,7 +213,8 @@ mod tests {
         .unwrap();
         assert_eq!(snap.repo("backend").folder, custom);
         assert_eq!(snap.repo("website").folder, path::join(&[&root, "website"]));
-        assert_eq!(snap.repo("document").folder, path::join(&[&root, "docs"]));
+        let kinds: Vec<&str> = snap.repos.iter().map(|repo| repo.kind.as_str()).collect();
+        assert_eq!(kinds, ["backend", "website"]);
     }
 
     #[test]
@@ -204,6 +235,7 @@ mod tests {
                 repos: vec![
                     repo_with_folder("zeta", ""),
                     repo_with_folder("alpha", ""),
+                    repo_with_folder("website", ""),
                     repo_with_folder("Bad Id", ""),
                 ],
                 ..Default::default()
@@ -211,7 +243,7 @@ mod tests {
         )
         .unwrap();
         let kinds: Vec<&str> = snap.repos.iter().map(|repo| repo.kind.as_str()).collect();
-        assert_eq!(kinds, ["backend", "website", "mobile", "document", "alpha", "zeta"]);
+        assert_eq!(kinds, ["website", "alpha", "zeta"]);
         assert_eq!(snap.repo("alpha").folder, path::join(&[&root, "alpha"]));
     }
 

@@ -44,7 +44,7 @@ impl Manager {
     /// CheckOne runs the status command for one repository and keeps the other results.
     pub fn check_one(&self, ctx: &Ctx, root: &str, targets: &[Target], kind: &str) -> Result<Report> {
         let target = match targets.iter().find(|item| item.kind == kind) {
-            Some(t) if kiki_toolchain::known(kind) => t,
+            Some(t) if kiki_toolchain::repo_id(kind) => t,
             _ => return Err(anyhow!("unknown repository")),
         };
         let check = self.check_target(ctx, root, target);

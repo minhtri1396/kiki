@@ -11,7 +11,8 @@ use serde_json::{json, Value};
 use super::diff::{agent_file_text, diff_payload, repo_share_text};
 use super::files::mkdir_all;
 use super::import::RepoDecisions;
-use super::shared_repo::publish_repos;
+use super::selected::{copy_agent_ids, remove_agent_ids};
+use super::shared_repo::{list_shared_repos, publish_repo_ids, publish_repos, remove_repo_files};
 use super::views::{agent_views, compare_folder, empty_comparison, repo_views};
 use super::{Direction, Outcome, Part, SETUP_FIRST};
 use crate::api_error::{ApiError, ApiResult, OrStatus};
@@ -32,10 +33,58 @@ pub(crate) struct MemberRequest {
     pub direction: String,
     pub part: String,
     pub repos: RepoDecisions,
+    /// `None` copies every agent. `Some` copies those ids and leaves the other agents in place.
+    pub agents: Option<Vec<String>>,
+    /// `None` copies every repository. `Some` copies those ids and leaves the other repositories in place.
+    pub ids: Option<Vec<String>>,
+    /// Ids that exist only on the destination. Ticking them removes those files there.
+    pub remove: Option<Vec<String>>,
 }
 
 fn conflict(payload: Value) -> ApiResult<Outcome> {
     Ok(Outcome::Conflict(payload))
+}
+
+fn has_chosen_id(ids: Option<&[String]>) -> bool {
+    ids.is_some_and(|ids| ids.iter().any(|id| !id.trim().is_empty()))
+}
+
+/// `ids` and `remove` both `None` replaces `dest`. A set copies or deletes only those ids.
+fn apply_agent_selection(src: &str, dest: &str, ids: Option<&[String]>, remove: Option<&[String]>) -> Result<()> {
+    if ids.is_none() && remove.is_none() {
+        return teamfolder::copy(src, dest);
+    }
+    let copying = has_chosen_id(ids);
+    let removing = has_chosen_id(remove);
+    if !copying && !removing {
+        return Err(anyhow!("Choose at least one agent to copy."));
+    }
+    if copying {
+        copy_agent_ids(src, dest, ids.unwrap_or_default())?;
+    }
+    if removing {
+        remove_agent_ids(dest, remove.unwrap_or_default())?;
+    }
+    Ok(())
+}
+
+/// `ids` and `remove` both `None` replaces `dest`. A set writes or deletes only those repository files.
+fn publish_selected_repos(src: &str, dest: &str, ids: Option<&[String]>, remove: Option<&[String]>) -> Result<()> {
+    if ids.is_none() && remove.is_none() {
+        return publish_repos(src, dest);
+    }
+    let copying = has_chosen_id(ids);
+    let removing = has_chosen_id(remove);
+    if !copying && !removing {
+        return Err(anyhow!("Choose at least one repository to copy."));
+    }
+    if copying {
+        publish_repo_ids(src, dest, ids.unwrap_or_default())?;
+    }
+    if removing {
+        remove_repo_files(dest, remove.unwrap_or_default())?;
+    }
+    Ok(())
 }
 
 impl Server {
@@ -47,8 +96,8 @@ impl Server {
         Ok(json!({ "path": dir }))
     }
 
-    /// Saves the team folder and this user's name, copying the agents in the chosen direction. An empty `path`
-    /// clears the setting.
+    /// Saves the team folder and this user's name, copying the agents and the `repos` folder beside them in
+    /// the chosen direction. An empty `path` clears the setting.
     pub(crate) fn team_save(&self, req: SaveRequest) -> ApiResult<Outcome> {
         let team = req.path.trim();
         if !team.is_empty() && !teamfolder::valid_name(&req.user) {
@@ -83,13 +132,17 @@ impl Server {
             (false, "pull") => return Err(ApiError::new(400, "That user folder has no agents folder.")),
             (true, "pull") => {
                 let source = teamfolder::agents_dir(&user_dir);
-                if let Outcome::Conflict(payload) = self.import_agents(&source, &local, &req.repos).or_status(400)? {
+                if let Outcome::Conflict(payload) =
+                    self.import_agents(&source, &local, &req.repos, None).or_status(400)?
+                {
                     return conflict(payload);
                 }
+                self.copy_repos_beside(&user_dir, Direction::Pull).or_status(400)?;
             }
             (_, "" | "push") => {
                 mkdir_all(&user_dir, 0o755).or_status(400)?;
                 teamfolder::copy(&local, &teamfolder::agents_dir(&user_dir)).or_status(400)?;
+                self.copy_repos_beside(&user_dir, Direction::Push).or_status(400)?;
             }
             _ => return Err(ApiError::new(400, "Choose how to copy the agents.")),
         }
@@ -233,7 +286,9 @@ impl Server {
             return Err(ApiError::new(400, "Choose agents or repositories to copy."));
         };
         match part {
-            Part::Repos => self.copy_repos(&member, direction).or_status(400)?,
+            Part::Repos => self
+                .copy_repos(&member, direction, req.ids.as_deref(), req.remove.as_deref())
+                .or_status(400)?,
             Part::Agents => {
                 let local = self.agent_dir().or_status(400)?;
                 match Direction::parse(direction) {
@@ -242,14 +297,33 @@ impl Server {
                             return Err(ApiError::new(400, "That member folder has no agents folder."));
                         }
                         let source = teamfolder::agents_dir(&member);
-                        if let Outcome::Conflict(payload) =
-                            self.import_agents(&source, &local, &req.repos).or_status(400)?
-                        {
-                            return conflict(payload);
+                        let selective = req.agents.is_some() || req.remove.is_some();
+                        let copying = has_chosen_id(req.agents.as_deref());
+                        let removing = has_chosen_id(req.remove.as_deref());
+                        if selective && !copying && !removing {
+                            return Err(ApiError::new(400, "Choose at least one agent to copy."));
+                        }
+                        if !selective || copying {
+                            if let Outcome::Conflict(payload) = self
+                                .import_agents(
+                                    &source,
+                                    &local,
+                                    &req.repos,
+                                    if selective { req.agents.as_deref() } else { None },
+                                )
+                                .or_status(400)?
+                            {
+                                return conflict(payload);
+                            }
+                        }
+                        if removing {
+                            remove_agent_ids(&local, req.remove.as_deref().unwrap_or_default()).or_status(400)?;
                         }
                     }
                     Some(Direction::Push) => {
-                        teamfolder::copy(&local, &teamfolder::agents_dir(&member)).or_status(400)?;
+                        let dest = teamfolder::agents_dir(&member);
+                        apply_agent_selection(&local, &dest, req.agents.as_deref(), req.remove.as_deref())
+                            .or_status(400)?;
                     }
                     None => return Err(ApiError::new(400, "Choose how to copy the agents.")),
                 }
@@ -261,33 +335,78 @@ impl Server {
     }
 
     /// Writes `.kiki/agents` to this user's folder in the team folder.
-    pub(crate) fn save_user_agents(&self) -> ApiResult<()> {
+    /// `ids` set copies only those agents and leaves the others in the team folder. `None` replaces the folder.
+    pub(crate) fn save_user_agents(&self, ids: Option<&[String]>, remove: Option<&[String]>) -> ApiResult<()> {
         let _guard = self.begin_team()?;
         let cfg = self.configured_team()?;
         let local = self.agent_dir().or_status(400)?;
         let user_dir = teamfolder::user_dir(&cfg.path, &cfg.user).or_status(400)?;
         mkdir_all(&user_dir, 0o755).or_status(400)?;
-        teamfolder::copy(&local, &teamfolder::agents_dir(&user_dir)).or_status(400)?;
+        let dest = teamfolder::agents_dir(&user_dir);
+        apply_agent_selection(&local, &dest, ids, remove).or_status(400)?;
         Ok(())
     }
 
     /// Writes this app's shared repository files to this user's folder in the team folder.
-    pub(crate) fn save_user_repos(&self) -> ApiResult<()> {
+    /// `ids` set copies only those repositories and leaves the others in the team folder. `None` replaces the folder.
+    pub(crate) fn save_user_repos(&self, ids: Option<&[String]>, remove: Option<&[String]>) -> ApiResult<()> {
         let _guard = self.begin_team()?;
         let cfg = self.configured_team()?;
         let user_dir = teamfolder::user_dir(&cfg.path, &cfg.user).or_status(400)?;
         mkdir_all(&user_dir, 0o755).or_status(400)?;
         let local = self.repo_dir().or_status(400)?;
-        publish_repos(&local, &teamfolder::repos_dir(&user_dir)).or_status(400)?;
+        publish_selected_repos(&local, &teamfolder::repos_dir(&user_dir), ids, remove).or_status(400)?;
         Ok(())
     }
 
-    fn copy_repos(&self, member_dir: &str, direction: &str) -> Result<()> {
+    fn copy_repos(
+        &self,
+        member_dir: &str,
+        direction: &str,
+        ids: Option<&[String]>,
+        remove: Option<&[String]>,
+    ) -> Result<()> {
         let local = self.repo_dir()?;
+        let shared = teamfolder::repos_dir(member_dir);
         match Direction::parse(direction) {
-            Some(Direction::Pull) => self.adopt_repos(&teamfolder::repos_dir(member_dir)),
-            Some(Direction::Push) => publish_repos(&local, &teamfolder::repos_dir(member_dir)),
+            Some(Direction::Pull) => {
+                let selective = ids.is_some() || remove.is_some();
+                if !selective {
+                    return self.adopt_repos(&shared);
+                }
+                if has_chosen_id(ids) {
+                    self.adopt_repo_ids(&shared, ids.unwrap_or_default())?;
+                } else if !has_chosen_id(remove) {
+                    return Err(anyhow!("Choose at least one repository to copy."));
+                }
+                if has_chosen_id(remove) {
+                    self.drop_repo_ids(remove.unwrap_or_default())?;
+                }
+                Ok(())
+            }
+            Some(Direction::Push) => publish_selected_repos(&local, &shared, ids, remove),
             None => Err(anyhow!("Choose how to copy the repositories.")),
+        }
+    }
+
+    /// Copies the `repos` folder that sits beside `agents` in `user_dir`, in the same direction as the agents.
+    /// A side with no repository files is left as it is.
+    fn copy_repos_beside(&self, user_dir: &str, direction: Direction) -> Result<()> {
+        let local = self.repo_dir()?;
+        let shared = teamfolder::repos_dir(user_dir);
+        match direction {
+            Direction::Push => {
+                if list_shared_repos(&local)?.is_empty() {
+                    return Ok(());
+                }
+                publish_repos(&local, &shared)
+            }
+            Direction::Pull => {
+                if list_shared_repos(&shared)?.is_empty() {
+                    return Ok(());
+                }
+                self.adopt_repos(&shared)
+            }
         }
     }
 

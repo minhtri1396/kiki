@@ -8,13 +8,48 @@ use crate::snapshot::Snapshot;
 pub(super) fn write(b: &mut String, agent: &agentdef::Agent, snap: &Snapshot, orchestrator: &str) {
     w!(b, "You are {} ({}).\n\n", agent.id, agent.title);
     write_launch_lead(b, snap);
-    w!(b, "Repository root: {}\n", snap.root);
-    w!(b, "{} worktree: {}\n", orchestrator, snap.worktree);
+    w!(b, "Folder root: {}\n", snap.root);
+    let folders = repository_folders(agent, snap);
+    if folders.len() > 1 {
+        w!(b, "{} worktrees:\n", orchestrator);
+        for (kind, folder) in &folders {
+            w!(b, "- {kind}: {folder}\n");
+        }
+    } else {
+        w!(b, "{} worktree: {}\n", orchestrator, snap.worktree);
+    }
     w!(b, "Setup file: {}\n", snap.setup_file);
     w!(b, "Workspace id: {}\n", snap.workspace_id);
-    b.push_str("\nThe setup file is .kiki/kiki.yaml next to the app. The app folder is the repository root. Its absolute path is the Setup file line above. Read that file in Step 0. It is the only setup file. The workspace id is workspace_id in that file. Do not invent values that are missing, and do not assume the workspace id is kiki. Folder paths and service names below are the saved setup.\n\n");
+    b.push_str("\nThe setup file is .kiki/kiki.yaml next to the app. The app folder is the Folder root line above. The setup file path is the Setup file line above. This is the only setup file. The workspace id is workspace_id in that file. Do not invent values that are missing, and do not assume the workspace id is kiki. Folder paths and service names below are the saved setup.\n\n");
+    write_where_started(b, orchestrator, folders.len() > 1);
+    b.push_str("When a repository lists services, those names are the Nx projects in that repository. Use a listed service when you choose a project and its guide file. A repository with no services line is not divided into services.\n\n");
+}
+
+/// One line per repository this agent uses: its kind and the saved folder.
+fn repository_folders(agent: &agentdef::Agent, snap: &Snapshot) -> Vec<(String, String)> {
+    agent
+        .repos
+        .iter()
+        .filter_map(|item| {
+            let kind = item.kind.trim();
+            if kind.is_empty() {
+                return None;
+            }
+            let saved = snap.repo(kind);
+            let folder = saved.folder.trim();
+            let folder = if folder.is_empty() { "(not set)" } else { folder };
+            Some((kind.to_string(), folder.to_string()))
+        })
+        .collect()
+}
+
+/// Where this process started, and which folders are the repositories for the launch.
+fn write_where_started(b: &mut String, orchestrator: &str, several: bool) {
+    if several {
+        w!(b, "Each repository has its own {} worktree, listed above. Run git and project commands in that repository's worktree. Do not share one worktree across repositories. Do not create, edit, commit, or run project commands in a repository that is not listed. A repository with no folder is not set up.\n\n", orchestrator);
+        return;
+    }
     w!(b, "You were started in the {} worktree. That folder is the repository for this launch. Run git and project commands in the repository folder from the setup file. Do not create, edit, commit, or run project commands in a repository that is not listed. A repository with no folder is not set up.\n\n", orchestrator);
-    b.push_str("Service names are the Nx project names in a code repository. Use them when you choose a project and its guide file. The document repository has a folder and no service names.\n\n");
 }
 
 /// Names the Agent Orchestration tool that started this agent.

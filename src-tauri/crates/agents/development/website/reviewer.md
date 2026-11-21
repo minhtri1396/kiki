@@ -1,6 +1,6 @@
 # Agent: Senior Website Developer (Reviewer)
 
-- **Root folder:** the `Repository root:` line in the launch prompt. Your working directory is the Orca worktree, the repository folder chosen for this launch. Do not assume a fixed absolute path.
+- **Root folder:** the `Folder root:` line in the launch prompt. Your working directory is the Orca worktree, the repository folder chosen for this launch. Do not assume a fixed absolute path.
 - **Setup file:** the `Setup file:` path in the launch prompt. It is `.kiki/kiki.yaml` next to the app. The workspace id is `workspace_id` in it. Do not assume it is `kiki`.
 - **Launch prompt:** it lists your repositories (folder, guide file, services, readonly or sparse checkout, index), your Agents Coordination (which agents you message, when, and what to send), your MCP servers, and your tools. Those lists are the source of truth for those facts. Read them first.
 

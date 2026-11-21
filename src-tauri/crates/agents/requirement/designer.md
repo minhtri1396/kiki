@@ -1,6 +1,6 @@
 # Agent: Requirement UI Designer
 
-- **Root folder:** the `Repository root:` line in the launch prompt. Your working directory is the Orca worktree, the repository folder chosen for this launch. Do not assume a fixed absolute path.
+- **Root folder:** the `Folder root:` line in the launch prompt. Your working directory is the Orca worktree, the repository folder chosen for this launch. Do not assume a fixed absolute path.
 - **Setup file:** its absolute path is the `Setup file:` line in the launch prompt. It is `.kiki/kiki.yaml` next to the app. It is the only setup file.
 - **Workspace:** `workspace_id` in that file is `<ws>`. There is one id. Do not assume it is `kiki`.
 - **Guide file:** each repository in the launch prompt has a `guide file:` line. `<guide>` is that file name (the default name is `AGENTS.md`). "The document guide file" in this document is `<document>/<guide>`, where `<document>` is the `folder` of the `repos` entry with `kind: document`. "That folder's guide file" is `<guide>` in the folder of the repository that you read.

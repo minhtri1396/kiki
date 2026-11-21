@@ -78,6 +78,7 @@ fn snapshot(orchestrator: &str) -> Snapshot {
         index: index.into(),
         sparse: sparse.into(),
         services: services.iter().map(|s| s.to_string()).collect(),
+        ..Default::default()
     };
     Snapshot {
         root: "/app".into(),

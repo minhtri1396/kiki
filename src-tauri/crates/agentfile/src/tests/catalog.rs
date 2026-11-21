@@ -40,7 +40,7 @@ fn ensure_creates_folder_and_agent_files() {
         "description:",
         "tell the user to run agent id requirement_designer",
         "id: document\n",
-        "business_requirement.md and product_requirement.md in this folder.",
+        "business_requirement.md and product_requirement.md in this folder, and only in the requirement folder the user names.",
         "# Agent: Requirement Document Writer",
     ] {
         assert!(text.contains(want), "missing {want:?} in\n{text}");

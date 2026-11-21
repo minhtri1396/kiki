@@ -23,7 +23,7 @@ pub use client::{Client, WorktreeFn};
 pub use launch::{launch_args, FeatureSpec, LaunchBuilder, LaunchSpec};
 pub use names::{feature_branch, feature_project_name, project_name, valid_branch_slug, valid_task_id, valid_ticket};
 pub use terminal::{terminal_handle, TerminalView};
-pub use transcript::{transcript, Ask};
+pub use transcript::{transcript, Ask, Question};
 pub use transport::{FnTransport, RuntimeFn, RuntimeTransport, SocketTransport};
 
 #[cfg(test)]

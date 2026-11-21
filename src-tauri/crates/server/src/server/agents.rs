@@ -1,4 +1,4 @@
-//! Agents: read, save, preview and launch one agent, and the launch history.
+//! Agents: read, create, save, delete, preview and launch one agent, and the launch history.
 
 use std::time::Duration;
 
@@ -27,8 +27,16 @@ impl Controller for AgentController {
                 &agent_json(&server.lookup_agent(req.path_value("id"))?),
             ))
         });
+        router.api("POST /api/agents", |server, req| {
+            server.create_agent(read_json(req)?)?;
+            server.state_reply()
+        });
         router.api("PUT /api/agents/{id}", |server, req| {
             server.save_agent(req.path_value("id"), read_json(req)?)?;
+            server.state_reply()
+        });
+        router.api("DELETE /api/agents/{id}", |server, req| {
+            server.delete_agent(req.path_value("id"))?;
             server.state_reply()
         });
         router.api("POST /api/agents/{id}/preview", |server, req| server.preview_agent(req));
@@ -44,17 +52,40 @@ impl Controller for AgentController {
 }
 
 impl Server {
-    /// Saves the agent file `id` from the edit-agent form.
+    /// Writes a new agent file. The id is `{snake_case(category)}_{snake_case(name)}`.
+    fn create_agent(&self, form: AgentForm) -> ApiResult<()> {
+        let dir = self.agent_dir().or_status(500)?;
+        let id = form.created_id();
+        if id.is_empty() {
+            return Err(ApiError::new(400, "enter a category and a name"));
+        }
+        let mut file = self.agent_file(form, &id)?;
+        file.category = agentfile::snake_case(&file.category);
+        agentfile::create(&dir, &file).map_err(agent_write_error)
+    }
+
+    /// Saves the agent file `id` from the agent form.
     fn save_agent(&self, id: &str, form: AgentForm) -> ApiResult<()> {
         let dir = self.agent_dir().or_status(500)?;
+        let file = self.agent_file(form, id)?;
+        agentfile::save(&dir, id, &file).map_err(agent_write_error)
+    }
+
+    /// Removes the agent file `id` and its mentions on other agents.
+    fn delete_agent(&self, id: &str) -> ApiResult<()> {
+        let dir = self.agent_dir().or_status(500)?;
+        agentfile::delete(&dir, id).map_err(|err| {
+            let status = if agentfile::is_not_found(&err) { 404 } else { 500 };
+            ApiError::from_anyhow(status, &err)
+        })
+    }
+
+    /// The agent file for a form, with the tool, model and collaborators checked.
+    fn agent_file(&self, form: AgentForm, id: &str) -> ApiResult<agentfile::File> {
         let tool = model_tool(&form.tool).or_status(400)?;
         let model = console::resolve_model(&self.model_catalog(), tool, form.model.trim()).or_status(400)?;
         let works_with = form.collaborators().or_status(400)?;
-        let next = form.into_file(id, model, works_with);
-        agentfile::save(&dir, id, &next).map_err(|err| {
-            let status = if agentfile::is_not_found(&err) { 404 } else { 400 };
-            ApiError::from_anyhow(status, &err)
-        })
+        Ok(form.into_file(id, model, works_with))
     }
 
     fn preview_agent(&self, req: &Request) -> ApiResult<Response> {
@@ -113,4 +144,10 @@ impl Server {
         })?;
         Ok(write_json(200, &json!({ "ok": true })))
     }
+}
+
+/// A failed agent write: missing is 404, and a rejected form is 400.
+fn agent_write_error(err: anyhow::Error) -> ApiError {
+    let status = if agentfile::is_not_found(&err) { 404 } else { 400 };
+    ApiError::from_anyhow(status, &err)
 }

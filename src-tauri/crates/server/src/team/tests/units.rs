@@ -61,6 +61,8 @@ mod legacy {
 fn shared(id: &str, services: &[&str], index: &str, sparse: &str) -> SharedRepo {
     SharedRepo {
         id: id.into(),
+        name: String::new(),
+        divided: false,
         services: services.iter().map(|s| s.to_string()).collect(),
         index: index.into(),
         sparse: sparse.into(),
@@ -120,6 +122,28 @@ fn canonical_text_differs_from_the_old_emitter_only_in_scalar_quoting() {
         legacy::canonical(&repo),
         "id: backend\nservices:\n    - \"my service\"\n    - \"-lead\"\nsparse: \"docs/my folder\"\n"
     );
+}
+
+#[test]
+fn a_different_display_name_changes_the_shared_hash() {
+    let mut local = shared("backend", &["api"], "codegraph", "");
+    local.name = "Backend".into();
+    let mut team = shared("backend", &["api"], "codegraph", "");
+    team.name = "Services".into();
+    assert_ne!(local.canonical(), team.canonical());
+    assert!(local.canonical().contains("name: Backend\n"), "{}", local.canonical());
+    let view = |repo: &SharedRepo| TeamRepoView {
+        id: repo.id.clone(),
+        name: repo.name.clone(),
+        hash: repo.canonical(),
+    };
+    assert!(!same_repo_views(&[view(&local)], &[view(&team)]));
+    let unnamed = shared("backend", &["api"], "codegraph", "");
+    assert_ne!(local.canonical(), unnamed.canonical());
+    let back = parse_shared_repo(local.canonical().as_bytes(), "backend.yaml")
+        .unwrap()
+        .unwrap();
+    assert_eq!(back, local);
 }
 
 #[test]
@@ -213,11 +237,8 @@ fn merging_keeps_checkout_folders_and_orders_extras_after_the_built_in_kinds() {
     ];
     let (merged, added) = merge_shared(&repos, files);
     let kinds: Vec<&str> = merged.iter().map(|r| r.kind.as_str()).collect();
-    assert_eq!(
-        kinds,
-        ["backend", "website", "mobile", "document", "alpha", "search", "zeta"]
-    );
-    assert_eq!(added, ["alpha", "zeta"]);
+    assert_eq!(kinds, ["backend", "document", "alpha", "search", "zeta"]);
+    assert_eq!(added, ["document", "alpha", "zeta"]);
     let by = |kind: &str| merged.iter().find(|r| r.kind == kind).unwrap().clone();
     assert_eq!(
         (
@@ -232,8 +253,11 @@ fn merging_keeps_checkout_folders_and_orders_extras_after_the_built_in_kinds() {
         ("/work/search", "docs")
     );
     assert!(by("document").services.is_empty());
+    assert_eq!(by("document").folder, "");
     assert_eq!(by("zeta").folder, "");
-    assert!(by("website").services.is_empty() && by("website").index.is_empty());
+    assert!(merged
+        .iter()
+        .all(|repo| repo.kind != "website" && repo.kind != "mobile"));
 }
 
 fn view(id: &str, hash: &str) -> TeamRepoView {

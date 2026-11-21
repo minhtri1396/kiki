@@ -93,7 +93,20 @@ struct Probe {
 
 impl Probe {
     fn run(&self) -> Reading {
-        let (out, run_err) = combined_output(&self.ctx, &self.bin, &self.args[1..], &self.abs);
+        let named = self.reading(&self.args[1..]);
+        if named.ready {
+            return named;
+        }
+        let active = self.reading(&["vault".to_string(), "info=path".to_string()]);
+        if active.ready {
+            return active;
+        }
+        named
+    }
+
+    /// One status command. `ready` is true only when the output names this folder.
+    fn reading(&self, args: &[String]) -> Reading {
+        let (out, run_err) = combined_output(&self.ctx, &self.bin, args, &self.abs);
         let text = clean_output(&out);
         let ready = self.exists && run_err.is_none() && path_mentioned(&text, &self.abs);
         Reading { text, run_err, ready }

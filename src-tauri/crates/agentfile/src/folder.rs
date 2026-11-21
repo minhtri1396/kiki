@@ -1,4 +1,4 @@
-//! Operations on an agent folder: resolve its path, list, find and save agent files, and rewrite repository ids.
+//! Operations on an agent folder: resolve its path, list, find, create, save and delete agent files, and rewrite repository ids.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
@@ -83,6 +83,63 @@ pub fn list(dir: &str) -> Result<Vec<File>> {
 pub fn find(dir: &str, id: &str) -> Result<Option<File>> {
     let files = list(dir)?;
     Ok(files.into_iter().find(|file| file.id == id))
+}
+
+/// Writes a new agent file. An id that is already stored is [`ErrExists`].
+pub fn create(dir: &str, next: &File) -> Result<()> {
+    let dir = checked_dir(dir)?;
+    let next = normalize_file(next)?;
+    if find(&dir, &next.id)?.is_some() {
+        return Err(ErrExists.into());
+    }
+    let dest = join(&[&dir, &next.category, &format!("{}.md", next.id)]);
+    match fs::metadata(&dest) {
+        Ok(info) if info.is_file() => return Err(ErrExists.into()),
+        Ok(_) => return Err(anyhow!("agent path is not a file")),
+        Err(e) if not_exist(&e) => {}
+        Err(e) => return Err(path_err("stat", &dest, &e)),
+    }
+    write_atomic(&dest, &serialize::format(&header_of(&next), &next.prompt))?;
+    Ok(())
+}
+
+/// Removes the agent file `id` and drops that id from other agents.
+/// A missing id is [`ErrNotFound`].
+pub fn delete(dir: &str, id: &str) -> Result<()> {
+    let dir = checked_dir(dir)?;
+    let id = id.trim();
+    if id.is_empty() {
+        return Err(ErrNotFound.into());
+    }
+    let Some(current) = find(&dir, id)? else {
+        return Err(ErrNotFound.into());
+    };
+    detach_collaborator(&dir, id)?;
+    fs::remove_file(&current.path).map_err(|e| path_err("remove", &current.path, &e))?;
+    remove_empty(&dir_of(&current.path), &dir);
+    Ok(())
+}
+
+/// Drops `id` from every other agent's collaborators before that agent file is removed.
+fn detach_collaborator(dir: &str, id: &str) -> Result<()> {
+    for file in list(dir)? {
+        if file.id == id || !file.works_with.iter().any(|peer| peer.id == id) {
+            continue;
+        }
+        let mut next = file.clone();
+        next.works_with.retain(|peer| peer.id != id);
+        let current_id = file.id.clone();
+        save(dir, &current_id, &next)?;
+    }
+    Ok(())
+}
+
+fn checked_dir(dir: &str) -> Result<String> {
+    let dir = clean(dir.trim());
+    if dir.is_empty() || !is_abs(&dir) {
+        return Err(anyhow!("agent path is not set"));
+    }
+    Ok(dir)
 }
 
 /// Writes one agent file. `current_id` is the id already stored on disk.
@@ -230,6 +287,43 @@ pub fn replace_repos<R: Replacements>(dir: &str, replacements: &R) -> Result<()>
             continue;
         }
         save(dir, &file.id.clone(), &file)?;
+    }
+    Ok(())
+}
+
+/// Removes repository ids from the agent files under `dir`.
+/// An agent that does not use one of those ids is left unchanged.
+/// An agent that would be left with no repository is an error, and nothing is written.
+pub fn forget_repos(dir: &str, kinds: &[&str]) -> Result<()> {
+    if kinds.is_empty() {
+        return Ok(());
+    }
+    let files = list(dir)?;
+    let mut blocked: Vec<String> = Vec::new();
+    let mut pending: Vec<File> = Vec::new();
+    for mut file in files {
+        let uses = file.repos.iter().any(|repo| kinds.contains(&repo.kind.as_str()));
+        if !uses {
+            continue;
+        }
+        file.repos.retain(|repo| !kinds.contains(&repo.kind.as_str()));
+        if file.repos.is_empty() {
+            let name = file.name.trim();
+            blocked.push(if name.is_empty() { file.id } else { name.to_string() });
+            continue;
+        }
+        pending.push(file);
+    }
+    if !blocked.is_empty() {
+        let label = if kinds.len() == 1 {
+            kinds[0]
+        } else {
+            "these repositories"
+        };
+        return Err(anyhow!("Edit these agents before deleting {label}."));
+    }
+    for file in &pending {
+        save(dir, &file.id.clone(), file)?;
     }
     Ok(())
 }

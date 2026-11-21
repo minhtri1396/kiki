@@ -123,6 +123,7 @@ fn run_updates_follow_the_phase_and_never_undo_a_completed_agent() {
     assert_eq!(working.agents[0].status, AgentStatus::Doing);
     assert_eq!(working.runs[0].ask_prompt, "", "a working agent has no question");
     assert!(working.runs[0].ask_options.is_empty());
+    assert!(working.runs[0].ask_questions.is_empty());
     db.record_task_run(&RunUpdate::new(&task.id, "backend_runner", "idle", RunPhase::Review))
         .unwrap();
     db.approve_agent(&task.id, "backend_runner").unwrap();
@@ -135,6 +136,36 @@ fn run_updates_follow_the_phase_and_never_undo_a_completed_agent() {
         "completed stays completed until a new start"
     );
     assert_eq!(after.column, Column::Done);
+}
+
+#[test]
+fn a_questions_block_round_trips_and_clears_when_the_agent_works() {
+    let (_dir, db) = open_task_store();
+    let task = started_task(&db, "pending");
+    let questions = vec![
+        AskQuestion {
+            prompt: "Ticket".into(),
+            detail: "The Jira key.".into(),
+            options: Vec::new(),
+            suggestion: "PROJ-12".into(),
+        },
+        AskQuestion {
+            prompt: "Scope".into(),
+            detail: "What should this cover?".into(),
+            options: vec!["Website only".into(), "Website and mobile".into()],
+            suggestion: "Website only".into(),
+        },
+    ];
+    let waiting = db
+        .record_task_run(&RunUpdate::new(&task.id, "backend_runner", "idle", RunPhase::Review).questions(&questions))
+        .unwrap();
+    assert_eq!(waiting.runs[0].ask_prompt, "");
+    assert!(waiting.runs[0].ask_options.is_empty());
+    assert_eq!(waiting.runs[0].ask_questions, questions);
+    let working = db
+        .record_task_run(&RunUpdate::new(&task.id, "backend_runner", "running", RunPhase::Doing))
+        .unwrap();
+    assert!(working.runs[0].ask_questions.is_empty());
 }
 
 #[test]

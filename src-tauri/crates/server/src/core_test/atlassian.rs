@@ -225,3 +225,101 @@ fn epic_note_matches_the_agent_board() {
         "missing epic was sent"
     );
 }
+
+#[derive(Debug)]
+struct Listed {
+    url: String,
+    user: String,
+    token: String,
+}
+
+/// Records the Jira and Confluence calls a list makes and answers with one board and one space.
+struct Listing {
+    seen: Mutex<Vec<Listed>>,
+}
+
+impl mcp::HttpTransport for Listing {
+    fn send(&self, _ctx: &Ctx, request: &mcp::HttpRequest<'_>) -> anyhow::Result<mcp::HttpResponse> {
+        self.seen.lock().unwrap().push(Listed {
+            url: request.url.to_string(),
+            user: request.user.to_string(),
+            token: request.token.to_string(),
+        });
+        let body: &[u8] = if request.url.contains("/wiki/") {
+            br#"{"results":[{"id":"1","key":"ENG","name":"Engineering"}]}"#
+        } else {
+            br#"{"values":[{"id":12,"name":"KIKI"}]}"#
+        };
+        Ok(mcp::HttpResponse {
+            status: 200,
+            body: body.to_vec(),
+        })
+    }
+}
+
+fn listing_server() -> (TestApp, Arc<Listing>) {
+    let listing = Arc::new(Listing {
+        seen: Mutex::new(Vec::new()),
+    });
+    let mut app = new_test_server();
+    app.atlassian = mcp::AtlassianApi::new(listing.clone());
+    (app, listing)
+}
+
+#[test]
+fn board_and_space_lists_use_the_form_before_save() {
+    let (app, listing) = listing_server();
+    let (status, out) = call(&app, "GET", "/api/atlassian/jira/boards", "");
+    assert!(
+        status == 400 && out.contains("turn on Jira"),
+        "status = {status} body = {out}"
+    );
+
+    let jira = r#"{"enabled":true,"username":"a@acme.co","apiToken":"typed-token","jira":{"enabled":true,"url":"https://typed.example"},"confluence":{"enabled":true,"url":"https://typed.example/wiki"}}"#;
+    let (status, out) = call(&app, "POST", "/api/atlassian/jira/boards?q=KI", jira);
+    assert!(status == 200 && out.contains("KIKI"), "status = {status} body = {out}");
+    let (status, out) = call(&app, "POST", "/api/atlassian/confluence/spaces?q=eng", jira);
+    assert!(status == 200 && out.contains("ENG"), "status = {status} body = {out}");
+    let seen = listing.seen.lock().unwrap();
+    assert!(
+        seen.len() == 2
+            && seen[0].user == "a@acme.co"
+            && seen[0].token == "typed-token"
+            && seen[0].url.starts_with("https://typed.example/rest/agile/1.0/board")
+            && seen[0].url.contains("name=KI")
+            && seen[1].url.starts_with("https://typed.example/wiki/api/v2/spaces"),
+        "seen = {seen:?}"
+    );
+    drop(seen);
+    let saved = app.store.atlassian().unwrap();
+    assert!(
+        saved.api_token.is_empty() && saved.jira.url.is_empty(),
+        "saved = {saved:?}"
+    );
+
+    app.store.save_atlassian(&atlassian_jira_only()).unwrap();
+    let moved = r#"{"enabled":true,"username":"a@acme.co","jira":{"enabled":true,"url":"https://other.example"}}"#;
+    let (status, out) = call(&app, "POST", "/api/atlassian/jira/boards", moved);
+    assert!(status == 200 && out.contains("KIKI"), "status = {status} body = {out}");
+    let seen = listing.seen.lock().unwrap();
+    assert!(
+        seen[2].token == "secret-jira-token" && seen[2].url.starts_with("https://other.example/rest/agile/1.0/board"),
+        "seen = {seen:?}"
+    );
+    drop(seen);
+    assert_eq!(app.store.atlassian().unwrap().jira.url, "https://acme.atlassian.net");
+
+    let (status, out) = call(&app, "GET", "/api/atlassian/jira/boards", "");
+    assert!(status == 200 && out.contains("KIKI"), "status = {status} body = {out}");
+    let seen = listing.seen.lock().unwrap();
+    assert!(
+        seen[3].token == "secret-jira-token"
+            && seen[3]
+                .url
+                .starts_with("https://acme.atlassian.net/rest/agile/1.0/board"),
+        "seen = {seen:?}"
+    );
+
+    let (status, out) = call(&app, "POST", "/api/atlassian/jira/boards", "{");
+    assert_eq!((status, out.trim()), (400, r#"{"error":"invalid data"}"#));
+}

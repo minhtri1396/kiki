@@ -133,26 +133,45 @@ impl<'a> Launcher<'a> {
     /// first puts the project in the group folder and creates the task worktree from that repo.
     pub(crate) fn launch(&self, ctx: &Ctx, spec: &LaunchSpec) -> Result<String> {
         self.backend.cli.ensure_running(ctx)?;
-        Projects::new(self.backend.clone()).ensure(ctx, &spec.root, &spec.project)?;
         let folder = match &spec.feature {
-            None => spec.root.clone(),
-            Some(feature) => self.task_worktree(ctx, spec, feature)?,
+            None => {
+                Projects::new(self.backend.clone()).ensure(ctx, &spec.root, &spec.project)?;
+                spec.root.clone()
+            }
+            Some(feature) => self.checkout(
+                ctx,
+                &spec.root,
+                &spec.project,
+                &feature.group,
+                &feature.worktree,
+                &feature.branch,
+            )?,
         };
         self.client.note_worktree(&folder);
         self.start_agent(ctx, spec, &folder)
     }
 
-    /// The folder of the task worktree, created from the repo and checked to belong to it.
-    fn task_worktree(&self, ctx: &Ctx, spec: &LaunchSpec, feature: &FeatureSpec) -> Result<String> {
-        Groups::new(self.backend.clone()).ensure(ctx, &feature.group, &spec.project)?;
-        let checkout = Worktrees::new(self.backend.clone()).ensure(
-            ctx,
-            &spec.root,
-            &spec.project,
-            &feature.worktree,
-            &feature.branch,
-        )?;
-        same_git_repo(&spec.root, &checkout)?;
+    /// Opens one repository and returns the task worktree created from that git repo.
+    pub(crate) fn ensure_task_worktree(
+        &self,
+        ctx: &Ctx,
+        root: &str,
+        project: &str,
+        group: &str,
+        name: &str,
+        branch: &str,
+    ) -> Result<String> {
+        self.backend.cli.ensure_running(ctx)?;
+        self.checkout(ctx, root, project, group, name, branch)
+    }
+
+    /// The folder of one task worktree: the project is opened, placed in `group`, and the worktree is created
+    /// from `root` on `branch`.
+    fn checkout(&self, ctx: &Ctx, root: &str, project: &str, group: &str, name: &str, branch: &str) -> Result<String> {
+        Projects::new(self.backend.clone()).ensure(ctx, root, project)?;
+        Groups::new(self.backend.clone()).ensure(ctx, group, project)?;
+        let checkout = Worktrees::new(self.backend.clone()).ensure(ctx, root, project, name, branch)?;
+        same_git_repo(root, &checkout)?;
         Ok(checkout)
     }
 

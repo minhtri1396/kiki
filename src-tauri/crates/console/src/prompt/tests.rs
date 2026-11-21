@@ -100,26 +100,28 @@ fn prompt_names_collaborators_by_id() {
             "KIKI started you with `orca agent launch`.",
             "Orca worktree: ",
             "You were started in the Orca worktree.",
-            "Your agent id is requirement_document.",
+            "Your agent id is `requirement_document`.",
             "- document",
             "Work in this repository:",
             "Write the requirement files in this folder.",
-            "- agent id: requirement_designer",
+            "### requirement_designer",
             "When a condition is met, send that content to the agent through Orca",
-            "Message 1 to requirement_designer:",
-            "Send when:\n      The requirement files are ready.",
+            "#### Message 1 to requirement_designer",
+            "**Send when**\n\nThe requirement files are ready.",
             "Hand over the requirement folder.",
-            "Report back: yes. In this message, ask requirement_designer to report back to you, agent id requirement_document, when it has finished the work.",
-            "The report from requirement_designer must contain:\n      The design path.\n      Open questions.",
-            "Loop: this exchange can go back and forth between you and requirement_designer.",
+            "**Report back: yes**",
+            "- In this message, ask requirement_designer to report back to you, agent id requirement_document, when it has finished the work.",
+            "- Use Orca for that report.",
+            "**The report from requirement_designer must contain:**\n\nThe design path.\n\nOpen questions.",
+            "This exchange can go back and forth between you and requirement_designer.",
             "Allow at most 3 loops.",
             "when the Send when condition of message 1 is met again after the report from requirement_designer",
             "\"loop 1 of 3\"",
             "After loop 3, do not send this message again",
-            "Message 2 to requirement_designer:",
-            "Send when: (no condition set)",
+            "#### Message 2 to requirement_designer",
+            "**Send when:** (no condition set)",
             "Say the folder is blocked.",
-            "Report back: no. Do not ask requirement_designer to report back.",
+            "**Report back: no.** Do not ask requirement_designer to report back.",
             "Wait for design.html.",
             "MCP servers for this agent:",
             "- Atlassian - Jira",
@@ -140,7 +142,7 @@ fn prompt_names_collaborators_by_id() {
         ],
     );
     assert!(
-        text.matches("Loop: this exchange").count() == 1 && text.matches("must contain:").count() == 1,
+        text.matches("**Loop**").count() == 1 && text.matches("must contain:").count() == 1,
         "a message without a loop or a reply got one:\n{text}"
     );
     assert!(
@@ -275,6 +277,41 @@ fn prompt_omits_index_until_one_is_saved() {
     assert!(
         !text.contains("### backend — CodeGraph") && !text.contains("codegraph explore"),
         "backend has no saved index and should be omitted:\n{text}"
+    );
+}
+
+#[test]
+fn prompt_names_every_repository_folder() {
+    let agent = agentdef::Agent {
+        id: "requirement_planner".into(),
+        title: "Planner".into(),
+        repos: vec![repo_of("document"), repo_of("backend"), repo_of("website")],
+        ..Default::default()
+    };
+    let snap = Snapshot {
+        root: "/app".into(),
+        worktree: "/app/docs".into(),
+        repos: vec![
+            crepo("document", "/app/docs"),
+            crepo("backend", "/app/backend"),
+            crepo("website", ""),
+        ],
+        ..Default::default()
+    };
+    let text = prompt(&agent, "Body\n", &snap, "", &[]);
+    must_contain(
+        &text,
+        &[
+            "Orca worktrees:\n- document: /app/docs\n- backend: /app/backend\n- website: (not set)",
+            "Each repository has its own Orca worktree, listed above.",
+            "Do not share one worktree across repositories.",
+            "- document\n  folder: /app/docs",
+            "- backend\n  folder: /app/backend",
+        ],
+    );
+    assert!(
+        !text.contains("Orca worktree: /app/docs") && !text.contains("That folder is the repository for this launch."),
+        "a launch with several repositories still names one folder as the worktree:\n{text}"
     );
 }
 
@@ -440,10 +477,7 @@ fn builder_sections_append_in_the_order_they_are_called() {
         identity.starts_with("You are planner (Planner).\n\nKIKI started you with `orca agent launch`."),
         "{identity}"
     );
-    assert!(
-        identity.contains("Repository root: /app\nOrca worktree: \n"),
-        "{identity}"
-    );
+    assert!(identity.contains("Folder root: /app\nOrca worktree: \n"), "{identity}");
     let document = PromptBuilder::new(&agent, &snap)
         .agent_document("Body")
         .user_message(" Hi ")
@@ -481,4 +515,130 @@ fn builder_startup_notice_covers_every_case() {
     assert!(notice(std::slice::from_ref(&asker), "").starts_with("WAIT FOR A REQUEST."));
     assert!(!notice(std::slice::from_ref(&asker), "").contains("The user message at the end"));
     assert!(notice(&[asker], "x").contains("The user message at the end of this prompt is the task."));
+}
+
+#[test]
+fn prompt_asks_for_required_input_the_user_left_out() {
+    let agent = agentdef::Agent {
+        id: "requirement_document".into(),
+        title: "Document Writer".into(),
+        ..Default::default()
+    };
+    let snap = Snapshot {
+        root: "/app".into(),
+        ..Default::default()
+    };
+    let body = "\
+# Agent: Document Writer
+
+## Input
+
+- **Ticket**
+  The Jira key.
+  Required:
+
+- **Scope**
+  What the task covers.
+  Required:
+
+- **Status**
+  Starting status.
+  Default: draft
+";
+    let text = prompt(&agent, body, &snap, "Add a cart.", &[]);
+    must_contain(
+        &text,
+        &[
+            "Required input. These inputs are required: Ticket, Scope.",
+            "ask the user for it before you continue. Do not guess.",
+        ],
+    );
+    assert!(
+        !text.contains("Status."),
+        "optional input was treated as required:\n{text}"
+    );
+    let plain = prompt(&agent, "Body\n", &snap, "Add a cart.", &[]);
+    assert!(
+        !plain.contains("Required input."),
+        "plain prompt added a required section:\n{plain}"
+    );
+    must_contain(
+        &plain,
+        &[
+            "Questions for the user.",
+            "A: text",
+            "A: choice",
+            "S: PROJ-12",
+            "S: Website only",
+            "===== QUESTIONS =====",
+            "===== END QUESTIONS =====",
+            "Name: value",
+        ],
+    );
+}
+
+#[test]
+fn the_start_prompt_writes_the_app_root_into_the_agent_document() {
+    let agent = agentdef::Agent {
+        id: "requirement_document".into(),
+        file: "requirement_document.md".into(),
+        ..Default::default()
+    };
+    let snap = Snapshot {
+        root: "/Users/me/kiki".into(),
+        setup_file: "/Users/me/kiki/.kiki/kiki.yaml".into(),
+        workspace_id: "studio".into(),
+        ..Default::default()
+    };
+    let body = "\
+- **Root folder:** the `Folder root:` line in the launch prompt. Resolve `.kiki/agents` from that folder. Your working directory is the Orca worktree, the repository folder chosen for this launch. Do not assume a fixed absolute path.
+- **Setup file:** its absolute path is the `Setup file:` line in the launch prompt. That file is `.kiki/kiki.yaml` next to the app. The app folder is the repository root.
+- **Workspace:** `workspace_id` in that file is `<ws>`. There is one id. Do not assume it is `kiki`.
+";
+    let text = PromptBuilder::new(&agent, &snap).agent_document(body).build();
+    must_contain(
+        &text,
+        &[
+            "- **Root folder:** /Users/me/kiki. Resolve `.kiki/agents` from that folder.",
+            "- **Setup file:** /Users/me/kiki/.kiki/kiki.yaml. That file is `.kiki/kiki.yaml` next to the app. The app folder is the repository root.",
+            "`workspace_id` in that file is `studio`. There is one id. Do not assume it is `kiki`.",
+        ],
+    );
+    assert!(
+        !text.contains("Do not assume a fixed absolute path") && !text.contains("<ws>"),
+        "text = {text}"
+    );
+}
+
+#[test]
+fn prompt_lists_services_only_when_the_repository_is_divided() {
+    let agent = agentdef::Agent {
+        id: "backend_runner".into(),
+        title: "Backend Runner".into(),
+        repos: vec![repo_of("backend"), repo_of("website")],
+        ..Default::default()
+    };
+    let snap = Snapshot {
+        root: "/app".into(),
+        repos: vec![
+            Repo {
+                kind: "backend".into(),
+                folder: "/app/backend".into(),
+                divided: true,
+                ..Default::default()
+            },
+            crepo("website", "/app/website"),
+        ],
+        ..Default::default()
+    };
+    let text = prompt(&agent, "Body\n", &snap, "", &[]);
+    must_contain(
+        &text,
+        &[
+            "services: (none)",
+            "This repository is divided into Nx services. None are selected, so do not use a service.",
+            "A repository with no services line is not divided into services.",
+        ],
+    );
+    assert_eq!(text.matches("services:").count(), 1, "website listed services:\n{text}");
 }

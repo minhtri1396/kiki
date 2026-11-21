@@ -5,6 +5,7 @@ use crate::*;
 use std::path::Path;
 
 mod catalog;
+mod lifecycle;
 mod parse;
 mod save;
 

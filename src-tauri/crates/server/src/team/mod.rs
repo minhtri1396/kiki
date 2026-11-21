@@ -2,13 +2,15 @@
 //!
 //! Pattern: Controller + Facade. [`TeamController`] maps requests to the service methods on `Server`
 //! (`service`); `status` answers the state payload, `views` and `diff` compare trees, `import` pulls,
-//! `shared_repo` is the shared repository file format, `picker` is the injected folder dialog.
+//! `selected` copies the agents the user ticked, `shared_repo` is the shared repository file format,
+//! `picker` is the injected folder dialog.
 
 mod controller;
 mod diff;
 mod files;
 mod import;
 mod picker;
+mod selected;
 mod service;
 mod shared_repo;
 mod status;

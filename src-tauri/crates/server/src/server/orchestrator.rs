@@ -61,7 +61,24 @@ impl Server {
         let binder = self.guard_binder();
         let agent_id = prep.agent.id.clone();
         let readonly = repo_readonly(&prep.agent.repos, &prep.kind);
-        let services = prep.snap.repo(&prep.kind).services;
+        let services = prep.snap.repo(&prep.kind).services.clone();
+        // Each other repository is its own git repo, so it gets its own task worktree before the agent starts.
+        if !prep.task_id.is_empty() {
+            for repo in task_repos(prep)? {
+                if repo.kind == prep.kind {
+                    continue;
+                }
+                let checkout = client.ensure_task_worktree(
+                    ctx,
+                    &repo.folder,
+                    &repo.project,
+                    &prep.group_id,
+                    &prep.task_id,
+                    &repo.branch,
+                )?;
+                binder.bind(&prep.agent.id, &checkout, repo.readonly, &repo.services);
+            }
+        }
         client.on_worktree = Some(std::sync::Arc::new(move |path: &str| {
             binder.bind(&agent_id, path, readonly, &services);
         }));
@@ -97,13 +114,72 @@ fn preview_orca(prep: &LaunchPrep) -> Result<(String, String)> {
         return Err(anyhow!("Choose a group before starting this task."));
     }
     let project = orca::feature_project_name(&prep.snap.workspace_id, &prep.group_id, &prep.kind)?;
-    let command = format!(
+    let mut command = format!(
         "folder {}\n{}\nworktree {}",
         prep.group_id,
         orca_command(prep, &project),
         prep.task_id
     );
+    for kind in other_repo_kinds(prep) {
+        command.push_str(&format!("\nworktree {} {kind}", prep.task_id));
+    }
     Ok((command, project))
+}
+
+/// Repository kinds on this agent, other than the one the agent process starts in, that have a folder.
+fn other_repo_kinds(prep: &LaunchPrep) -> Vec<String> {
+    prep.agent
+        .repos
+        .iter()
+        .filter_map(|repo| {
+            let kind = repo.kind.trim();
+            if kind.is_empty() || kind == prep.kind {
+                return None;
+            }
+            let saved = prep.snap.repo(kind);
+            let folder = saved.folder.trim();
+            if folder.is_empty() {
+                None
+            } else {
+                Some(kind.to_string())
+            }
+        })
+        .collect()
+}
+
+/// One repository that gets its own task worktree. The agent still starts in `prep.kind`.
+struct TaskRepo {
+    kind: String,
+    folder: String,
+    project: String,
+    branch: String,
+    readonly: bool,
+    services: Vec<String>,
+}
+
+/// Every repository on the agent that has a folder. Each one is a separate git checkout.
+fn task_repos(prep: &LaunchPrep) -> Result<Vec<TaskRepo>> {
+    let mut out = Vec::new();
+    for repo in &prep.agent.repos {
+        let kind = repo.kind.trim();
+        if kind.is_empty() {
+            continue;
+        }
+        let saved = prep.snap.repo(kind);
+        let folder = saved.folder.trim();
+        if folder.is_empty() {
+            continue;
+        }
+        out.push(TaskRepo {
+            kind: kind.to_string(),
+            folder: folder.to_string(),
+            project: orca::feature_project_name(&prep.snap.workspace_id, &prep.group_id, kind)?,
+            branch: orca::feature_branch(&prep.ticket, &prep.slug, kind)?,
+            readonly: repo.readonly,
+            services: saved.services.clone(),
+        });
+    }
+    Ok(out)
 }
 
 /// The `orca agent launch` command as shown in the preview; the prompt is replaced by `<prompt>`.

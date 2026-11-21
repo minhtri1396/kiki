@@ -10,14 +10,27 @@ pub fn known(kind: &str) -> bool {
     KINDS.contains(&kind)
 }
 
-/// Reports whether `kind` can be stored as a repository id (`^[a-z][a-z0-9_]*$`).
+/// Reports whether `kind` can be stored as a repository id.
+/// An id is lowercase. Words are separated by a single `-` or `_` (`automation-backend`).
 pub fn repo_id(kind: &str) -> bool {
     let mut chars = kind.chars();
     match chars.next() {
         Some(c) if c.is_ascii_lowercase() => {}
         _ => return false,
     }
-    chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    let mut separator = false;
+    for c in chars {
+        if c.is_ascii_lowercase() || c.is_ascii_digit() {
+            separator = false;
+            continue;
+        }
+        if (c == '-' || c == '_') && !separator {
+            separator = true;
+            continue;
+        }
+        return false;
+    }
+    !separator
 }
 
 /// `codegraph init <folder>`.
@@ -44,7 +57,9 @@ mod tests {
     #[test]
     fn helpers() {
         assert!(known("backend") && !known("docs"));
-        assert!(repo_id("a_b1") && !repo_id("1a") && !repo_id("") && !repo_id("aB"));
+        assert!(repo_id("a_b1") && repo_id("automation-backend") && repo_id("a"));
+        assert!(!repo_id("1a") && !repo_id("") && !repo_id("_a") && !repo_id("aB"));
+        assert!(!repo_id("Automation") && !repo_id("a--b") && !repo_id("a-"));
         assert_eq!(folder("/r", "document"), "/r/docs");
         assert_eq!(folder("/r/", "backend"), "/r/backend");
         assert_eq!(codegraph_init("/x"), vec!["codegraph", "init", "/x"]);

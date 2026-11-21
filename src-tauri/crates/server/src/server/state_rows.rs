@@ -13,13 +13,21 @@ pub(crate) fn repo_rows(snap: &console::Snapshot) -> Vec<Value> {
     snap.repos
         .iter()
         .map(|repo| {
-            let available = console::scan_services(&repo.folder).unwrap_or_default();
+            let divided = repo.uses_services();
+            let services = if divided { repo.services.clone() } else { Vec::new() };
+            let available = if divided {
+                console::scan_services(&repo.folder).unwrap_or_default()
+            } else {
+                Vec::new()
+            };
             let exists = !repo.folder.is_empty() && is_dir(&repo.folder);
             let empty = !repo.folder.is_empty() && crate::clone::folder_empty(&repo.folder).unwrap_or(false);
             json!({
                 "kind": repo.kind,
+                "name": repo.title(),
                 "folder": repo.folder,
-                "services": repo.services,
+                "divided": divided,
+                "services": services,
                 "available": available,
                 "exists": exists,
                 "empty": empty,

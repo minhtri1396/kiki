@@ -1,8 +1,9 @@
 //! The prompt sent to an agent when it starts.
 //!
 //! Pattern: Builder. `PromptBuilder` appends one section at a time (identity, repositories, indexes,
-//! collaborators, MCP servers, tools, waiting notice, agent document, user message). Each section is one small
-//! function in its own module, so a change to one section touches one file.
+//! collaborators, MCP servers, tools, waiting notice, agent document, user message, required input,
+//! questions).
+//! Each section is one small function in its own module, so a change to one section touches one file.
 
 macro_rules! w {
     ($b:expr, $($arg:tt)*) => {{
@@ -14,7 +15,10 @@ macro_rules! w {
 mod identity;
 mod indexes;
 mod peers;
+mod places;
+mod questions;
 mod repos;
+mod required;
 mod uses;
 mod waiting;
 
@@ -123,12 +127,25 @@ impl<'a> PromptBuilder<'a> {
 
     /// The agent document, fenced.
     pub fn agent_document(mut self, body: &str) -> Self {
+        let body = places::fill(body, &self.snap);
         w!(self.text, "===== AGENT DOCUMENT ({}) =====\n", self.agent.file);
-        self.text.push_str(body);
+        self.text.push_str(&body);
         if !body.ends_with('\n') {
             self.text.push('\n');
         }
         self.text.push_str("===== END AGENT DOCUMENT =====\n");
+        self
+    }
+
+    /// Tells the agent to ask for each required input the user left out of the task.
+    pub fn required_input(mut self, body: &str) -> Self {
+        required::write(&mut self.text, body);
+        self
+    }
+
+    /// Tells the agent how to send questions the app can show to the user.
+    pub fn questions(mut self) -> Self {
+        questions::write(&mut self.text);
         self
     }
 
@@ -175,5 +192,7 @@ pub fn prompt_waiting(
         .startup_notice(requesters, note)
         .agent_document(body)
         .user_message(note)
+        .required_input(body)
+        .questions()
         .build()
 }

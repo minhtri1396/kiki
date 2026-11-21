@@ -97,27 +97,45 @@ If it is not set up, do not create the vault. Ask the user once: Read files (ope
 
 fn codegraph_index(kind: &str, repo: &Repo, root: &str, guide: &str) -> String {
     let path = folder_path(&repo.folder);
-    let mut services = "(none)".to_string();
-    if !repo.services.is_empty() {
-        services = repo.services.join(", ");
-    }
-    let mut read = format!(
-        "The folder is not set. Do not invent a path. Read this repository's {guide}, and each service's {guide}, once the folder is set."
-    );
+    let divided = repo.uses_services();
+    let services = if repo.services.is_empty() {
+        "(none)".to_string()
+    } else {
+        repo.services.join(", ")
+    };
+    let services_line = if divided {
+        format!("Services: {services}\n\n")
+    } else {
+        String::new()
+    };
+    let mut read = if divided {
+        format!(
+            "The folder is not set. Do not invent a path. Read this repository's {guide}, and each service's {guide}, once the folder is set."
+        )
+    } else {
+        format!("The folder is not set. Do not invent a path. Read this repository's {guide} once the folder is set.")
+    };
     if path != NOT_SET {
-        read = format!(
-            "Before you read code, read {path}/{guide}. For each service this work touches, also read {path}/<project root>/{guide}."
-        );
+        read = if divided {
+            format!(
+                "Before you read code, read {path}/{guide}. For each service this work touches, also read {path}/<project root>/{guide}."
+            )
+        } else {
+            format!("Before you read code, read {path}/{guide}.")
+        };
     }
+    let service_rules = if divided {
+        " A service is an Nx project from the services list. Find its root in project.json (`npx nx show projects`, run in the folder). If the project root is \".\", that file is the folder file; read it once. The folder file covers the repository. The service file covers the files in that service. When they conflict inside a service, follow the service file."
+    } else {
+        ""
+    };
     let index_file = index_file_line(root, kind);
     format!(
         r##"### {kind} — CodeGraph
 
 Folder: {path}
 
-{index_file}Services: {services}
-
-{read} A service is an Nx project from the services list. Find its root in project.json (`npx nx show projects`, run in the folder). If the project root is ".", that file is the folder file; read it once. The folder file covers the repository. The service file covers the files in that service. When they conflict inside a service, follow the service file. If {guide} is missing, ask the user once and stop. Do not invent the structure or the rules.
+{index_file}{services_line}{read}{service_rules} If {guide} is missing, ask the user once and stop. Do not invent the structure or the rules.
 
 CodeGraph is set up when {path}/.codegraph exists and `codegraph status {path}` runs without a "not initialized" error. Do not run `codegraph init` yourself, and do not install CodeGraph. If it is not set up, ask the user once: Read files (search the exact symbol or path and read only the files you need, and say this index was not used) or Wait for setup (stop until the user sets up CodeGraph on this folder in KIKI). Do not choose for the user.
 

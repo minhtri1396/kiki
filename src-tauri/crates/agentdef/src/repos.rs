@@ -1,6 +1,8 @@
 pub(crate) const DOCUMENT_WRITER_REPO: &str = r#"This is the only repository you create and edit files in. In the agent document, docs/ means this folder. If the folder is missing or empty, stop and report. Do not create or edit files in the backend, website, or mobile repositories.
-The requirement rules are this folder's AGENTS.md. Do not read an AGENTS.md from the repository root.
-You write business_requirement.md and product_requirement.md in this folder."#;
+The requirement rules are the guide file named for this repository. Do not read a guide file from the repository root.
+You write business_requirement.md and product_requirement.md in this folder, and only in the requirement folder the user names. Do not edit other requirement folders, docs/ui-system-design/, or any other file. If another requirement must change, report it. Do not change it.
+Saving those files is the update. Do not copy them into another folder, and do not run a sync or index command.
+Do not commit, push, or open a pull request unless the user asks."#;
 
 pub(crate) const DESIGNER_REPO: &str = r#"This is the only repository you create and edit files in. In the agent document, docs/ means this folder. If the folder is missing or empty, stop and report. Do not create or edit files in the backend, website, or mobile repositories.
 The requirement folder the user names is a path inside this repository. The requirement rules are this folder's AGENTS.md. Do not read an AGENTS.md from the repository root.

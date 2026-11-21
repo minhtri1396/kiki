@@ -123,19 +123,12 @@ impl Use {
 /// The most round trips a message may allow.
 pub const MAX_HANDOFF_LOOPS: i64 = 20;
 
-/// Reports a message that has no condition or nothing to send. The
-/// agent editor requires both. It is not part of `save`, so an older file with a note
-/// and no condition can still be saved by the rest of KIKI.
+/// Reports a message that has nothing to send. A message with no condition is
+/// kept: agents the app creates store the coordination note that way, and the
+/// launch prompt sends that note at the point the text describes.
 pub fn check_handoffs(list: &[Collaborator]) -> Result<()> {
     for peer in list {
         for (i, item) in peer.handoffs.iter().enumerate() {
-            if item.when.trim().is_empty() {
-                return Err(anyhow!(
-                    "enter Send when for message {} to {}, or remove the message",
-                    i + 1,
-                    peer.id.trim()
-                ));
-            }
             if item.send.trim().is_empty() {
                 return Err(anyhow!(
                     "enter What to send for message {} to {}, or remove the message",

@@ -33,8 +33,20 @@ impl Observation {
     }
 
     fn has_question(&self) -> bool {
-        !self.ask.prompt.trim().is_empty()
+        !self.ask.prompt.trim().is_empty() || !self.ask.questions.is_empty()
     }
+}
+
+fn stored_questions(ask: &orca::Ask) -> Vec<store::AskQuestion> {
+    ask.questions
+        .iter()
+        .map(|question| store::AskQuestion {
+            prompt: question.prompt.clone(),
+            detail: question.detail.clone(),
+            options: question.options.clone(),
+            suggestion: question.suggestion.clone(),
+        })
+        .collect()
 }
 
 impl Server {
@@ -69,20 +81,25 @@ impl Server {
                 .terminal_idle(&ctx.with_timeout(READ_TIMEOUT), &run.terminal)
                 .unwrap_or(false);
         let seen = Observation::of(&view, idle, run);
-        let (phase, prompt, options) = match seen.status.phase(seen.has_question()) {
-            Some(phase) => (phase, seen.ask.prompt, seen.ask.options),
+        let asked = stored_questions(&seen.ask);
+        let (phase, prompt, options, questions) = match seen.status.phase(seen.has_question()) {
+            Some(phase) => (phase, seen.ask.prompt.clone(), seen.ask.options.clone(), asked),
             None => self.current_phase(run)?,
         };
         let update = store::RunUpdate::new(&run.task_id, &run.agent_id, seen.status.as_str(), phase)
             .log(&seen.text)
-            .ask(&prompt, &options);
+            .ask(&prompt, &options)
+            .questions(&questions);
         self.store.record_task_run(&update).ok()
     }
 
     /// The phase and question that leave the agent as it is, for a terminal whose status Orca could not tell.
     /// The store always takes a phase: an agent waiting for review (or completed) keeps its question, any
     /// other agent is working.
-    fn current_phase(&self, run: &store::TaskRun) -> Option<(store::RunPhase, String, Vec<String>)> {
+    fn current_phase(
+        &self,
+        run: &store::TaskRun,
+    ) -> Option<(store::RunPhase, String, Vec<String>, Vec<store::AskQuestion>)> {
         let task = self.store.task(&run.task_id).ok()?;
         let waiting = task
             .agents
@@ -90,13 +107,14 @@ impl Server {
             .find(|agent| agent.agent_id == run.agent_id)
             .is_some_and(|agent| matches!(agent.status, store::AgentStatus::Review | store::AgentStatus::Completed));
         if !waiting {
-            return Some((store::RunPhase::Doing, String::new(), Vec::new()));
+            return Some((store::RunPhase::Doing, String::new(), Vec::new(), Vec::new()));
         }
         let current = task.runs.iter().find(|stored| stored.agent_id == run.agent_id)?;
         Some((
             store::RunPhase::Review,
             current.ask_prompt.clone(),
             current.ask_options.clone(),
+            current.ask_questions.clone(),
         ))
     }
 }

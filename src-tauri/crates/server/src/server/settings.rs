@@ -42,6 +42,13 @@ impl Controller for SettingsController {
             }
             Ok(write_json(200, &json!({ "path": dir })))
         });
+        router.api("POST /api/repos", |server, req| server.create_repo(read_json(req)?));
+        router.api("PUT /api/repos/{kind}", |server, req| {
+            server.rename_repo(req.path_value("kind"), read_json(req)?)
+        });
+        router.api("DELETE /api/repos/{kind}", |server, req| {
+            server.delete_repo(req.path_value("kind"))
+        });
         router.api("PUT /api/repos/{kind}/folder", |server, req| {
             #[derive(Deserialize, Default)]
             #[serde(default)]

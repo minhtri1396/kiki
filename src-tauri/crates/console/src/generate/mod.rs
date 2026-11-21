@@ -24,7 +24,7 @@ use crate::diff::{text_diff, DiffLine};
 use crate::host::{CliHost, CommandRun, SystemHost};
 use crate::text::{one_line, truncate_bytes};
 
-pub use rewrite::rewrite_prompt;
+pub use rewrite::{rewrite_prompt, RewriteContext};
 pub use strategy::{format_generate_command, generate_args, preview_command};
 
 use strategy::add_workspace;
@@ -63,6 +63,7 @@ pub struct GenerateRequest<'a> {
     pub kind: &'a str,
     pub subject: &'a str,
     pub text: &'a str,
+    pub context: RewriteContext<'a>,
 }
 
 /// Where the events of a rewrite go. The hooks are the variable steps of `run_generate`.
@@ -182,7 +183,7 @@ impl Plan {
     /// Builds the prompt and the command line, and checks the CLI is installed.
     fn build(host: &dyn CliHost, req: &GenerateRequest) -> Result<Plan> {
         let original = req.text.trim();
-        let prompt = rewrite_prompt(req.kind, req.subject, original)?;
+        let prompt = rewrite_prompt(req.kind, req.subject, original, req.context)?;
         let (bin, args) = generate_args(req.tool, req.model, &prompt)?;
         if !host.command_exists(&bin) {
             return Err(anyhow!("{} is not installed", bin));

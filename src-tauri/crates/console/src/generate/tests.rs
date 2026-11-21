@@ -21,7 +21,12 @@ fn request<'a>(tool: AiTool, model: &'a str, kind: &'a str, subject: &'a str, te
         kind,
         subject,
         text,
+        context: RewriteContext::default(),
     }
+}
+
+fn written(kind: &str, subject: &str, text: &str) -> Result<String> {
+    super::rewrite_prompt(kind, subject, text, RewriteContext::default())
 }
 
 /// Runs a stream and collects `(command, logs, done)`.
@@ -43,54 +48,121 @@ fn collect(host: &FakeHost, req: &GenerateRequest) -> Result<(String, Vec<String
 
 #[test]
 fn rewrite_prompt_kinds() {
-    let prompt = rewrite_prompt("prompt", "requirement_document", "  Write the docs.  ").unwrap();
+    let field = written("prompt_field", "requirement_document", "  The Jira key.  ").unwrap();
+    assert!(
+        field.contains("one field of the prompt for agent requirement_document")
+            && field.contains("not the whole prompt")
+            && field.ends_with("The Jira key."),
+        "field = {field:?}"
+    );
+    let field = written("prompt_field", "", "The Jira key.").unwrap();
+    assert!(
+        field.starts_with("This is one field of an agent prompt."),
+        "field = {field:?}"
+    );
+    let input = written("prompt_input", "requirement_document", "## Name\nTicket").unwrap();
+    assert!(
+        input.contains("one input in the prompt for agent requirement_document")
+            && input.contains("Keep every heading")
+            && input.ends_with("## Name\nTicket"),
+        "input = {input:?}"
+    );
+    let output = written("prompt_output", "", "## Name\nFolder").unwrap();
+    assert!(
+        output.starts_with("These are the fields of one output in an agent prompt.")
+            && output.contains("A field the user left empty stays empty."),
+        "output = {output:?}"
+    );
+    let prompt = written("prompt", "requirement_document", "  Write the docs.  ").unwrap();
     assert!(
         prompt.contains("prompt for agent requirement_document")
             && prompt.contains("Rewrite the text below in English.")
             && prompt.ends_with("Write the docs."),
         "prompt = {prompt:?}"
     );
-    let repo = rewrite_prompt("repo", "document", "Keep the vault.").unwrap();
+    let repo = written("repo", "document", "Keep the vault.").unwrap();
     assert!(repo.contains("document repository"), "repo = {repo:?}");
-    let note = rewrite_prompt("teamwork", "requirement_designer", "Hand over the folder.").unwrap();
+    let note = written("teamwork", "requirement_designer", "Hand over the folder.").unwrap();
     assert!(note.contains("requirement_designer"), "note = {note:?}");
-    let when = rewrite_prompt("teamwork_when", "requirement_designer", "files ready").unwrap();
+    let when = written("teamwork_when", "requirement_designer", "files ready").unwrap();
     assert!(
         when.contains("condition under which the agent sends a message to agent requirement_designer")
             && when.ends_with("files ready"),
         "when = {when:?}"
     );
-    let reply = rewrite_prompt("teamwork_reply", "requirement_designer", "design path").unwrap();
+    let reply = written("teamwork_reply", "requirement_designer", "design path").unwrap();
     assert!(
         reply.contains("agent requirement_designer sends back to the agent that gave it work")
             && reply.ends_with("design path"),
         "reply = {reply:?}"
     );
-    let mcp = rewrite_prompt("mcp", "Atlassian - Jira", "Read the ticket.").unwrap();
+    let mcp = written("mcp", "Atlassian - Jira", "Read the ticket.").unwrap();
     assert!(mcp.contains("Atlassian - Jira MCP server"), "mcp = {mcp:?}");
-    let tool = rewrite_prompt("tool", "github", "Open the pull request.").unwrap();
+    let tool = written("tool", "github", "Open the pull request.").unwrap();
     assert!(tool.contains("github tool"), "tool = {tool:?}");
-    assert!(rewrite_prompt("prompt", "", "   ").is_err(), "empty text was accepted");
-    let task = rewrite_prompt("task", "", "Thêm giỏ hàng.").unwrap();
+    assert!(written("prompt", "", "   ").is_err(), "empty text was accepted");
+    let task = written("task", "", "Thêm giỏ hàng.").unwrap();
     assert!(
         task.contains("task description") && task.contains("4000 characters") && task.ends_with("Thêm giỏ hàng."),
         "task = {task:?}"
     );
-    let name = rewrite_prompt("task-name", "", "Thêm giỏ hàng").unwrap();
+    let name = written("task-name", "", "Thêm giỏ hàng").unwrap();
     assert!(
         name.contains("task name") && name.contains("200 characters") && name.ends_with("Thêm giỏ hàng"),
         "name = {name:?}"
     );
-    let branch = rewrite_prompt("branch", "", "GE-12 thêm giỏ hàng").unwrap();
+    let branch = written("branch", "", "GE-12 thêm giỏ hàng").unwrap();
     assert!(
         branch.contains("git branch")
             && branch.contains("short English name")
             && branch.ends_with("GE-12 thêm giỏ hàng"),
         "branch = {branch:?}"
     );
+    assert!(written("other", "", "text").is_err(), "unknown kind was accepted");
+}
+
+#[test]
+fn coordination_rewrite_includes_the_agents_and_the_message() {
+    let shared = RewriteContext {
+        prompt: "Write the requirement files.",
+        agent: "Document Writer (requirement_document): Writes the requirements.",
+        peer: "UI Designer (requirement_designer): Draws the design.",
+        when: "The files are ready.",
+        send: "Design the folder.",
+    };
+    let when = super::rewrite_prompt("teamwork_when", "requirement_designer", "files ready", shared).unwrap();
     assert!(
-        rewrite_prompt("other", "", "text").is_err(),
-        "unknown kind was accepted"
+        when.contains("Agent prompt:\nWrite the requirement files.")
+            && when.contains("This agent:\nDocument Writer (requirement_document): Writes the requirements.")
+            && when.contains("The other agent:\nUI Designer (requirement_designer): Draws the design.")
+            && !when.contains("Send when:")
+            && when.ends_with("files ready"),
+        "when = {when:?}"
+    );
+    let send = super::rewrite_prompt("teamwork", "requirement_designer", "Hand over the folder.", shared).unwrap();
+    assert!(
+        send.contains("Send when:\nThe files are ready.")
+            && send.contains("Agent prompt:\nWrite the requirement files.")
+            && !send.contains("What to send:")
+            && send.ends_with("Hand over the folder."),
+        "send = {send:?}"
+    );
+    let reply = super::rewrite_prompt("teamwork_reply", "requirement_designer", "design path", shared).unwrap();
+    assert!(
+        reply.contains("Send when:\nThe files are ready.")
+            && reply.contains("What to send:\nDesign the folder.")
+            && reply.contains("This agent:\nDocument Writer")
+            && reply.contains("The other agent:\nUI Designer")
+            && reply.ends_with("design path"),
+        "reply = {reply:?}"
+    );
+    let prompt = written("prompt", "requirement_document", "Write the docs.").unwrap();
+    assert!(
+        prompt.contains("Base the rewrite on the user's text.")
+            && prompt.contains("must do exactly what the user described")
+            && !prompt.contains("Agent prompt:")
+            && prompt.ends_with("Write the docs."),
+        "prompt = {prompt:?}"
     );
 }
 
@@ -105,27 +177,27 @@ fn rewrite_prompt_asks_for_a_missing_subject() {
         ("tool", "Choose a tool first."),
     ];
     for (kind, message) in cases {
-        let err = rewrite_prompt(kind, " \n ", "text").unwrap_err();
+        let err = written(kind, " \n ", "text").unwrap_err();
         assert_eq!(err.to_string(), message, "kind {kind}");
         assert!(err.downcast_ref::<InputError>().is_some(), "kind {kind}");
     }
-    let err = rewrite_prompt("other", "", "text").unwrap_err();
+    let err = written("other", "", "text").unwrap_err();
     assert_eq!(
         err.to_string(),
         "Choose a prompt, repository note, Agents Coordination note, MCP note, or tool note."
     );
-    let err = rewrite_prompt("prompt", "", &"x".repeat(60001)).unwrap_err();
+    let err = written("prompt", "", &"x".repeat(60001)).unwrap_err();
     assert_eq!(err.to_string(), "Text is too long to generate.");
 }
 
 #[test]
 fn rewrite_prompt_uses_the_subject_on_one_line() {
-    let prompt = rewrite_prompt("prompt", " planner\n agent ", "Plan.").unwrap();
+    let prompt = written("prompt", " planner\n agent ", "Plan.").unwrap();
     assert!(
         prompt.starts_with("This is the prompt for agent planner agent.\n\n"),
         "prompt = {prompt:?}"
     );
-    let prompt = rewrite_prompt("prompt", "", "Plan.").unwrap();
+    let prompt = written("prompt", "", "Plan.").unwrap();
     assert!(
         prompt.starts_with("This is an agent prompt.\n\n"),
         "prompt = {prompt:?}"
@@ -134,14 +206,30 @@ fn rewrite_prompt_uses_the_subject_on_one_line() {
 
 #[test]
 fn preview_command_labels_the_prompt() {
-    let command = preview_command(AiTool::Cursor, "auto", "repo", "backend", "Ship the API.").unwrap();
+    let command = preview_command(
+        AiTool::Cursor,
+        "auto",
+        "repo",
+        "backend",
+        "Ship the API.",
+        RewriteContext::default(),
+    )
+    .unwrap();
     assert!(
         command.contains("cursor-agent --print")
             && command.contains("--workspace {{workspace}} {{prompt}}")
             && !command.contains("Ship the API."),
         "command = {command:?}"
     );
-    let gemini = preview_command(AiTool::Gemini, "", "repo", "backend", "Ship the API.").unwrap();
+    let gemini = preview_command(
+        AiTool::Gemini,
+        "",
+        "repo",
+        "backend",
+        "Ship the API.",
+        RewriteContext::default(),
+    )
+    .unwrap();
     assert_eq!(gemini, "gemini --prompt {{prompt}}");
 }
 
@@ -428,7 +516,7 @@ fn a_failing_emit_on_the_command_stops_the_run() {
 
 #[test]
 fn input_error_is_detectable() {
-    let err = rewrite_prompt("prompt", "", "  ").unwrap_err();
+    let err = written("prompt", "", "  ").unwrap_err();
     let input = err.downcast_ref::<InputError>().expect("InputError");
     assert_eq!(input.message, "Enter some text first.");
     assert_eq!(err.to_string(), "Enter some text first.");

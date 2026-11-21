@@ -11,6 +11,17 @@ pub(crate) use repo::RunRepo;
 use crate::store::{now, Store};
 use crate::tasks::{AgentStatus, ErrTaskNotFound, RunPhase, Task, TaskError, TaskRepo};
 
+/// One question the agent sent in a questions block.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AskQuestion {
+    pub prompt: String,
+    pub detail: String,
+    pub options: Vec<String>,
+    /// An answer the agent suggests. Empty when it has none.
+    pub suggestion: String,
+}
+
 /// TaskRun is one agent's Orca terminal for a task.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
@@ -26,6 +37,9 @@ pub struct TaskRun {
     pub ask_prompt: String,
     #[serde(rename = "askOptions")]
     pub ask_options: Vec<String>,
+    /// Questions from a questions block. Empty `options` means the user types an answer.
+    #[serde(rename = "askQuestions")]
+    pub ask_questions: Vec<AskQuestion>,
     #[serde(rename = "startedAt")]
     pub started_at: String,
     #[serde(rename = "updatedAt")]
@@ -45,6 +59,7 @@ pub struct RunUpdate<'a> {
     pub phase: RunPhase,
     pub ask_prompt: &'a str,
     pub ask_options: &'a [String],
+    pub ask_questions: &'a [AskQuestion],
 }
 
 impl<'a> RunUpdate<'a> {
@@ -57,6 +72,7 @@ impl<'a> RunUpdate<'a> {
             phase,
             ask_prompt: "",
             ask_options: &[],
+            ask_questions: &[],
         }
     }
 
@@ -70,6 +86,12 @@ impl<'a> RunUpdate<'a> {
     pub fn ask(mut self, prompt: &'a str, options: &'a [String]) -> RunUpdate<'a> {
         self.ask_prompt = prompt;
         self.ask_options = options;
+        self
+    }
+
+    /// The questions block the agent is waiting on. Ignored while the phase is `Doing`.
+    pub fn questions(mut self, questions: &'a [AskQuestion]) -> RunUpdate<'a> {
+        self.ask_questions = questions;
         self
     }
 }
@@ -110,17 +132,17 @@ impl Store {
         if update.task_id.is_empty() || agent_id.is_empty() || status.is_empty() {
             return Err(TaskError::new("Orca did not return a terminal for the agent.").into());
         }
-        let (ask_prompt, ask_options): (&str, &[String]) = if update.phase == RunPhase::Doing {
-            ("", &[])
+        let (ask_prompt, ask_options, ask_questions) = if update.phase == RunPhase::Doing {
+            ("", &[][..], &[][..])
         } else {
-            (update.ask_prompt, update.ask_options)
+            (update.ask_prompt, update.ask_options, update.ask_questions)
         };
         let task_id = update.task_id;
         self.with_db(|db| {
             let runs = RunRepo::new(db);
             let tasks = TaskRepo::new(db);
             runs.update_log(task_id, agent_id, status, update.log, &now())?;
-            runs.set_question(task_id, agent_id, ask_prompt, ask_options)?;
+            runs.set_question(task_id, agent_id, ask_prompt, ask_options, ask_questions)?;
             if let Some(current) = tasks.agent_status(task_id, agent_id)? {
                 let next = current.on_run_update(update.phase);
                 if next != current {

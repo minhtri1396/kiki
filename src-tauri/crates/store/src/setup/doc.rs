@@ -176,23 +176,32 @@ pub(crate) fn write_doc(path: &str, doc: &FileDoc) -> Result<()> {
 }
 
 pub(crate) fn default_doc() -> FileDoc {
+    let seeded: Vec<RepoDoc> = toolchain::KINDS
+        .iter()
+        .map(|kind| RepoDoc {
+            kind: (*kind).to_string(),
+            ..Default::default()
+        })
+        .collect();
     FileDoc {
         workspace_id: "kiki".to_string(),
         orchestrator: "orca".to_string(),
-        repos: normalize_repos(&[]),
+        repos: normalize_repos(&seeded),
         ..Default::default()
     }
 }
 
-/// The known repository kinds first in their fixed order, then any other valid kinds sorted by name.
+/// The built-in kinds that are present, in their fixed order, then any other valid kinds sorted by name.
+/// A kind that is missing stays missing, so a deleted repository is not written back.
 pub(crate) fn normalize_repos(repos: &[RepoDoc]) -> Vec<RepoDoc> {
     let mut by_kind: HashMap<&str, &RepoDoc> = HashMap::new();
     for repo in repos {
         by_kind.insert(repo.kind.as_str(), repo);
     }
-    let mut out: Vec<RepoDoc> = Vec::with_capacity(toolchain::KINDS.len());
+    let mut out: Vec<RepoDoc> = Vec::new();
     for kind in toolchain::KINDS {
-        let mut repo = by_kind.get(kind).map(|r| (*r).clone()).unwrap_or_default();
+        let Some(saved) = by_kind.get(kind) else { continue };
+        let mut repo = (*saved).clone();
         repo.kind = kind.to_string();
         out.push(repo);
     }

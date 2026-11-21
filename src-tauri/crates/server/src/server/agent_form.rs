@@ -1,4 +1,4 @@
-//! The edit-agent form (`PUT /api/agents/{id}`) and its conversion into an agent file.
+//! The agent form (`POST /api/agents` and `PUT /api/agents/{id}`) and its conversion into an agent file.
 
 use serde::Deserialize;
 
@@ -83,6 +83,11 @@ pub(crate) struct AgentForm {
 }
 
 impl AgentForm {
+    /// `{snake_case(category)}_{snake_case(name)}` for a new agent. Empty when either part is blank.
+    pub(super) fn created_id(&self) -> String {
+        agentfile::new_id(&self.category, &self.name)
+    }
+
     /// The collaborators, checked for complete handoffs.
     pub(super) fn collaborators(&self) -> anyhow::Result<Vec<agentfile::Collaborator>> {
         let list: Vec<agentfile::Collaborator> = self

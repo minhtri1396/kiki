@@ -105,12 +105,23 @@ impl Attempt<'_> {
     }
 }
 
+/// Whether the CLI reports `folder`. A vault name is the folder's last segment, so `vault=<name>` can
+/// answer for a different vault that shares that name. The active vault is checked in that case.
 fn vault_ready(cli: &str, folder: &str) -> (bool, String) {
-    let (status, ok) = run_cli(cli, &[&format!("vault={}", vault_name(folder)), "vault", "info=path"]);
+    let named = format!("vault={}", vault_name(folder));
+    let (status, ok) = run_cli(cli, &[&named, "vault", "info=path"]);
     if ok && status_matches(&status, folder) {
         return (true, status);
     }
-    (false, status)
+    let (active, active_ok) = run_cli(cli, &["vault", "info=path"]);
+    if active_ok && status_matches(&active, folder) {
+        return (true, active);
+    }
+    if status.trim().is_empty() {
+        (false, active)
+    } else {
+        (false, status)
+    }
 }
 
 fn status_matches(output: &str, folder: &str) -> bool {

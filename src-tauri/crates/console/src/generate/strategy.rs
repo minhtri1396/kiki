@@ -141,8 +141,15 @@ pub(crate) fn add_workspace(tool: AiTool, args: &mut Vec<String>, dir: &str) {
 
 /// The CLI command for a rewrite, with {{prompt}} where the
 /// prompt is passed. Cursor also shows {{workspace}} for the temporary folder.
-pub fn preview_command(tool: AiTool, model: &str, kind: &str, subject: &str, text: &str) -> Result<String> {
-    let prompt = rewrite_prompt(kind, subject, text)?;
+pub fn preview_command(
+    tool: AiTool,
+    model: &str,
+    kind: &str,
+    subject: &str,
+    text: &str,
+    context: super::RewriteContext,
+) -> Result<String> {
+    let prompt = rewrite_prompt(kind, subject, text, context)?;
     let (bin, mut args) = generate_args(tool, model, &prompt)?;
     add_workspace(tool, &mut args, PREVIEW_WORKSPACE);
     Ok(format_generate_command(&bin, &args, &prompt))

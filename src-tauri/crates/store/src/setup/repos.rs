@@ -10,7 +10,7 @@ use kiki_toolchain as toolchain;
 use kiki_util::path::{clean, dir, is_abs, join};
 use kiki_yaml::{Mapping, Value};
 
-use super::lenient::{get_str, get_strings, read_map};
+use super::lenient::{get_bool, get_str, get_strings, read_map};
 use super::{read_doc, write_doc, RepoDoc};
 use crate::fsutil;
 use crate::store::Store;
@@ -19,9 +19,12 @@ use crate::store::Store;
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RepoFile {
     pub id: String,
+    pub name: String,
     pub folder: String,
     /// `None` when the key was missing or null.
     pub services: Option<Vec<String>>,
+    /// `None` when the key was missing or null.
+    pub divided: Option<bool>,
     pub index: String,
     pub sparse: String,
 }
@@ -35,8 +38,10 @@ fn parse_repo_file(raw: &str) -> Result<RepoFile> {
     }
     Ok(RepoFile {
         id,
+        name: get_str(&map, "name").trim().to_string(),
         folder: get_str(&map, "folder"),
         services: get_strings(&map, "services")?,
+        divided: get_bool(&map, "divided")?,
         index: get_str(&map, "index"),
         sparse: get_str(&map, "sparse"),
     })
@@ -191,11 +196,12 @@ pub(crate) fn repos_for_files(snap: &console::Snapshot) -> Vec<console::Repo> {
     for repo in &snap.repos {
         by_kind.insert(repo.kind.as_str(), repo);
     }
-    let mut out: Vec<console::Repo> = Vec::with_capacity(toolchain::KINDS.len());
+    let mut out: Vec<console::Repo> = Vec::new();
     for kind in toolchain::KINDS {
-        let mut repo = by_kind.get(kind).map(|r| (*r).clone()).unwrap_or_default();
+        let Some(saved) = by_kind.get(kind) else { continue };
+        let mut repo = (*saved).clone();
         repo.kind = kind.to_string();
-        if repo.kind == "document" {
+        if repo.kind == "document" && !repo.divided {
             repo.services = Vec::new();
         }
         clean_index(&mut repo);
@@ -221,6 +227,9 @@ pub(crate) fn merge_repo_files(setup_path: &str, mut snap: console::Snapshot) ->
     let files = read_repo_files(setup_path)?;
     for repo in snap.repos.iter_mut() {
         let Some(file) = files.get(&repo.kind) else { continue };
+        if !file.name.is_empty() {
+            repo.name = file.name.clone();
+        }
         repo.index = file.index.clone();
         let folder = file.folder.trim();
         if !folder.is_empty() && is_abs(folder) {
@@ -229,7 +238,8 @@ pub(crate) fn merge_repo_files(setup_path: &str, mut snap: console::Snapshot) ->
         if let Ok(sparse) = console::sparse_path(&file.sparse) {
             repo.sparse = sparse;
         }
-        if repo.kind != "document" {
+        repo.divided = file.divided.unwrap_or(false);
+        if repo.kind != "document" || repo.divided {
             if let Some(services) = &file.services {
                 repo.services = services.clone();
             }
@@ -311,7 +321,7 @@ pub(crate) fn write_repo_files(setup_path: &str, repos: &[console::Repo]) -> Res
 }
 
 fn repo_file_text(repo: &console::Repo) -> String {
-    let services: Vec<String> = if repo.kind == "document" {
+    let services: Vec<String> = if repo.kind == "document" && !repo.divided {
         Vec::new()
     } else {
         repo.services.clone()
@@ -324,7 +334,9 @@ fn repo_file_text(repo: &console::Repo) -> String {
     let sparse = console::sparse_path(&repo.sparse).unwrap_or_default();
     let entries = Mapping::new()
         .set("id", repo.kind.as_str())
+        .set("name", repo.title())
         .set_unless_empty("folder", repo.folder.trim())
+        .set_if(repo.divided, "divided", true)
         .set("services", Value::Seq(services.into_iter().map(Value::from).collect()))
         .set_unless_empty("index", index)
         .set_unless_empty("sparse", &sparse);

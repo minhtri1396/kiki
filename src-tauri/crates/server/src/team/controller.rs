@@ -7,7 +7,7 @@ use super::service::{MemberRequest, SaveRequest};
 use super::Outcome;
 use crate::api_error::ApiResult;
 use crate::controller::Controller;
-use crate::http::{read_json, write_json, Request, Response, Router};
+use crate::http::{read_json, read_optional_json, write_json, Request, Response, Router};
 use crate::Server;
 
 pub(crate) struct TeamController;
@@ -24,14 +24,8 @@ impl Controller for TeamController {
         });
         router.api("GET /api/team/diff", TeamController::diff);
         router.api("POST /api/team/member", TeamController::member);
-        router.api("POST /api/team/agents", |s, r| {
-            s.save_user_agents()?;
-            Ok(s.handle_state(r))
-        });
-        router.api("POST /api/team/repos", |s, r| {
-            s.save_user_repos()?;
-            Ok(s.handle_state(r))
-        });
+        router.api("POST /api/team/agents", TeamController::save_agents);
+        router.api("POST /api/team/repos", TeamController::save_repos);
     }
 }
 
@@ -53,6 +47,23 @@ struct MemberBody {
     direction: String,
     part: String,
     repos: Option<RepoDecisions>,
+    agents: Option<Vec<String>>,
+    ids: Option<Vec<String>>,
+    remove: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct AgentsBody {
+    agents: Option<Vec<String>>,
+    remove: Option<Vec<String>>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ReposBody {
+    ids: Option<Vec<String>>,
+    remove: Option<Vec<String>>,
 }
 
 impl TeamController {
@@ -73,6 +84,18 @@ impl TeamController {
         Ok(write_json(200, &diff))
     }
 
+    fn save_agents(server: &Server, req: &Request) -> ApiResult<Response> {
+        let body: AgentsBody = read_optional_json(req)?;
+        server.save_user_agents(body.agents.as_deref(), body.remove.as_deref())?;
+        Ok(server.handle_state(req))
+    }
+
+    fn save_repos(server: &Server, req: &Request) -> ApiResult<Response> {
+        let body: ReposBody = read_optional_json(req)?;
+        server.save_user_repos(body.ids.as_deref(), body.remove.as_deref())?;
+        Ok(server.handle_state(req))
+    }
+
     fn member(server: &Server, req: &Request) -> ApiResult<Response> {
         let body: MemberBody = read_json(req)?;
         let outcome = server.team_member(MemberRequest {
@@ -80,6 +103,9 @@ impl TeamController {
             direction: body.direction,
             part: body.part,
             repos: body.repos.unwrap_or_default(),
+            agents: body.agents,
+            ids: body.ids,
+            remove: body.remove,
         })?;
         Ok(reply(server, req, outcome))
     }

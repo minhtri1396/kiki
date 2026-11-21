@@ -25,8 +25,15 @@ impl Controller for GenerateController {
             let body: GenerateBody = read_json(req)?;
             let (tool, model) = server.generate_choice().map_err(|e| choice_error(&e))?;
             let request = body.request(tool, &model);
-            let command =
-                console::preview_command(tool, &model, request.kind, request.subject, request.text).or_status(400)?;
+            let command = console::preview_command(
+                tool,
+                &model,
+                request.kind,
+                request.subject,
+                request.text,
+                request.context,
+            )
+            .or_status(400)?;
             Ok(write_json(
                 200,
                 &json!({ "command": command, "tool": tool.id(), "model": model }),
@@ -34,7 +41,7 @@ impl Controller for GenerateController {
         });
         router.api("POST /api/generate", |server, req| {
             let body: GenerateBody = read_json(req)?;
-            console::rewrite_prompt(body.kind.trim(), &body.subject, &body.text).or_status(400)?;
+            console::rewrite_prompt(body.kind.trim(), &body.subject, &body.text, body.context()).or_status(400)?;
             let (tool, model) = server.generate_choice().map_err(|e| choice_error(&e))?;
             let ctx = req.ctx.with_timeout(Duration::from_secs(120));
             let reply = Response::stream(200, "application/x-ndjson", move |w: &mut dyn Write| {
@@ -53,9 +60,24 @@ struct GenerateBody {
     kind: String,
     subject: String,
     text: String,
+    prompt: String,
+    agent: String,
+    peer: String,
+    when: String,
+    send: String,
 }
 
 impl GenerateBody {
+    fn context(&self) -> console::RewriteContext<'_> {
+        console::RewriteContext {
+            prompt: &self.prompt,
+            agent: &self.agent,
+            peer: &self.peer,
+            when: &self.when,
+            send: &self.send,
+        }
+    }
+
     fn request<'a>(&'a self, tool: AiTool, model: &'a str) -> GenerateRequest<'a> {
         GenerateRequest {
             tool,
@@ -63,6 +85,7 @@ impl GenerateBody {
             kind: self.kind.trim(),
             subject: &self.subject,
             text: &self.text,
+            context: self.context(),
         }
     }
 }

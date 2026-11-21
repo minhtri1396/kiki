@@ -218,6 +218,43 @@
       </div>
     </form>
   </dialog>
+  <dialog id="repo-name-dialog">
+    <form method="dialog" id="repo-name-form">
+      <div class="dialog-body">
+        <h2 id="repo-name-title">Add repository</h2>
+        <p id="repo-name-hint" class="hint">The name starts with a letter and uses letters, digits, spaces, hyphens, or underscores. A new repository gets an id from that name.</p>
+        <label class="field">
+          <span>Name</span>
+          <input id="repo-name-input" type="text" autocomplete="off" spellcheck="false" placeholder="firmware">
+        </label>
+        <label class="check-line">
+          <input id="repo-name-divided" type="checkbox">
+          <span>This repository is divided into services</span>
+        </label>
+        <p id="repo-name-divided-note" class="hint" hidden>KIKI finds services in this repository with Nx.</p>
+      </div>
+      <p id="repo-name-error" class="result error" hidden></p>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" id="repo-name-save" class="primary" value="save">Add</button>
+      </div>
+    </form>
+  </dialog>
+  <dialog id="repo-delete-dialog">
+    <form method="dialog" id="repo-delete-form">
+      <div class="dialog-body">
+        <h2 id="repo-delete-title">Delete repository</h2>
+        <p id="repo-delete-text" class="hint"></p>
+        <p id="repo-delete-note" class="hint" hidden></p>
+        <ul id="repo-delete-agents" hidden></ul>
+      </div>
+      <p id="repo-delete-error" class="result error" hidden></p>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" class="danger" value="confirm">Delete</button>
+      </div>
+    </form>
+  </dialog>
   <dialog id="index-remove-dialog">
     <form method="dialog" id="index-remove-form">
       <div class="dialog-body">
@@ -320,6 +357,8 @@
       <div class="dialog-body">
         <h2>Copy agents</h2>
         <p id="team-member-text" class="hint"></p>
+        <div id="team-member-all"></div>
+        <ul id="team-member-picks" class="copy-picks"></ul>
       </div>
       <div class="actions">
         <button type="submit" value="cancel">Cancel</button>
@@ -339,6 +378,18 @@
       <button type="button" id="settings-close">Close</button>
       <button type="button" id="settings-save" class="primary" disabled>Save</button>
     </div>
+  </dialog>
+  <dialog id="agent-delete-dialog">
+    <form method="dialog">
+      <div class="dialog-body">
+        <h2 id="agent-delete-title">Delete agent</h2>
+        <p id="agent-delete-text" class="hint"></p>
+      </div>
+      <div class="actions">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="button" id="agent-delete-confirm" class="danger">Delete</button>
+      </div>
+    </form>
   </dialog>
   <dialog id="agent-dialog">
     <form method="dialog" id="agent-form">
@@ -363,74 +414,83 @@
           <label class="field">
             <span>Category</span>
             <select id="agent-category"></select>
+            <input id="agent-category-custom" type="text" autocomplete="off" spellcheck="false" autocapitalize="off" placeholder="support" hidden>
           </label>
         </div>
         <label class="field">
           <span>Description</span>
           <textarea id="agent-description" rows="4"></textarea>
         </label>
-        <div class="field">
-          <div class="prompt-bar">
-            <span>Prompt</span>
-            <span class="preview-toggle">
-              <span>Preview</span>
-              <button type="button" id="agent-prompt-toggle" class="switch" aria-pressed="false" aria-label="Preview">
-                <span class="switch-knob"></span>
-              </button>
-            </span>
-          </div>
-          <div class="compose">
-            <textarea id="agent-prompt" rows="24" spellcheck="false"></textarea>
-            <button type="button" class="field-generate" data-generate="prompt" aria-label="Rewrite by AI">Rewrite by AI</button>
-          </div>
-          <div id="agent-prompt-preview" class="markdown" hidden></div>
+        <div class="task-tabs" id="agent-editor-tabs" role="tablist">
+          <button type="button" class="task-tab" role="tab" data-agent-tab="prompt" aria-selected="true" aria-controls="agent-tab-prompt">Prompt</button>
+          <button type="button" class="task-tab" role="tab" data-agent-tab="repos" aria-selected="false" aria-controls="agent-tab-repos">Repositories</button>
+          <button type="button" class="task-tab" role="tab" data-agent-tab="agents" aria-selected="false" aria-controls="agent-tab-agents">Agents Coordination</button>
+          <button type="button" class="task-tab" role="tab" data-agent-tab="connections" aria-selected="false" aria-controls="agent-tab-connections">Connections</button>
+          <button type="button" class="task-tab" role="tab" data-agent-tab="topology" aria-selected="false" aria-controls="agent-tab-topology">Topology</button>
         </div>
-        <section class="agent-scope" data-scope="repos" aria-labelledby="agent-repos-title">
-          <div class="agent-scope-head">
-            <div class="agent-scope-copy">
-              <h3 id="agent-repos-title">Repositories</h3>
-              <p>Folders this agent can open. Turn a folder on, then set the guide file the agent reads and follows there, and write what the agent uses the folder for. Readonly keeps that folder read-only for this agent.</p>
-            </div>
-            <span class="agent-scope-count" id="agent-repo-count" data-empty="true" aria-live="polite">None selected</span>
+        <div id="agent-tab-prompt" class="agent-editor-panel" role="tabpanel" data-agent-panel="prompt">
+          <div class="field" id="agent-prompt-field">
+            <p class="hint">KIKI joins these fields into the prompt sent when the agent starts.</p>
+            <div id="agent-prompt-fields"></div>
+            <textarea id="agent-prompt" hidden></textarea>
           </div>
-          <div id="agent-repos" class="service-tags"></div>
-          <div id="agent-repo-notes" class="repo-notes"></div>
-        </section>
-        <section class="agent-scope" data-scope="agents" aria-labelledby="agent-peers-title">
-          <div class="agent-scope-head">
-            <div class="agent-scope-copy">
-              <h3 id="agent-peers-title">Agents Coordination</h3>
-              <p>Other agents this one works with. Turn an agent on, then add messages for it. Each message has a condition and the content to send, and both are required. When the condition is met while this agent runs, it sends that content to that agent.</p>
+        </div>
+        <div id="agent-tab-repos" class="agent-editor-panel" role="tabpanel" data-agent-panel="repos" hidden>
+          <section class="agent-scope" data-scope="repos" aria-labelledby="agent-repos-title">
+            <div class="agent-scope-head">
+              <div class="agent-scope-copy">
+                <h3 id="agent-repos-title">Repositories</h3>
+                <p>Folders this agent can open. Turn a folder on, then set the guide file the agent reads and follows there, and write what the agent uses the folder for. Readonly keeps that folder read-only for this agent.</p>
+              </div>
+              <span class="agent-scope-count" id="agent-repo-count" data-empty="true" aria-live="polite">None selected</span>
             </div>
-            <span class="agent-scope-count" id="agent-peer-count" data-empty="true" aria-live="polite">None selected</span>
-          </div>
-          <div id="agent-works-with" class="peer-groups"></div>
-          <div id="agent-collaborations" class="collaborations"></div>
-        </section>
-        <section class="agent-scope" data-scope="mcp" aria-labelledby="agent-mcps-title">
-          <div class="agent-scope-head">
-            <div class="agent-scope-copy">
-              <h3 id="agent-mcps-title">MCP Servers</h3>
-              <p>Servers this agent can call. Turn a server on, then write how the agent uses it.</p>
+            <div id="agent-repos" class="service-tags"></div>
+            <div id="agent-repo-notes" class="repo-notes"></div>
+          </section>
+        </div>
+        <div id="agent-tab-agents" class="agent-editor-panel" role="tabpanel" data-agent-panel="agents" hidden>
+          <section class="agent-scope" data-scope="agents" aria-labelledby="agent-peers-title">
+            <div class="agent-scope-head">
+              <div class="agent-scope-copy">
+                <h3 id="agent-peers-title">Agents Coordination</h3>
+                <p>Other agents this one works with. Turn an agent on, then add messages for it. Each message has a condition and the content to send, and both are required. When the condition is met while this agent runs, it sends that content to that agent.</p>
+              </div>
+              <span class="agent-scope-count" id="agent-peer-count" data-empty="true" aria-live="polite">None selected</span>
             </div>
-            <span class="agent-scope-count" id="agent-mcp-count" data-empty="true" aria-live="polite">None selected</span>
-          </div>
-          <div id="agent-mcps" class="service-tags"></div>
-          <div id="agent-mcp-notes" class="repo-notes"></div>
-        </section>
-        <section class="agent-scope" data-scope="tools" aria-labelledby="agent-tools-title">
-          <div class="agent-scope-head">
-            <div class="agent-scope-copy">
-              <h3 id="agent-tools-title">Tools</h3>
-              <p>Tools this agent can run. KIKI writes what each tool does into the launch prompt.</p>
+            <div id="agent-works-with" class="peer-groups"></div>
+            <div id="agent-collaborations" class="collaborations"></div>
+          </section>
+        </div>
+        <div id="agent-tab-connections" class="agent-editor-panel" role="tabpanel" data-agent-panel="connections" hidden>
+          <section class="agent-scope" data-scope="mcp" aria-labelledby="agent-mcps-title">
+            <div class="agent-scope-head">
+              <div class="agent-scope-copy">
+                <h3 id="agent-mcps-title">MCP Servers</h3>
+                <p>Servers this agent can call. Turn a server on, then write how the agent uses it.</p>
+              </div>
+              <span class="agent-scope-count" id="agent-mcp-count" data-empty="true" aria-live="polite">None selected</span>
             </div>
-            <span class="agent-scope-count" id="agent-tool-count" data-empty="true" aria-live="polite">None selected</span>
-          </div>
-          <div id="agent-tools" class="service-tags"></div>
-        </section>
+            <div id="agent-mcps" class="service-tags"></div>
+            <div id="agent-mcp-notes" class="repo-notes"></div>
+          </section>
+          <section class="agent-scope" data-scope="tools" aria-labelledby="agent-tools-title">
+            <div class="agent-scope-head">
+              <div class="agent-scope-copy">
+                <h3 id="agent-tools-title">Tools</h3>
+                <p>Tools this agent can run. KIKI writes what each tool does into the launch prompt.</p>
+              </div>
+              <span class="agent-scope-count" id="agent-tool-count" data-empty="true" aria-live="polite">None selected</span>
+            </div>
+            <div id="agent-tools" class="service-tags"></div>
+          </section>
+        </div>
+        <div id="agent-tab-topology" class="agent-editor-panel" role="tabpanel" data-agent-panel="topology" hidden>
+          <div id="agent-topology"></div>
+        </div>
       </div>
       <p id="agent-error" class="result error" hidden></p>
       <div class="actions">
+        <button type="button" id="agent-delete" class="danger" hidden>Delete</button>
         <span class="agent-switch">
           <button type="button" id="agent-enabled" class="switch" aria-pressed="true" aria-label="On">
             <span class="switch-knob"></span>

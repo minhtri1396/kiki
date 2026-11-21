@@ -128,11 +128,11 @@ fn agent_handoffs_reach_the_prompt() {
     );
     let preview = serve(&app, "POST", "/api/agents/requirement_document/preview", Some(b"{}"));
     for want in [
-        "- agent id: requirement_designer",
-        "Message 1 to requirement_designer:",
+        "### requirement_designer",
+        "#### Message 1 to requirement_designer",
         "The requirement files are ready.",
         "Design the folder.",
-        "Message 2 to requirement_designer:",
+        "#### Message 2 to requirement_designer",
         "The user changes the scope.",
         "Update the design.",
     ] {
@@ -216,18 +216,78 @@ fn launch_wait_for_reaches_the_prompt() {
 }
 
 #[test]
-fn agent_handoffs_require_when_and_send() {
+fn agent_handoffs_keep_a_note_with_no_condition() {
     let app = new_test_server();
     ensure_agent_files(root_str(&app)).unwrap();
     let raw = serve(&app, "GET", "/api/agents/requirement_document", None);
     let mut agent: Value = serde_json::from_str(&raw).unwrap();
-    let cases = [
-        ("Send when", json!({"when": "", "send": "Design it."})),
-        ("What to send", json!({"when": "The files are ready.", "send": "  "})),
-    ];
-    for (name, pair) in cases {
-        agent["worksWith"] = json!([{"id": "requirement_designer", "handoffs": [pair]}]);
-        let (status, body) = call(&app, "PUT", "/api/agents/requirement_document", &agent.to_string());
-        assert!(status == 400 && body.contains(name), "{name}: got {status} {body}");
-    }
+    agent["worksWith"] = json!([{"id": "requirement_designer", "handoffs": [{"when": "", "send": "Design it."}]}]);
+    let (status, body) = call(&app, "PUT", "/api/agents/requirement_document", &agent.to_string());
+    assert!(status == 200, "a note with no condition was rejected: {status} {body}");
+    let saved = serve(&app, "GET", "/api/agents/requirement_document", None);
+    assert!(
+        saved.contains("Design it.") && saved.contains(r#""when":"""#),
+        "saved note = {saved}"
+    );
+    agent["worksWith"] =
+        json!([{"id": "requirement_designer", "handoffs": [{"when": "The files are ready.", "send": "  "}]}]);
+    let (status, body) = call(&app, "PUT", "/api/agents/requirement_document", &agent.to_string());
+    assert!(
+        status == 400 && body.contains("What to send"),
+        "empty send: got {status} {body}"
+    );
+}
+
+#[test]
+fn create_and_delete_agent() {
+    let app = new_test_server();
+    ensure_agent_files(root_str(&app)).unwrap();
+    let raw = serve(&app, "GET", "/api/agents/backend_runner", None);
+    let mut agent: Value = serde_json::from_str(&raw).unwrap();
+    agent["id"] = json!("ignored_by_the_server");
+    agent["name"] = json!("Support Runner");
+    agent["category"] = json!("Support Team");
+    agent["description"] = json!("Answers support questions.");
+    agent["worksWith"] = json!([]);
+    let created = serve(&app, "POST", "/api/agents", Some(&json_bytes(&agent)));
+    assert!(
+        created.contains(r#""id":"support_team_support_runner""#) && created.contains(r#""title":"Support Runner""#),
+        "created = {created}"
+    );
+    let again = call(&app, "POST", "/api/agents", &agent.to_string());
+    assert!(
+        again.0 == 400 && again.1.contains("already exists"),
+        "duplicate = {} {}",
+        again.0,
+        again.1
+    );
+    agent["name"] = json!("!!!");
+    let bad = call(&app, "POST", "/api/agents", &agent.to_string());
+    assert!(
+        bad.0 == 400 && bad.1.contains("enter a category and a name"),
+        "bad name = {} {}",
+        bad.0,
+        bad.1
+    );
+
+    let removed = serve(&app, "DELETE", "/api/agents/support_team_support_runner", None);
+    assert!(
+        !removed.contains(r#""id":"support_team_support_runner""#),
+        "removed = {removed}"
+    );
+    let missing = call(&app, "GET", "/api/agents/support_team_support_runner", "");
+    assert_eq!(missing.0, 404, "missing = {}", missing.1);
+
+    let document = serve(&app, "GET", "/api/agents/requirement_document", None);
+    assert!(document.contains("requirement_designer"), "document = {document}");
+    serve(&app, "DELETE", "/api/agents/requirement_designer", None);
+    let document = serve(&app, "GET", "/api/agents/requirement_document", None);
+    let saved: Value = serde_json::from_str(&document).unwrap();
+    assert!(
+        !saved["worksWith"].to_string().contains("requirement_designer"),
+        "worksWith = {}",
+        saved["worksWith"]
+    );
+    let gone = call(&app, "DELETE", "/api/agents/requirement_designer", "");
+    assert_eq!(gone.0, 404, "gone = {}", gone.1);
 }

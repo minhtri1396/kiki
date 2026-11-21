@@ -131,3 +131,24 @@ fn setup_keeps_an_existing_codegraph_folder() {
     let jobs = state["jobs"].as_array().cloned().unwrap_or_default();
     assert!(jobs.is_empty(), "setup started anyway: {body}");
 }
+
+#[test]
+fn setup_force_runs_when_the_codegraph_folder_exists() {
+    let app = new_test_server();
+    app.store.ensure_layout(root_str(&app)).unwrap();
+    fs::create_dir(app.root.join("backend").join(".codegraph")).unwrap();
+    let (status, body) = call(&app, "POST", "/api/indexes/codegraph/backend", r#"{"force":true}"#);
+    assert!(
+        status == 202 || (status == 400 && body.contains("not found")),
+        "status {status} body {body}"
+    );
+    if status == 202 {
+        let job: Value = serde_json::from_str(&body).unwrap();
+        assert!(!job["id"].as_str().unwrap_or("").is_empty(), "job {body}");
+        assert_eq!(job["target"], "backend");
+        let id = job["id"].as_str().unwrap();
+        let _ = call(&app, "POST", &format!("/api/jobs/{id}/cancel"), "");
+    }
+    let snap = app.load().unwrap();
+    assert_eq!(snap.repo("backend").index, "codegraph");
+}

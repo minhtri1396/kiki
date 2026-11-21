@@ -46,6 +46,19 @@ impl Client {
         Launcher::new(self).launch(ctx, spec)
     }
 
+    /// Opens one repository in its Orca project and returns the task worktree created from that git repo.
+    pub fn ensure_task_worktree(
+        &self,
+        ctx: &Ctx,
+        root: &str,
+        project: &str,
+        group: &str,
+        name: &str,
+        branch: &str,
+    ) -> Result<String> {
+        Launcher::new(self).ensure_task_worktree(ctx, root, project, group, name, branch)
+    }
+
     /// ReadTerminal reads what an Orca terminal is showing, and whether it is still running.
     pub fn read_terminal(&self, ctx: &Ctx, handle: &str) -> Result<TerminalView> {
         Terminals::new(self.backend().cli).read(ctx, handle)

@@ -15,6 +15,7 @@ mod job_routes;
 mod models;
 mod orchestrator;
 mod prepare;
+mod repo_names;
 mod settings;
 mod setup_form;
 mod state;

@@ -87,7 +87,7 @@ impl Server {
         Ok((keep_group, keep_repos))
     }
 
-    /// The repository kind each agent of the task works in (its first repository), without repeats.
+    /// Every repository kind the task's agents use, without repeats. Each kind has its own worktree.
     pub(crate) fn task_repo_kinds(&self, task: &store::Task) -> Result<Vec<String>> {
         let dir = self.agent_dir()?;
         let files = agentfile::list(&dir)?;
@@ -98,10 +98,11 @@ impl Server {
             let Some(file) = by_id.get(agent.agent_id.as_str()) else {
                 continue;
             };
-            let Some(repo) = file.repos.first() else { continue };
-            let kind = repo.kind.trim();
-            if !kind.is_empty() && seen.insert(kind) {
-                kinds.push(kind.to_string());
+            for repo in &file.repos {
+                let kind = repo.kind.trim();
+                if !kind.is_empty() && seen.insert(kind) {
+                    kinds.push(kind.to_string());
+                }
             }
         }
         Ok(kinds)

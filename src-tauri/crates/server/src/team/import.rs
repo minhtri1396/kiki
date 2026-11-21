@@ -13,7 +13,10 @@ use kiki_util::path;
 use serde::Deserialize;
 use serde_json::json;
 
-use super::shared_repo::{list_shared_repos, merge_shared, remove_extra_repo_files};
+use super::selected::{copy_agent_ids, keep};
+use super::shared_repo::{
+    list_shared_repos, merge_shared, remove_extra_repo_files, remove_repo_files, selected_shared_repos,
+};
 use super::Outcome;
 use crate::Server;
 
@@ -90,12 +93,24 @@ fn plan_repo_choices(unknown: &[String], decisions: &RepoDecisions, known: &Hash
 }
 
 impl Server {
-    /// Replaces `dest` with the agent files in `source`. A repository id this app does not have is returned as a
-    /// conflict until the request chooses to create it or to use an existing repository.
-    pub(super) fn import_agents(&self, source: &str, dest: &str, decisions: &RepoDecisions) -> Result<Outcome> {
+    /// Copies agent files from `source` onto `dest`.
+    /// `ids` set copies only those agents and leaves the others in `dest`. `None` replaces `dest`.
+    /// A repository id the copied agents use that this app does not have is returned as a conflict until the
+    /// request chooses to create it or to use an existing repository.
+    pub(super) fn import_agents(
+        &self,
+        source: &str,
+        dest: &str,
+        decisions: &RepoDecisions,
+        ids: Option<&[String]>,
+    ) -> Result<Outcome> {
         let snap = self.load()?;
         let known: HashSet<&str> = snap.repos.iter().map(|repo| repo.kind.as_str()).collect();
-        let files = agentfile::list(source)?;
+        let listed = agentfile::list(source)?;
+        let files = match ids {
+            Some(ids) => keep(listed, ids)?,
+            None => listed,
+        };
         let unknown = unknown_repo_kinds(&files, &known);
         match plan_repo_choices(&unknown, decisions, &known)? {
             RepoPlan::Missing(missing) => {
@@ -107,7 +122,10 @@ impl Server {
                 })))
             }
             RepoPlan::Ready { replacements, create } => {
-                teamfolder::copy(source, dest)?;
+                match ids {
+                    Some(ids) => copy_agent_ids(source, dest, ids)?,
+                    None => teamfolder::copy(source, dest)?,
+                }
                 agentfile::replace_repos(dest, &replacements)?;
                 self.ensure_repos(&create)?;
                 Ok(Outcome::Done)
@@ -130,8 +148,46 @@ impl Server {
         self.ignore_repo_folders(&added)
     }
 
+    /// Copies the chosen shared repository files onto this app and leaves the other repositories as they are.
+    pub(super) fn adopt_repo_ids(&self, src: &str, ids: &[String]) -> Result<()> {
+        let chosen = selected_shared_repos(src, ids)?;
+        let mut snap = self.load()?;
+        let mut added = Vec::new();
+        for file in chosen {
+            let existing = snap.repos.iter().position(|repo| repo.kind == file.id);
+            if let Some(index) = existing {
+                let current = snap.repos[index].clone();
+                snap.repos[index] = file.apply_to(current);
+            } else {
+                added.push(file.id.clone());
+                snap.repos.push(file.apply_to(console::Repo::default()));
+            }
+        }
+        self.persist_repos(snap)?;
+        self.ignore_repo_folders(&added)
+    }
+
+    /// Drops repositories from this app, including the ones created with a new setup.
+    pub(super) fn drop_repo_ids(&self, ids: &[String]) -> Result<()> {
+        let drop: Vec<String> = ids
+            .iter()
+            .map(|id| id.trim().to_string())
+            .filter(|id| !id.is_empty())
+            .collect();
+        if drop.is_empty() {
+            return Ok(());
+        }
+        let mut snap = self.load()?;
+        let before = snap.repos.len();
+        snap.repos.retain(|repo| !drop.iter().any(|id| id == &repo.kind));
+        if snap.repos.len() != before {
+            self.persist_repos(snap)?;
+        }
+        remove_repo_files(&path::join(&[&path::dir(self.store.file()), "repos"]), &drop)
+    }
+
     /// Adds a repository for each id that this app does not have yet.
-    fn ensure_repos(&self, ids: &[String]) -> Result<()> {
+    pub(crate) fn ensure_repos(&self, ids: &[String]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }
@@ -139,7 +195,7 @@ impl Server {
         let mut existing: HashSet<String> = snap.repos.iter().map(|repo| repo.kind.clone()).collect();
         let mut added: Vec<String> = Vec::new();
         for id in ids {
-            if existing.contains(id) {
+            if existing.iter().any(|have| have.eq_ignore_ascii_case(id)) {
                 continue;
             }
             if !toolchain::repo_id(id) {
@@ -159,8 +215,14 @@ impl Server {
         self.ignore_repo_folders(&added)
     }
 
+    /// Deletes repository files whose id is no longer in `snap`.
+    pub(crate) fn prune_repo_files(&self, snap: &console::Snapshot) -> Result<()> {
+        let keep: HashSet<&str> = snap.repos.iter().map(|repo| repo.kind.as_str()).collect();
+        remove_extra_repo_files(&path::join(&[&path::dir(self.store.file()), "repos"]), &keep)
+    }
+
     /// Gives every repository a folder, validates the setup and saves it.
-    fn persist_repos(&self, snap: console::Snapshot) -> Result<console::Snapshot> {
+    pub(crate) fn persist_repos(&self, snap: console::Snapshot) -> Result<console::Snapshot> {
         let snap = console::apply_root(&self.root, snap)?;
         console::validate(&snap)?;
         self.store.save(&snap)?;
@@ -168,7 +230,7 @@ impl Server {
     }
 
     /// Keeps the new repositories' folders under the app root out of git.
-    fn ignore_repo_folders(&self, ids: &[String]) -> Result<()> {
+    pub(crate) fn ignore_repo_folders(&self, ids: &[String]) -> Result<()> {
         if ids.is_empty() {
             return Ok(());
         }

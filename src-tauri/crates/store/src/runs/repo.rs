@@ -75,12 +75,23 @@ impl<'a> RunRepo<'a> {
         Ok(())
     }
 
-    /// Stores the question the agent is waiting on.
-    pub(crate) fn set_question(&self, task_id: &str, agent_id: &str, prompt: &str, options: &[String]) -> Result<()> {
-        let encoded = serde_json::to_string(options)?;
+    /// Stores the question the agent is waiting on. A questions block replaces the single question.
+    pub(crate) fn set_question(
+        &self,
+        task_id: &str,
+        agent_id: &str,
+        prompt: &str,
+        options: &[String],
+        questions: &[super::AskQuestion],
+    ) -> Result<()> {
+        let (prompt, encoded) = if questions.is_empty() {
+            (prompt.trim(), serde_json::to_string(options)?)
+        } else {
+            ("", serde_json::to_string(questions)?)
+        };
         self.db.execute(
             "UPDATE task_runs SET ask_prompt = ?, ask_options = ? WHERE task_id = ? AND agent_id = ?",
-            params![prompt.trim(), encoded, task_id, agent_id],
+            params![prompt, encoded, task_id, agent_id],
         )?;
         Ok(())
     }
@@ -129,6 +140,7 @@ fn scan_runs(stmt: &mut rusqlite::Statement<'_>) -> Result<Vec<TaskRun>> {
     let mut out = Vec::new();
     while let Some(row) = rows.next()? {
         let options = text(row, 6)?;
+        let (ask_options, ask_questions) = decode_ask(&options);
         out.push(TaskRun {
             task_id: text(row, 0)?,
             agent_id: text(row, 1)?,
@@ -136,12 +148,27 @@ fn scan_runs(stmt: &mut rusqlite::Statement<'_>) -> Result<Vec<TaskRun>> {
             status: text(row, 3)?,
             log: text(row, 4)?,
             ask_prompt: text(row, 5)?,
-            ask_options: decode_options(&options),
+            ask_options,
+            ask_questions,
             started_at: text(row, 7)?,
             updated_at: text(row, 8)?,
         });
     }
     Ok(out)
+}
+
+/// A questions block is stored as objects. A single question is stored as a list of option strings.
+fn decode_ask(raw: &str) -> (Vec<String>, Vec<super::AskQuestion>) {
+    let raw = raw.trim();
+    if raw.is_empty() {
+        return (Vec::new(), Vec::new());
+    }
+    if let Ok(questions) = serde_json::from_str::<Vec<super::AskQuestion>>(raw) {
+        if questions.iter().any(|question| !question.prompt.trim().is_empty()) {
+            return (Vec::new(), questions);
+        }
+    }
+    (decode_options(raw), Vec::new())
 }
 
 fn decode_options(raw: &str) -> Vec<String> {

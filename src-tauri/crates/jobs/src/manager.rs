@@ -83,7 +83,7 @@ impl Manager {
 
     /// The shared setup steps: validate the request, let the tool prepare, then launch in the background.
     fn setup(&self, tool: &'static dyn IndexTool, req: Setup<'_>) -> Result<Job> {
-        if !kiki_toolchain::known(req.kind) {
+        if !kiki_toolchain::repo_id(req.kind) {
             return Err(anyhow!("invalid repo"));
         }
         if req.folder.trim().is_empty() {

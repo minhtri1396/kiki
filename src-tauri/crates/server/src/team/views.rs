@@ -59,10 +59,17 @@ pub(crate) fn agent_views(dir: &str) -> Result<Vec<TeamAgentView>> {
 pub(crate) fn repo_views(dir: &str) -> Result<Vec<TeamRepoView>> {
     Ok(list_shared_repos(dir)?
         .into_iter()
-        .map(|repo| TeamRepoView {
-            hash: hex_sha256(repo.canonical().as_bytes()),
-            name: repo.id.clone(),
-            id: repo.id,
+        .map(|repo| {
+            let name = repo.name.trim();
+            TeamRepoView {
+                hash: hex_sha256(repo.canonical().as_bytes()),
+                name: if name.is_empty() {
+                    repo.id.clone()
+                } else {
+                    name.to_string()
+                },
+                id: repo.id,
+            }
         })
         .collect())
 }

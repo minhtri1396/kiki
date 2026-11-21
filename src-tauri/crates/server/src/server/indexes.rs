@@ -141,12 +141,13 @@ impl Server {
     }
 
     /// Chooses `tool` for a repository and starts its setup unless the folder already has it.
+    /// `force` in the body starts setup even when that folder is already there.
     fn begin_index(&self, req: &Request, tool: IndexTool) -> ApiResult<Response> {
-        let kind = index_repo(req)?;
+        let (kind, force) = index_repo(req)?;
         let snap = self.load().or_status(500)?;
         self.store.save_repo_index(&snap, &kind, tool.id()).or_status(400)?;
         let folder = snap.repo(&kind).folder.trim().to_string();
-        if tool.present_in(&folder) {
+        if tool.present_in(&folder) && !force {
             return self.state_reply();
         }
         let job = match tool {
@@ -192,20 +193,22 @@ impl Server {
     }
 }
 
-/// The repository a setup call is for: the route's `{kind}`, else the body's `repo`.
-fn index_repo(req: &Request) -> ApiResult<String> {
+/// The repository a setup call is for, and whether setup should run even if its folder exists.
+/// The kind is the route's `{kind}`, else the body's `repo`.
+fn index_repo(req: &Request) -> ApiResult<(String, bool)> {
     #[derive(Deserialize, Default)]
     #[serde(default)]
     struct Body {
         repo: String,
+        force: bool,
     }
+    let body: Body = read_optional_json(req)?;
     let mut kind = req.path_value("kind").trim().to_string();
     if kind.is_empty() {
-        let body: Body = read_optional_json(req)?;
         kind = body.repo.trim().to_string();
     }
     if !toolchain::repo_id(&kind) {
         return Err(ApiError::bad_request("choose a repository"));
     }
-    Ok(kind)
+    Ok((kind, body.force))
 }

@@ -282,3 +282,100 @@ fn team_save_asks_when_the_user_already_has_agents() {
     let cfg = store_cfg(&app);
     assert!(cfg.user == "alice" && cfg.member == "alice", "team = {cfg:?}");
 }
+
+#[test]
+fn team_save_copies_repos_beside_agents() {
+    let app = new_team_test_server();
+    let agents = app.root.join(".kiki/agents/backend");
+    mkdirs(&agents);
+    write(&agents.join("backend_runner.md"), LOCAL_AGENT_FILE);
+    let checkout = app.root.join("backend");
+    mkdirs(&checkout);
+    let mut snap = app.load().unwrap();
+    for repo in snap.repos.iter_mut() {
+        if repo.kind != "backend" {
+            continue;
+        }
+        repo.folder = s(&checkout).to_string();
+        repo.services = vec!["api".to_string()];
+        repo.index = "codegraph".to_string();
+    }
+    app.store.save(&snap).unwrap();
+    let (_d, team) = temp_team();
+    mkdirs(&team);
+    let body = format!(r#"{{"path":"{}","user":"alice"}}"#, s(&team));
+    let (status, body) = text(app.handle(&put_json("/api/team", &body)));
+    assert_eq!(status, 200, "status = {status} body = {body}");
+    let agents_copy = fs::read_to_string(team.join("alice/agents/backend/backend_runner.md")).unwrap();
+    assert_eq!(agents_copy, LOCAL_AGENT_FILE);
+    let repos_copy = fs::read_to_string(team.join("alice/repos/backend.yaml")).unwrap();
+    assert!(
+        repos_copy.contains("api") && !repos_copy.contains("folder:") && !repos_copy.contains(s(&checkout)),
+        "repos = {repos_copy}"
+    );
+}
+
+#[test]
+fn team_save_confirm_copies_repos_beside_agents() {
+    let app = new_team_test_server();
+    let agents = app.root.join(".kiki/agents/backend");
+    mkdirs(&agents);
+    write(&agents.join("backend_runner.md"), LOCAL_AGENT_FILE);
+    let checkout = app.root.join("backend");
+    mkdirs(&checkout);
+    let mut snap = app.load().unwrap();
+    for repo in snap.repos.iter_mut() {
+        if repo.kind != "backend" {
+            continue;
+        }
+        repo.folder = s(&checkout).to_string();
+        repo.services = vec!["api".to_string()];
+        repo.index = "codegraph".to_string();
+    }
+    app.store.save(&snap).unwrap();
+    let (_d, team) = temp_team();
+    mkdirs(&team.join("alice/agents/requirement"));
+    write(&team.join("alice/agents/requirement/requirement_document.md"), "team\n");
+    mkdirs(&team.join("alice/repos"));
+    write(
+        &team.join("alice/repos/backend.yaml"),
+        "id: backend\nservices:\n  - billing\nindex: obsidian\n",
+    );
+
+    let push = format!(
+        r#"{{"path":"{}","user":"alice","useExisting":true,"direction":"push"}}"#,
+        s(&team)
+    );
+    let (status, body) = text(app.handle(&put_json("/api/team", &push)));
+    assert_eq!(status, 200, "push status = {status} body = {body}");
+    let pushed = fs::read_to_string(team.join("alice/repos/backend.yaml")).unwrap();
+    assert!(
+        pushed.contains("api") && !pushed.contains("billing") && !pushed.contains(s(&checkout)),
+        "pushed = {pushed}"
+    );
+    assert_eq!(
+        fs::read_to_string(team.join("alice/agents/backend/backend_runner.md")).unwrap(),
+        LOCAL_AGENT_FILE
+    );
+
+    write(
+        &team.join("alice/repos/backend.yaml"),
+        "id: backend\nservices:\n  - billing\nindex: obsidian\n",
+    );
+    mkdirs(&team.join("alice/agents/requirement"));
+    write(&team.join("alice/agents/requirement/requirement_document.md"), "team\n");
+    let pull = format!(
+        r#"{{"path":"{}","user":"alice","useExisting":true,"direction":"pull"}}"#,
+        s(&team)
+    );
+    let (status, body) = text(app.handle(&put_json("/api/team", &pull)));
+    assert_eq!(status, 200, "pull status = {status} body = {body}");
+    let got = app.load().unwrap().repo("backend");
+    assert!(
+        got.folder == s(&checkout) && got.services == vec!["billing".to_string()] && got.index == "obsidian",
+        "backend = {got:?}"
+    );
+    assert!(exists(
+        &app.root.join(".kiki/agents/requirement/requirement_document.md")
+    ));
+}
