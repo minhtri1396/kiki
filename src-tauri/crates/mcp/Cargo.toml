@@ -11,7 +11,7 @@ serde_json = { workspace = true, features = ["raw_value"] }
 ureq.workspace = true
 url.workspace = true
 regex.workspace = true
-base64 = "0.22"
+base64 = "0.23"
 kiki-util = { path = "../util" }
 kiki-aitool = { path = "../aitool" }
 
