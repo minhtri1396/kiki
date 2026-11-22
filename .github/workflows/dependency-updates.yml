@@ -35,7 +35,7 @@ jobs:
           cache: npm
 
       - name: Setup Rust (rust-toolchain.toml)
-        uses: dtolnay/rust-toolchain@master
+        uses: ./.github/actions/setup-rust
         with:
           components: rustfmt, clippy
 
