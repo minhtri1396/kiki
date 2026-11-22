@@ -9,8 +9,23 @@ use serde::{Deserialize, Serialize};
 use kiki_toolchain as toolchain;
 use kiki_util::path;
 
+/// Guide files for one Nx service. `shared` means the service uses the repository's guide files.
+///
+/// The JSON keys are capitalised because setup data already stored uses them.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ServiceGuides {
+    #[serde(rename = "Service")]
+    pub service: String,
+    #[serde(rename = "Shared")]
+    pub shared: bool,
+    #[serde(rename = "Guides")]
+    pub guides: Vec<String>,
+}
+
 /// One app repository. `index` is obsidian, codegraph, or empty when none is set.
 /// `sparse` is a folder inside the git repository. Empty means the whole repository is checked out.
+/// `guides` are the markdown files the launch prompt tells an agent to read in this repository.
 ///
 /// The JSON keys are capitalised (`Kind`, `Folder`, ...) because setup data already stored uses them.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +48,10 @@ pub struct Repo {
     pub index: String,
     #[serde(rename = "Sparse")]
     pub sparse: String,
+    #[serde(rename = "Guides")]
+    pub guides: Vec<String>,
+    #[serde(rename = "ServiceGuides")]
+    pub service_guides: Vec<ServiceGuides>,
 }
 
 /// The setup passed to one agent launch.
@@ -79,6 +98,24 @@ impl Repo {
     pub fn uses_services(&self) -> bool {
         self.divided || !self.services.is_empty()
     }
+
+    /// Where the prompt tells the agent to read `name`. A missing folder leaves the file name.
+    pub fn guide_location(&self, name: &str) -> String {
+        let folder = self.folder.trim();
+        if folder.is_empty() {
+            name.to_string()
+        } else {
+            path::join(&[folder, name])
+        }
+    }
+
+    /// The service's own guide files. `None` means it uses the repository's guide files.
+    pub fn service_guide_list(&self, service: &str) -> Option<&[String]> {
+        match self.service_guides.iter().find(|row| row.service == service) {
+            Some(row) if !row.shared => Some(row.guides.as_slice()),
+            _ => None,
+        }
+    }
 }
 
 impl Snapshot {
@@ -118,9 +155,10 @@ pub fn sparse_path(raw: &str) -> Result<String> {
     Ok(cleaned)
 }
 
-/// Gives each saved repository a folder and creates any folder that is missing.
-/// A repository that is not in the snapshot is left out. A saved absolute path stays.
-/// An empty path uses the directory under the app root. Saved service names are kept.
+/// Keeps a saved absolute folder. Backend, website, mobile, and document stay
+/// without a folder until one is saved, and those directories are not created.
+/// A repository you add gets a directory under the app root when its folder is empty.
+/// A repository that is not in the snapshot is left out. Saved service names are kept.
 pub fn apply_root(root: &str, mut snap: Snapshot) -> Result<Snapshot> {
     let root = root.trim();
     if root.is_empty() || !path::is_abs(root) {
@@ -142,7 +180,6 @@ pub fn apply_root(root: &str, mut snap: Snapshot) -> Result<Snapshot> {
         if *kind == "document" && !repo.divided {
             repo.services = Vec::new();
         }
-        fs::create_dir_all(&repo.folder)?;
         snap.repos.push(repo);
     }
     // Other repositories follow the built-in kinds that are still present, sorted by id.
@@ -152,7 +189,9 @@ pub fn apply_root(root: &str, mut snap: Snapshot) -> Result<Snapshot> {
         }
         let mut repo = saved.clone();
         repo.folder = repo_folder(&root, kind, &repo.folder);
-        fs::create_dir_all(&repo.folder)?;
+        if !repo.folder.is_empty() {
+            fs::create_dir_all(&repo.folder)?;
+        }
         snap.repos.push(repo);
     }
     Ok(snap)
@@ -164,7 +203,7 @@ fn repo_folder(root: &str, kind: &str, saved: &str) -> String {
         return path::clean(saved);
     }
     if toolchain::known(kind) {
-        return toolchain::folder(root, kind);
+        return String::new();
     }
     path::join(&[root, kind])
 }
@@ -212,9 +251,10 @@ mod tests {
         )
         .unwrap();
         assert_eq!(snap.repo("backend").folder, custom);
-        assert_eq!(snap.repo("website").folder, path::join(&[&root, "website"]));
+        assert_eq!(snap.repo("website").folder, "");
         let kinds: Vec<&str> = snap.repos.iter().map(|repo| repo.kind.as_str()).collect();
         assert_eq!(kinds, ["backend", "website"]);
+        assert!(!std::path::Path::new(&root).join("website").exists());
     }
 
     #[test]
@@ -244,7 +284,14 @@ mod tests {
         .unwrap();
         let kinds: Vec<&str> = snap.repos.iter().map(|repo| repo.kind.as_str()).collect();
         assert_eq!(kinds, ["website", "alpha", "zeta"]);
+        assert_eq!(snap.repo("website").folder, "");
         assert_eq!(snap.repo("alpha").folder, path::join(&[&root, "alpha"]));
+        let base = std::path::Path::new(&root);
+        for name in ["backend", "website", "mobile", "docs"] {
+            assert!(!base.join(name).exists(), "{name} was created");
+        }
+        assert!(base.join("alpha").is_dir());
+        assert!(base.join("zeta").is_dir());
     }
 
     #[test]

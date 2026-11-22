@@ -1561,13 +1561,56 @@ function reposDirty() {
     const box = repoDividedBox(repo.kind);
     if (!box) return false;
     if (box.checked !== !!repo.divided) return true;
+    const guideList = document.querySelector(`#panel-repos [data-repo-guide-list="${CSS.escape(repo.kind)}"]`);
+    if (guideList && !sameGuideList(guideValues(guideList), repo.guides || [])) return true;
     if (!box.checked) continue;
     const tags = document.querySelector(`#panel-repos [data-services="${CSS.escape(repo.kind)}"]`);
     if (!tags) return false;
     const selected = [...tags.querySelectorAll("button[aria-pressed='true']")].map((item) => item.dataset.name);
     if (!sameNames(selected, repo.services || [])) return true;
+    for (const service of selected) {
+      const saved = (repo.serviceGuides || []).find((row) => row.service === service);
+      const sharedBox = document.querySelector(`#panel-repos [data-service-guide-shared="${CSS.escape(repo.kind)}"][data-guide-service="${CSS.escape(service)}"]`);
+      const shared = !sharedBox || sharedBox.checked;
+      const savedShared = saved ? !!saved.shared : true;
+      if (shared !== savedShared) return true;
+      if (shared) continue;
+      const own = document.querySelector(`#panel-repos [data-service-guide-list="${CSS.escape(repo.kind)}"][data-guide-service="${CSS.escape(service)}"]`);
+      const savedNames = (saved && saved.guides) || [];
+      if (!sameGuideList(guideValues(own), savedNames)) return true;
+    }
   }
   return false;
+}
+
+function guideValues(list) {
+  if (!list) return [];
+  return [...list.querySelectorAll("input[data-guide-name]")].map((input) => input.value.trim()).filter(Boolean);
+}
+
+function sameGuideList(left, right) {
+  return left.length === right.length && left.every((name, index) => name === right[index]);
+}
+
+function collectedGuides(repo) {
+  const list = document.querySelector(`#panel-repos [data-repo-guide-list="${CSS.escape(repo.kind)}"]`);
+  if (!list) {
+    return {
+      guides: repo.guides || [],
+      serviceGuides: repo.divided ? (repo.serviceGuides || []) : [],
+    };
+  }
+  const guides = guideValues(list);
+  const box = repoDividedBox(repo.kind);
+  if (!box || !box.checked) return { guides, serviceGuides: [] };
+  const services = [...document.querySelectorAll(`#panel-repos [data-services="${CSS.escape(repo.kind)}"] button[aria-pressed="true"]`)].map((item) => item.dataset.name);
+  const serviceGuides = services.map((service) => {
+    const sharedBox = document.querySelector(`#panel-repos [data-service-guide-shared="${CSS.escape(repo.kind)}"][data-guide-service="${CSS.escape(service)}"]`);
+    const shared = !sharedBox || sharedBox.checked;
+    const own = document.querySelector(`#panel-repos [data-service-guide-list="${CSS.escape(repo.kind)}"][data-guide-service="${CSS.escape(service)}"]`);
+    return { service, shared, guides: shared ? [] : guideValues(own) };
+  });
+  return { guides, serviceGuides };
 }
 
 function configDirty() {
@@ -2178,6 +2221,7 @@ function repoFolderSection(repo) {
     section.append(clone);
   }
   section.append(repoServicesSection(repo));
+  section.append(repoGuidesSection(repo));
   return section;
 }
 
@@ -2204,6 +2248,107 @@ function repoServicesSection(repo) {
   return section;
 }
 
+function repoGuidesSection(repo) {
+  const section = el("div", "repo-guides");
+  section.dataset.repoGuides = repo.kind;
+  section.append(el("p", "repo-region", "Guide files"));
+  section.append(el("p", "hint", "Each name is a markdown file in this repository, such as AGENTS.md. The launch prompt tells the agent to read these files and follow them."));
+  const list = el("div", "guide-list");
+  list.dataset.repoGuideList = repo.kind;
+  for (const name of repo.guides || []) list.append(guideRow(repo.kind, "", name));
+  const add = el("button", "", "Add guide file");
+  add.type = "button";
+  add.dataset.addGuide = repo.kind;
+  const services = el("div", "service-guides");
+  services.dataset.serviceGuides = repo.kind;
+  section.append(list, add, services);
+  paintServiceGuides(section, repo);
+  return section;
+}
+
+function guideRow(kind, service, value) {
+  const row = el("div", "guide-row");
+  const input = el("input");
+  input.type = "text";
+  input.spellcheck = false;
+  input.autocomplete = "off";
+  input.placeholder = "AGENTS.md";
+  input.value = value || "";
+  input.dataset.guideName = kind;
+  if (service) input.dataset.guideService = service;
+  const remove = el("button", "", "Remove");
+  remove.type = "button";
+  remove.dataset.removeGuide = kind;
+  row.append(input, remove);
+  return row;
+}
+
+function paintServiceGuides(section, repo) {
+  const host = section.querySelector("[data-service-guides]");
+  if (!host) return;
+  const kind = repo.kind;
+  const divided = repoDividedBox(kind);
+  const on = divided ? divided.checked : !!repo.divided;
+  const tags = section.closest(".repo-folder") && section.closest(".repo-folder").querySelector("[data-services]");
+  const selected = tags
+    ? [...tags.querySelectorAll("button[aria-pressed='true']")].map((item) => item.dataset.name)
+    : (repo.services || []);
+  const previous = new Map();
+  for (const block of host.querySelectorAll("[data-service-guide]")) {
+    const service = block.dataset.serviceGuide;
+    const shared = block.querySelector("[data-service-guide-shared]");
+    previous.set(service, {
+      shared: !shared || shared.checked,
+      names: [...block.querySelectorAll("input[data-guide-name]")].map((input) => input.value),
+    });
+  }
+  host.replaceChildren();
+  if (!on || !selected.length) {
+    host.hidden = true;
+    return;
+  }
+  host.hidden = false;
+  host.append(el("p", "hint", "Each selected service can use the repository guide files, or its own."));
+  for (const service of selected) {
+    const saved = (repo.serviceGuides || []).find((row) => row.service === service);
+    const draft = previous.get(service);
+    const shared = draft ? draft.shared : (saved ? !!saved.shared : true);
+    const names = draft ? draft.names : ((saved && !saved.shared && saved.guides) || []);
+    host.append(serviceGuideBlock(kind, service, shared, names));
+  }
+}
+
+function serviceGuideBlock(kind, service, shared, names) {
+  const block = el("div", "service-guide");
+  block.dataset.serviceGuide = service;
+  const choice = el("label", "check-line");
+  const box = el("input");
+  box.type = "checkbox";
+  box.dataset.serviceGuideShared = kind;
+  box.dataset.guideService = service;
+  box.checked = shared;
+  choice.append(box, el("span", "", service + " uses the repository guide files"));
+  const own = el("div", "service-guide-own");
+  own.hidden = shared;
+  const list = el("div", "guide-list");
+  list.dataset.serviceGuideList = kind;
+  list.dataset.guideService = service;
+  for (const name of names) list.append(guideRow(kind, service, name));
+  const add = el("button", "", "Add guide file");
+  add.type = "button";
+  add.dataset.addGuide = kind;
+  add.dataset.guideService = service;
+  own.append(el("p", "hint", "These files are for " + service + ". The launch prompt tells the agent to follow them inside that service."), list, add);
+  block.append(choice, own);
+  return block;
+}
+
+function refreshServiceGuides(kind) {
+  const section = document.querySelector(`#panel-repos [data-repo-guides="${CSS.escape(kind)}"]`);
+  const repo = ((state.data && state.data.repos) || []).find((item) => item.kind === kind) || { kind, serviceGuides: [] };
+  if (section) paintServiceGuides(section, repo);
+}
+
 function paintRepoServices(section, repo) {
   const tags = section.querySelector("[data-services]");
   const note = section.querySelector("[data-service-note]");
@@ -2222,6 +2367,7 @@ async function toggleRepoDivided(box) {
   const body = section && section.querySelector("[data-repo-services-body]");
   if (body) body.hidden = !box.checked;
   if (box.checked && section) await loadRepoServices(kind, section);
+  refreshServiceGuides(kind);
   syncSave();
 }
 
@@ -2247,6 +2393,7 @@ async function loadRepoServices(kind, section) {
     const pressed = [...tags.querySelectorAll("button[aria-pressed='true']")].map((item) => item.dataset.name);
     const chosen = pressed.length ? pressed : ((repo && repo.services) || []);
     fillServiceTags(tags, note, data.services || [], chosen);
+    refreshServiceGuides(kind);
   } catch (error) {
     note.textContent = error.message;
     tags.replaceChildren();
@@ -2741,9 +2888,7 @@ function agentTeamwork(agent) {
 }
 
 function repoNoteText(use) {
-  const lines = ["Guide file: " + (use.guide || defaultGuideFile)];
-  if (use.description) lines.push(use.description);
-  return lines.join("\n");
+  return (use && use.description) || "";
 }
 
 function handoffsText(peer) {
@@ -3684,18 +3829,22 @@ function collect() {
     repos: state.data.repos.map((repo) => {
       const box = repoDividedBox(repo.kind);
       if (!box) {
+        const kept = collectedGuides(repo);
         return {
           kind: repo.kind,
           folder: repo.folder,
           divided: !!repo.divided,
           services: repo.divided ? (repo.services || []) : [],
+          guides: kept.guides,
+          serviceGuides: kept.serviceGuides,
         };
       }
       const divided = box.checked;
       const services = divided
         ? [...document.querySelectorAll(`#panel-repos [data-services="${CSS.escape(repo.kind)}"] button[aria-pressed="true"]`)].map((item) => item.dataset.name)
         : [];
-      return { kind: repo.kind, folder: repo.folder, divided, services };
+      const guides = collectedGuides(repo);
+      return { kind: repo.kind, folder: repo.folder, divided, services, guides: guides.guides, serviceGuides: guides.serviceGuides };
     }),
   };
   const dialog = document.querySelector("#settings-dialog");
@@ -5193,20 +5342,18 @@ async function startSetup(tool, kind, options = {}) {
   }
 }
 
-const defaultGuideFile = "AGENTS.md";
 const defaultMaxLoops = 3;
 const maxLoopsLimit = 20;
 
 function repoList(value) {
   if (!Array.isArray(value)) {
     if (!value) return [];
-    return [{ kind: value, guide: "", description: "", readonly: false }];
+    return [{ kind: value, description: "", readonly: false }];
   }
   return value.map((item) => {
-    if (typeof item === "string") return { kind: item, guide: "", description: "", readonly: false };
+    if (typeof item === "string") return { kind: item, description: "", readonly: false };
     return {
       kind: item && (item.kind || item.id),
-      guide: (item && item.guide) || "",
       description: (item && item.description) || "",
       readonly: !!(item && item.readonly),
     };
@@ -5227,12 +5374,8 @@ function repoChoices(repos) {
 function rememberRepoNotes() {
   if (!state.repoNotes) state.repoNotes = {};
   if (!state.repoReadonly) state.repoReadonly = {};
-  if (!state.repoGuides) state.repoGuides = {};
   for (const area of document.querySelectorAll("#agent-repos textarea[data-repo]")) {
     state.repoNotes[area.dataset.repo] = area.value;
-  }
-  for (const input of document.querySelectorAll("#agent-repos input[data-repo-guide]")) {
-    state.repoGuides[input.dataset.repoGuide] = input.value;
   }
   for (const box of document.querySelectorAll("#agent-repos [data-repo-readonly]")) {
     state.repoReadonly[box.dataset.repoReadonly] = box.checked;
@@ -5271,19 +5414,7 @@ function scopeCard(title, id, on, toggle, hint) {
 
 function repoDetail(kind) {
   const wrap = el("div", "repo-block");
-  const guideField = el("div", "field repo-guide");
-    guideField.append(el("span", "", "Guide file"));
-    const guide = document.createElement("input");
-    guide.type = "text";
-    guide.dataset.repoGuide = kind;
-    guide.placeholder = defaultGuideFile;
-    guide.spellcheck = false;
-    guide.autocomplete = "off";
-    guide.value = (state.repoGuides && state.repoGuides[kind]) || defaultGuideFile;
-    guideField.append(guide);
-    guideField.append(el("p", "hint", "The markdown file in this repository that the agent reads and follows when it works here. KIKI puts it in the launch prompt."));
-    wrap.append(guideField);
-    const block = el("div", "field");
+  const block = el("div", "field");
     const bar = el("div", "prompt-bar");
     bar.append(el("span", "", "What this agent does in this repository"));
     const toggleWrap = el("span", "preview-toggle");
@@ -6144,10 +6275,8 @@ function fillAgentRepos(selected) {
   const items = repoList(selected);
   state.repoNotes = {};
   state.repoReadonly = {};
-  state.repoGuides = {};
   state.repoChosen = new Set();
   for (const repo of items) {
-    state.repoGuides[repo.kind] = repo.guide;
     state.repoNotes[repo.kind] = repo.description;
     state.repoReadonly[repo.kind] = !!repo.readonly;
     state.repoChosen.add(repo.kind);
@@ -6833,7 +6962,6 @@ function editorAgentDraft() {
   const id = state.creatingAgent ? (newAgentId() || "new-agent") : (state.editingAgentId || "new-agent");
   const repos = [...(state.repoChosen || [])].map((kind) => ({
     kind,
-    guide: ((state.repoGuides || {})[kind] || "").trim() || defaultGuideFile,
     description: ((state.repoNotes || {})[kind] || "").trim(),
     readonly: !!(state.repoReadonly && state.repoReadonly[kind]),
   }));
@@ -7081,7 +7209,6 @@ async function saveAgent() {
   rememberRepoNotes();
   const repos = [...document.querySelectorAll("#agent-repos button[data-repo][aria-pressed='true']")].map((button) => ({
     kind: button.dataset.repo,
-    guide: ((state.repoGuides || {})[button.dataset.repo] || "").trim() || defaultGuideFile,
     description: (state.repoNotes[button.dataset.repo] || "").trim(),
     readonly: !!(state.repoReadonly && state.repoReadonly[button.dataset.repo]),
   }));
@@ -7478,6 +7605,25 @@ document.body.addEventListener("click", (event) => {
   const tag = event.target.closest(".service-tags button");
   if (tag) {
     tag.setAttribute("aria-pressed", tag.getAttribute("aria-pressed") === "true" ? "false" : "true");
+    const tags = tag.closest("[data-services]");
+    if (tags) refreshServiceGuides(tags.dataset.services);
+    syncSave();
+    return;
+  }
+  const addGuide = event.target.closest("[data-add-guide]");
+  if (addGuide) {
+    const service = addGuide.dataset.guideService || "";
+    const list = service
+      ? addGuide.parentElement.querySelector("[data-service-guide-list]")
+      : addGuide.parentElement.querySelector("[data-repo-guide-list]");
+    if (list) list.append(guideRow(addGuide.dataset.addGuide, service, ""));
+    syncSave();
+    return;
+  }
+  const removeGuide = event.target.closest("[data-remove-guide]");
+  if (removeGuide) {
+    const row = removeGuide.closest(".guide-row");
+    if (row) row.remove();
     syncSave();
     return;
   }
@@ -7540,6 +7686,7 @@ document.body.addEventListener("input", (event) => {
   }
   if (event.target.closest("#settings-fields")) clearFieldValidation(event.target);
   if (event.target.id === "team-path" || event.target.id === "team-user") syncTeamName();
+  if (event.target.dataset && event.target.dataset.guideName) syncSave();
   if (event.target.id === "workspace-id" || event.target.id === "team-path" || event.target.id === "team-user") syncSave();
   if (event.target.id && event.target.id.startsWith("mcp-")) syncSave();
   if (event.target.id === "team-path") {
@@ -7572,6 +7719,13 @@ document.body.addEventListener("change", (event) => {
   }
   if (event.target.matches("[data-repo-divided]")) {
     toggleRepoDivided(event.target);
+    return;
+  }
+  if (event.target.matches("[data-service-guide-shared]")) {
+    const block = event.target.closest("[data-service-guide]");
+    const own = block && block.querySelector(".service-guide-own");
+    if (own) own.hidden = event.target.checked;
+    syncSave();
     return;
   }
   if (event.target.id === "appearance") {

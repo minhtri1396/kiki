@@ -64,6 +64,16 @@ fn ask_guard(app: &Server, cwd: &str, agent: &str, event: &str, input: &str) -> 
     }
 }
 
+fn use_repo_folder(app: &Server, kind: &str) -> String {
+    let name = if kind == "document" { "docs" } else { kind };
+    let folder = Path::new(&app.root).join(name);
+    fs::create_dir_all(&folder).unwrap();
+    let folder = folder.to_string_lossy().into_owned();
+    let snap = app.store.load().unwrap();
+    app.store.save_repo_folder(&snap, kind, &folder).unwrap();
+    folder
+}
+
 fn agent_files(app: &Server) -> (String, Vec<agentfile::File>) {
     app.store.ensure_layout(&app.root).unwrap();
     ensure_agent_files(&app.root).unwrap();
@@ -109,13 +119,8 @@ fn guardrail_blocks_what_the_agent_did_not_select() {
         agentfile::save(&dir, &file.id, &file).unwrap_or_else(|e| panic!("save {}: {e:#}", file.id));
     }
     assert!(!reader.id.is_empty() && !other.id.is_empty(), "missing agents");
-    let snap = app.load().unwrap();
-    let doc = snap.repo("document").folder;
-    let backend = snap.repo("backend").folder;
-    assert!(
-        !doc.is_empty() && !backend.is_empty(),
-        "folders document={doc:?} backend={backend:?}"
-    );
+    let doc = use_repo_folder(&app, "document");
+    let backend = use_repo_folder(&app, "backend");
 
     let jira = r#"{"server":"mcp-atlassian-kiki","tool_name":"jira_search"}"#;
     let blocked = ask_guard(&app, &doc, "", "beforeMCPExecution", jira);
@@ -222,9 +227,8 @@ fn guardrail_blocks_writes_when_the_repository_is_readonly() {
         agentfile::save(&dir, &file.id, &file).unwrap_or_else(|e| panic!("save {}: {e:#}", file.id));
     }
     assert!(!reader.id.is_empty(), "missing agent");
-    let snap = app.load().unwrap();
-    let doc = snap.repo("document").folder;
-    let backend = snap.repo("backend").folder;
+    let doc = use_repo_folder(&app, "document");
+    let backend = use_repo_folder(&app, "backend");
     let note = file_path_json(&format!("{doc}/notes.md"));
     let read = ask_guard(&app, &doc, &reader.id, "beforeReadFile", &note);
     assert!(read.allow, "read = {}", read.message);
@@ -299,9 +303,8 @@ fn guardrail_blocks_an_nx_project_the_repository_did_not_select() {
         agentfile::save(&dir, &file.id, &file).unwrap_or_else(|e| panic!("save {}: {e:#}", file.id));
     }
     assert!(!runner.id.is_empty(), "missing agent");
+    let backend = use_repo_folder(&app, "backend");
     let mut snap = app.load().unwrap();
-    let backend = snap.repo("backend").folder;
-    assert!(!backend.is_empty(), "backend folder is not set");
     for repo in snap.repos.iter_mut() {
         if repo.kind == "backend" {
             repo.services = vec!["api".to_string()];

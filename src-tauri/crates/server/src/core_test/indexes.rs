@@ -11,6 +11,14 @@ fn index_of(state: &Value, kind: &str) -> String {
     panic!("repo {kind} missing");
 }
 
+fn point_at(app: &TestApp, kind: &str, folder: &std::path::Path) {
+    fs::create_dir_all(folder).unwrap();
+    let snap = app.store.load().unwrap();
+    app.store
+        .save_repo_folder(&snap, kind, &folder.to_string_lossy())
+        .unwrap();
+}
+
 fn present_of(state: &Value, kind: &str) -> Vec<String> {
     for row in state["indexes"].as_array().unwrap() {
         if row["kind"] != kind {
@@ -34,6 +42,10 @@ fn remember_present_indexes_saves_the_folder_that_exists() {
     let docs = app.root.join("docs");
     let website = app.root.join("website");
     let mobile = app.root.join("mobile");
+    point_at(&app, "backend", &backend);
+    point_at(&app, "document", &docs);
+    point_at(&app, "website", &website);
+    point_at(&app, "mobile", &mobile);
     for dir in [
         backend.join(".codegraph"),
         docs.join(".obsidian"),
@@ -90,7 +102,9 @@ fn remember_present_indexes_saves_the_folder_that_exists() {
 fn use_index_keeps_an_existing_folder() {
     let app = new_test_server();
     app.store.ensure_layout(root_str(&app)).unwrap();
-    fs::create_dir(app.root.join("backend").join(".codegraph")).unwrap();
+    let backend = app.root.join("backend");
+    point_at(&app, "backend", &backend);
+    fs::create_dir(backend.join(".codegraph")).unwrap();
     let (status, body) = call(&app, "PUT", "/api/indexes/backend", r#"{"index":"codegraph"}"#);
     assert_eq!(status, 200, "use status {status} body {body}");
     let state: Value = serde_json::from_str(&body).unwrap();
@@ -118,7 +132,9 @@ fn use_index_keeps_an_existing_folder() {
 fn setup_keeps_an_existing_codegraph_folder() {
     let app = new_test_server();
     app.store.ensure_layout(root_str(&app)).unwrap();
-    fs::create_dir(app.root.join("backend").join(".codegraph")).unwrap();
+    let backend = app.root.join("backend");
+    point_at(&app, "backend", &backend);
+    fs::create_dir(backend.join(".codegraph")).unwrap();
     let (status, body) = call(&app, "POST", "/api/indexes/codegraph/backend", "");
     assert_eq!(status, 200, "status {status} body {body}");
     let state: Value = serde_json::from_str(&body).unwrap();
@@ -136,7 +152,9 @@ fn setup_keeps_an_existing_codegraph_folder() {
 fn setup_force_runs_when_the_codegraph_folder_exists() {
     let app = new_test_server();
     app.store.ensure_layout(root_str(&app)).unwrap();
-    fs::create_dir(app.root.join("backend").join(".codegraph")).unwrap();
+    let backend = app.root.join("backend");
+    point_at(&app, "backend", &backend);
+    fs::create_dir(backend.join(".codegraph")).unwrap();
     let (status, body) = call(&app, "POST", "/api/indexes/codegraph/backend", r#"{"force":true}"#);
     assert!(
         status == 202 || (status == 400 && body.contains("not found")),

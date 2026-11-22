@@ -23,6 +23,8 @@ pub(crate) struct SharedRepo {
     /// The repository is split into Nx services. Older shared files omit this key.
     pub divided: bool,
     pub services: Vec<String>,
+    pub guides: Vec<String>,
+    pub service_guides: Vec<console::ServiceGuides>,
     pub index: String,
     pub sparse: String,
 }
@@ -37,11 +39,36 @@ impl SharedRepo {
             .iter()
             .map(|s| Value::from(s.as_str()))
             .collect::<Vec<_>>();
+        let guides = self
+            .guides
+            .iter()
+            .map(|name| Value::from(name.as_str()))
+            .collect::<Vec<_>>();
+        let service_guides = self
+            .service_guides
+            .iter()
+            .map(|row| {
+                let mut map = Mapping::new().set("service", row.service.as_str());
+                if row.shared {
+                    map = map.set("shared", true);
+                } else if !row.guides.is_empty() {
+                    let names = row
+                        .guides
+                        .iter()
+                        .map(|name| Value::from(name.as_str()))
+                        .collect::<Vec<_>>();
+                    map = map.set("guides", names);
+                }
+                map.into_value()
+            })
+            .collect::<Vec<_>>();
         Mapping::new()
             .set("id", self.id.as_str())
             .set_unless_empty("name", self.name.trim())
             .set_if(self.divided, "divided", true)
             .set("services", services)
+            .set_if(!guides.is_empty(), "guides", guides)
+            .set_if(!service_guides.is_empty(), "service_guides", service_guides)
             .set_unless_empty("index", &self.index)
             .set_unless_empty("sparse", &self.sparse)
             .emit()
@@ -59,6 +86,12 @@ impl SharedRepo {
         } else {
             self.services.clone()
         };
+        repo.guides = self.guides.clone();
+        repo.service_guides = if repo.uses_services() {
+            self.service_guides.clone()
+        } else {
+            Vec::new()
+        };
         repo.index = self.index.clone();
         repo.sparse = self.sparse.clone();
         repo
@@ -73,8 +106,17 @@ pub(crate) fn parse_shared_repo(raw: &[u8], file_name: &str) -> Result<Option<Sh
         name: Option<String>,
         divided: Option<bool>,
         services: Option<Vec<String>>,
+        guides: Option<Vec<String>>,
+        service_guides: Option<Vec<GuideRow>>,
         index: Option<String>,
         sparse: Option<String>,
+    }
+    #[derive(Deserialize, Default)]
+    #[serde(default)]
+    struct GuideRow {
+        service: Option<String>,
+        shared: Option<bool>,
+        guides: Option<Vec<String>>,
     }
     let text = String::from_utf8_lossy(raw);
     // An empty document is the zero value, not an error.
@@ -107,14 +149,49 @@ pub(crate) fn parse_shared_repo(raw: &[u8], file_name: &str) -> Result<Option<Sh
         index = String::new();
     }
     let sparse = console::sparse_path(&row.sparse.unwrap_or_default()).map_err(|e| anyhow!("{id}: {e}"))?;
+    let guides = guide_names(&row.guides.unwrap_or_default());
+    let mut service_guides = Vec::new();
+    for item in row.service_guides.unwrap_or_default() {
+        let service = item.service.unwrap_or_default().trim().to_string();
+        if service.is_empty() {
+            continue;
+        }
+        let shared = item.shared.unwrap_or(false);
+        service_guides.push(console::ServiceGuides {
+            service,
+            shared,
+            guides: if shared {
+                Vec::new()
+            } else {
+                guide_names(&item.guides.unwrap_or_default())
+            },
+        });
+    }
+    if id == "document" && !divided {
+        service_guides.clear();
+    }
     Ok(Some(SharedRepo {
         id,
         name: row.name.unwrap_or_default().trim().to_string(),
         divided,
         services,
+        guides,
+        service_guides,
         index,
         sparse,
     }))
+}
+
+fn guide_names(names: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in names {
+        let name = name.trim();
+        if name.is_empty() || out.iter().any(|saved| saved == name) {
+            continue;
+        }
+        out.push(name.to_string());
+    }
+    out
 }
 
 /// Every repository file in `dir`, sorted by id. A missing or non-directory `dir` has none.

@@ -22,12 +22,28 @@ pub(crate) fn repo_rows(snap: &console::Snapshot) -> Vec<Value> {
             };
             let exists = !repo.folder.is_empty() && is_dir(&repo.folder);
             let empty = !repo.folder.is_empty() && crate::clone::folder_empty(&repo.folder).unwrap_or(false);
+            let service_guides: Vec<Value> = if divided {
+                repo.service_guides
+                    .iter()
+                    .map(|row| {
+                        json!({
+                            "service": row.service,
+                            "shared": row.shared,
+                            "guides": if row.shared { Vec::<String>::new() } else { row.guides.clone() },
+                        })
+                    })
+                    .collect()
+            } else {
+                Vec::new()
+            };
             json!({
                 "kind": repo.kind,
                 "name": repo.title(),
                 "folder": repo.folder,
                 "divided": divided,
                 "services": services,
+                "guides": repo.guides,
+                "serviceGuides": service_guides,
                 "available": available,
                 "exists": exists,
                 "empty": empty,

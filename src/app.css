@@ -769,7 +769,28 @@ button.team-share-card {
 .repo-folder > .hint,
 .repo-folder > button { margin-top: 0.55rem; }
 
-.repo-folder .services { margin-top: 0.75rem; }
+.repo-folder .services,
+.repo-folder .repo-guides { margin-top: 0.75rem; }
+
+.guide-list { display: flex; flex-direction: column; gap: 0.35rem; }
+
+.guide-row { display: flex; gap: 0.4rem; align-items: center; }
+
+.guide-row input { flex: 1; min-width: 0; }
+
+.guide-row button { width: auto; }
+
+.repo-guides > button,
+.service-guide-own > button { width: auto; margin-top: 0.35rem; }
+
+.service-guides { margin-top: 0.65rem; }
+
+.service-guides[hidden],
+.service-guide-own[hidden] { display: none; }
+
+.service-guide { margin-top: 0.55rem; }
+
+.service-guide > .check-line { margin-top: 0; }
 
 .services > .check-line { margin-top: 0; }
 

@@ -123,3 +123,46 @@ fn unix_millis() -> i64 {
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
 }
+
+/// True when more than one registered vault uses `folder`'s name.
+/// `obsidian vault=<name>` does not return in that case: the CLI waits forever
+/// instead of choosing among the vaults that share the name.
+pub(super) fn shared_vault_name(env: &dyn ObsidianEnv, folder: &str) -> bool {
+    let folder = abs_path(folder).unwrap_or_else(|_| path::clean(folder));
+    let name = super::vault_name(&folder);
+    if name.is_empty() {
+        return false;
+    }
+    let file = env.config_file();
+    if file.trim().is_empty() {
+        return false;
+    }
+    let Ok(raw) = std::fs::read(&file) else {
+        return false;
+    };
+    let Ok(Value::Object(doc)) = serde_json::from_slice::<Value>(&raw) else {
+        return false;
+    };
+    let Some(vaults) = doc.get("vaults").and_then(Value::as_object) else {
+        return false;
+    };
+    let count = vaults
+        .values()
+        .filter(|entry| {
+            entry
+                .as_object()
+                .and_then(|row| row.get("path"))
+                .and_then(Value::as_str)
+                .is_some_and(|existing| names_equal(&super::vault_name(existing), &name))
+        })
+        .count();
+    count > 1
+}
+
+fn names_equal(a: &str, b: &str) -> bool {
+    if cfg!(any(target_os = "windows", target_os = "macos")) {
+        a.eq_ignore_ascii_case(b)
+    } else {
+        a == b
+    }
+}

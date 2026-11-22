@@ -2,6 +2,7 @@
 
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 const CLI_TIMEOUT: Duration = Duration::from_secs(15);
@@ -22,13 +23,18 @@ pub(super) fn run_cli(cli: &str, args: &[&str]) -> (String, bool) {
     };
     // `cmd` still owns the parent's copies of the write ends; drop them so the reader sees EOF.
     drop(cmd);
+    let (tx, rx) = mpsc::channel();
     let collector = std::thread::spawn(move || {
         let mut buf = Vec::new();
         let _ = reader.read_to_end(&mut buf);
-        buf
+        let _ = tx.send(buf);
     });
     let ok = wait_or_kill(&mut child, CLI_TIMEOUT);
-    let out = collector.join().unwrap_or_default();
+    // Same bound as the jobs runner: do not wait on a pipe a leftover child still holds.
+    let out = rx.recv_timeout(Duration::from_millis(200)).unwrap_or_default();
+    if collector.is_finished() {
+        let _ = collector.join();
+    }
     (String::from_utf8_lossy(&out).trim().to_string(), ok)
 }
 

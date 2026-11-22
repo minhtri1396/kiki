@@ -40,7 +40,7 @@ impl IndexTool for Obsidian {
         }
         Ok(Launch {
             dir: folder.to_string(),
-            args: kiki_toolchain::obsidian_status(folder),
+            args: kiki_toolchain::obsidian_check_args(folder),
             note,
         })
     }
@@ -51,7 +51,7 @@ impl IndexTool for Obsidian {
         }
         let abs = crate::checks::abs_path(folder).unwrap_or_else(|| folder.to_string());
         let exists = is_dir(&path::join(&[&abs, ".obsidian"]));
-        let args = kiki_toolchain::obsidian_status(&abs);
+        let args = kiki_toolchain::obsidian_check_args(&abs);
         let bin = match (env.look_path)(&args[0]) {
             Ok(bin) => bin,
             Err(_) => return command_missing(exists, &args[0]),
@@ -62,6 +62,7 @@ impl IndexTool for Obsidian {
             abs,
             exists,
             ctx: ctx.with_timeout(Duration::from_secs(30)),
+            call_timeout: env.obsidian_call_timeout,
         };
         probe.check(env)
     }
@@ -89,6 +90,7 @@ struct Probe {
     abs: String,
     exists: bool,
     ctx: Ctx,
+    call_timeout: Duration,
 }
 
 impl Probe {
@@ -105,8 +107,10 @@ impl Probe {
     }
 
     /// One status command. `ready` is true only when the output names this folder.
+    /// The call has its own deadline, so a hung `vault=<name>` cannot skip the active-vault check.
     fn reading(&self, args: &[String]) -> Reading {
-        let (out, run_err) = combined_output(&self.ctx, &self.bin, args, &self.abs);
+        let call = self.ctx.with_timeout(self.call_timeout);
+        let (out, run_err) = combined_output(&call, &self.bin, args, &self.abs);
         let text = clean_output(&out);
         let ready = self.exists && run_err.is_none() && path_mentioned(&text, &self.abs);
         Reading { text, run_err, ready }

@@ -170,6 +170,77 @@ fn obsidian_status_targets_folder() {
 }
 
 #[test]
+fn status_args_drops_a_shared_vault_name() {
+    let dir = tempfile::tempdir().unwrap();
+    let docs = dir.path().join("docs");
+    let other = dir.path().join("elsewhere").join("docs");
+    std::fs::create_dir_all(&docs).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    let cfg = dir.path().join("obsidian.json");
+    let docs_s = docs.to_string_lossy().to_string();
+    let other_s = other.to_string_lossy().to_string();
+    let doc = serde_json::json!({
+        "vaults": {
+            "a": {"path": docs_s, "ts": 1},
+            "b": {"path": other_s, "ts": 2}
+        }
+    });
+    std::fs::write(&cfg, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let obs = obsidian(TestEnv {
+        config_file: cfg.to_string_lossy().to_string(),
+        ..Default::default()
+    });
+    assert_eq!(obs.status_args(&docs_s), vec!["obsidian", "vault", "info=path"]);
+
+    let solo = dir.path().join("notes");
+    std::fs::create_dir(&solo).unwrap();
+    let solo_s = solo.to_string_lossy().to_string();
+    let doc = serde_json::json!({
+        "vaults": { "a": {"path": solo_s, "ts": 1} }
+    });
+    std::fs::write(&cfg, serde_json::to_vec(&doc).unwrap()).unwrap();
+    assert_eq!(
+        obs.status_args(&solo_s),
+        vec!["obsidian", "vault=notes", "vault", "info=path"]
+    );
+}
+
+#[test]
+fn open_vault_does_not_query_a_shared_name() {
+    let _g = serial();
+    let dir = tempfile::tempdir().unwrap();
+    let vault = dir.path().join("docs");
+    let other = dir.path().join("other").join("docs");
+    std::fs::create_dir_all(&vault).unwrap();
+    std::fs::create_dir_all(&other).unwrap();
+    let cfg = dir.path().join("obsidian.json");
+    let vault_s = vault.to_string_lossy().to_string();
+    let other_s = other.to_string_lossy().to_string();
+    let doc = serde_json::json!({
+        "vaults": {
+            "a": {"path": vault_s},
+            "b": {"path": other_s}
+        }
+    });
+    std::fs::write(&cfg, serde_json::to_vec(&doc).unwrap()).unwrap();
+    let marker = dir.path().join("named");
+    let script = dir.path().join("obsidian");
+    let body = format!(
+        "#!/bin/sh\ncase \"$1\" in\n  vault=*) touch \"{}\"; echo hang; exit 1 ;;\n  vault) echo \"{}\" ;;\n  *) echo 'Vault not found.' ;;\nesac\n",
+        marker.display(),
+        vault_s
+    );
+    write_script(&script, &body);
+    obsidian(TestEnv {
+        config_file: cfg.to_string_lossy().to_string(),
+        ..Default::default()
+    })
+    .open_vault(&script.to_string_lossy(), &vault_s)
+    .unwrap();
+    assert!(!marker.exists(), "shared vault name was queried");
+}
+
+#[test]
 fn open_vault_code_quotes_path() {
     let code = open_vault_code("/tmp/my docs");
     assert!(

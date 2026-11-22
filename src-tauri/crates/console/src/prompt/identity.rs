@@ -22,7 +22,7 @@ pub(super) fn write(b: &mut String, agent: &agentdef::Agent, snap: &Snapshot, or
     w!(b, "Workspace id: {}\n", snap.workspace_id);
     b.push_str("\nThe setup file is .kiki/kiki.yaml next to the app. The app folder is the Folder root line above. The setup file path is the Setup file line above. This is the only setup file. The workspace id is workspace_id in that file. Do not invent values that are missing, and do not assume the workspace id is kiki. Folder paths and service names below are the saved setup.\n\n");
     write_where_started(b, orchestrator, folders.len() > 1);
-    b.push_str("When a repository lists services, those names are the Nx projects in that repository. Use a listed service when you choose a project and its guide file. A repository with no services line is not divided into services.\n\n");
+    b.push_str("When a repository lists services, those names are the Nx projects in that repository. Use a listed service when you choose a project. A service uses its own guide files when they are set, and the repository guide files when it shares them. A repository with no services line is not divided into services.\n\n");
 }
 
 /// One line per repository this agent uses: its kind and the saved folder.

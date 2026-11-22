@@ -64,6 +64,8 @@ fn shared(id: &str, services: &[&str], index: &str, sparse: &str) -> SharedRepo 
         name: String::new(),
         divided: false,
         services: services.iter().map(|s| s.to_string()).collect(),
+        guides: Vec::new(),
+        service_guides: Vec::new(),
         index: index.into(),
         sparse: sparse.into(),
     }

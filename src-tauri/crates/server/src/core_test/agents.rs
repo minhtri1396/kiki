@@ -157,32 +157,27 @@ fn agent_handoffs_reach_the_prompt() {
 }
 
 #[test]
-fn agent_repository_guide_reaches_the_prompt() {
+fn repository_guide_files_reach_the_prompt() {
     let app = new_test_server();
     ensure_agent_files(root_str(&app)).unwrap();
+    let mut snap = app.load().unwrap();
+    for repo in snap.repos.iter_mut() {
+        if repo.kind == "document" {
+            repo.guides = vec!["RULES.md".into(), "NOTES.md".into()];
+        }
+    }
+    app.store.save(&snap).unwrap();
     let raw = serve(&app, "GET", "/api/agents/requirement_document", None);
-    let mut agent: Value = serde_json::from_str(&raw).unwrap();
     assert!(
-        raw.contains(r#""guide":"AGENTS.md""#),
-        "a repository without a guide did not report the default: {raw}"
-    );
-    agent["repos"] =
-        json!([{"kind": "document", "guide": "RULES.md", "description": "Write the requirements.", "readonly": false}]);
-    serve(
-        &app,
-        "PUT",
-        "/api/agents/requirement_document",
-        Some(&json_bytes(&agent)),
-    );
-    let saved = serve(&app, "GET", "/api/agents/requirement_document", None);
-    assert!(
-        saved.contains(r#""guide":"RULES.md""#),
-        "saved guide file is missing from the agent"
+        !raw.contains("\"guide\""),
+        "the agent still carries a guide file: {raw}"
     );
     let preview = serve(&app, "POST", "/api/agents/requirement_document/preview", Some(b"{}"));
     assert!(
-        preview.contains("RULES.md (read it and follow it") && preview.contains("Write the requirements."),
-        "preview does not name the guide file:\n{preview}"
+        preview.contains("RULES.md")
+            && preview.contains("NOTES.md")
+            && preview.contains("Read these guide files and follow them"),
+        "preview does not name the repository guide files:\n{preview}"
     );
 }
 

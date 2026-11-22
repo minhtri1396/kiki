@@ -116,9 +116,9 @@ impl AgentForm {
             .iter()
             .map(|repo| agentfile::Repository {
                 kind: repo.kind.clone(),
-                guide: repo.guide.clone(),
                 description: repo.description.clone(),
                 readonly: repo.readonly,
+                ..Default::default()
             })
             .collect()
     }

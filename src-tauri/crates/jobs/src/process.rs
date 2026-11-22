@@ -6,7 +6,8 @@ use std::io::{ErrorKind, Read};
 use std::os::unix::process::ExitStatusExt;
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
-use std::time::Duration;
+use std::sync::mpsc::{self, RecvTimeoutError};
+use std::time::{Duration, Instant};
 
 /// Why a command did not finish cleanly. The text is shown to users as the job error.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -103,9 +104,11 @@ fn pump(mut reader: std::io::PipeReader, mut on_chunk: impl FnMut(&[u8])) {
 }
 
 /// Waits for the child. When `ctx` finishes first the child is killed and the context error is remembered.
-fn wait_for_exit(child: &mut Child, ctx: &Ctx) -> Result<(), CommandError> {
+/// `poll` runs each pass so output can be delivered while the child is still running.
+fn wait_for_exit(child: &mut Child, ctx: &Ctx, mut poll: impl FnMut()) -> Result<(), CommandError> {
     let mut killed: Option<CtxErr> = None;
     let status = loop {
+        poll();
         match child.try_wait() {
             Ok(Some(s)) => break s,
             Ok(None) => {}
@@ -119,6 +122,7 @@ fn wait_for_exit(child: &mut Child, ctx: &Ctx) -> Result<(), CommandError> {
         }
         std::thread::sleep(Duration::from_millis(10));
     };
+    poll();
     if status.success() {
         return killed.map_or(Ok(()), |e| Err(CommandError(e.to_string())));
     }
@@ -132,18 +136,43 @@ pub(crate) fn run_combined(
     bin: &str,
     args: &[String],
     dir: &str,
-    on_chunk: impl FnMut(&[u8]) + Send,
+    mut on_chunk: impl FnMut(&[u8]) + Send,
 ) -> Result<(), CommandError> {
     if let Some(e) = ctx.err() {
         return Err(CommandError(e.to_string()));
     }
     let (mut child, reader) = spawn(bin, args, dir)?;
-    std::thread::scope(|scope| {
-        let reading = scope.spawn(move || pump(reader, on_chunk));
-        let outcome = wait_for_exit(&mut child, ctx);
+    let (tx, rx) = mpsc::channel();
+    let reading = std::thread::spawn(move || {
+        pump(reader, |chunk| {
+            let _ = tx.send(chunk.to_vec());
+        });
+    });
+    let outcome = wait_for_exit(&mut child, ctx, || {
+        while let Ok(chunk) = rx.try_recv() {
+            on_chunk(&chunk);
+        }
+    });
+    // A killed CLI can leave the pipe open (a child still holds the write end). Waiting on that
+    // read pins the check, so the refresh spinner never stops. Keep what arrives, then move on.
+    let grace = Instant::now() + Duration::from_millis(200);
+    loop {
+        let left = grace.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            while let Ok(chunk) = rx.try_recv() {
+                on_chunk(&chunk);
+            }
+            break;
+        }
+        match rx.recv_timeout(left) {
+            Ok(chunk) => on_chunk(&chunk),
+            Err(RecvTimeoutError::Disconnected) | Err(RecvTimeoutError::Timeout) => break,
+        }
+    }
+    if reading.is_finished() {
         let _ = reading.join();
-        outcome
-    })
+    }
+    outcome
 }
 
 /// The interleaved output of a command run under `ctx`, and its error text if it failed.

@@ -24,8 +24,9 @@ use doc::{repos_equal, repos_from};
 use repos::{merge_repo_files, repos_for_files, write_repo_files};
 
 impl Store {
-    /// EnsureLayout creates backend, website, mobile, and docs under root when they
-    /// are missing, and stores those paths. Service names already in the file stay.
+    /// EnsureLayout writes each saved repository into the setup files.
+    /// Backend, website, mobile, and document keep a saved folder and do not gain one.
+    /// A repository you add gets a directory under the app root when its folder is empty.
     pub fn ensure_layout(&self, root: &str) -> Result<()> {
         let _guard = self.lock();
         let mut doc = read_doc(&self.path)?;

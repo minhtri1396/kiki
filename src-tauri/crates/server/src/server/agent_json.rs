@@ -108,7 +108,6 @@ fn repository_json(list: &[agentfile::Repository]) -> Vec<Value> {
         .map(|repo| {
             json!({
                 "kind": repo.kind,
-                "guide": agentdef::guide_file(&repo.guide),
                 "description": repo.description,
                 "readonly": repo.readonly,
             })

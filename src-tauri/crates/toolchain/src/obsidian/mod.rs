@@ -58,6 +58,15 @@ impl Obsidian {
     pub fn install_command(&self) -> Result<String> {
         install::install_command(self.env.as_ref())
     }
+
+    /// The status command for `folder`.
+    /// A shared vault name is left off: `vault=<name>` does not return when several vaults use it.
+    pub fn status_args(&self, folder: &str) -> Vec<String> {
+        if registry::shared_vault_name(self.env.as_ref(), folder) {
+            return vec!["obsidian".to_string(), "vault".to_string(), "info=path".to_string()];
+        }
+        obsidian_status(folder)
+    }
 }
 
 /// The Obsidian vault name for a folder: its last path segment.
@@ -68,6 +77,7 @@ pub fn vault_name(folder: &str) -> String {
 
 /// `obsidian vault=<name> vault info=path`.
 /// vault= is the first parameter so the CLI reads this vault, not another open one.
+/// Use [`obsidian_check_args`] when the name might be shared: that form does not return.
 pub fn obsidian_status(folder: &str) -> Vec<String> {
     vec![
         "obsidian".to_string(),
@@ -75,6 +85,11 @@ pub fn obsidian_status(folder: &str) -> Vec<String> {
         "vault".to_string(),
         "info=path".to_string(),
     ]
+}
+
+/// [`Obsidian::status_args`] on the production environment.
+pub fn obsidian_check_args(folder: &str) -> Vec<String> {
+    Obsidian::system().status_args(folder)
 }
 
 /// [`Obsidian::open_vault`] on the production environment.

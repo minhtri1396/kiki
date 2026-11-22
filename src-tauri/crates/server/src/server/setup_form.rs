@@ -13,12 +13,25 @@ use crate::http::null_default;
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
+struct ServiceGuideForm {
+    service: String,
+    shared: bool,
+    #[serde(deserialize_with = "null_default")]
+    guides: Vec<String>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
 struct RepoForm {
     kind: String,
     folder: String,
     #[serde(deserialize_with = "null_default")]
     services: Vec<String>,
     divided: bool,
+    #[serde(deserialize_with = "null_default")]
+    guides: Vec<String>,
+    #[serde(rename = "serviceGuides", deserialize_with = "null_default")]
+    service_guides: Vec<ServiceGuideForm>,
 }
 
 /// The body the web UI sends when Settings is saved.
@@ -46,7 +59,7 @@ impl SetupForm {
             .repos
             .iter()
             .map(|repo| {
-                let services = if repo.divided {
+                let services: Vec<String> = if repo.divided {
                     repo.services
                         .iter()
                         .map(|name| name.trim())
@@ -56,11 +69,19 @@ impl SetupForm {
                 } else {
                     Vec::new()
                 };
+                let guides = trimmed_names(&repo.guides);
+                let service_guides = if repo.divided {
+                    service_guide_rows(&repo.service_guides, &services)
+                } else {
+                    Vec::new()
+                };
                 let row = console::Repo {
                     kind: repo.kind.clone(),
                     folder: repo.folder.trim().to_string(),
                     services,
                     divided: repo.divided,
+                    guides,
+                    service_guides,
                     ..Default::default()
                 };
                 (repo.kind.as_str(), row)
@@ -100,4 +121,42 @@ impl SetupForm {
         }
         snap.orchestrator = console::normalize_orchestrator(&snap.orchestrator);
     }
+}
+
+fn trimmed_names(names: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in names {
+        let name = name.trim();
+        if name.is_empty() || out.iter().any(|saved: &String| saved == name) {
+            continue;
+        }
+        out.push(name.to_string());
+    }
+    out
+}
+
+fn service_guide_rows(rows: &[ServiceGuideForm], services: &[String]) -> Vec<console::ServiceGuides> {
+    let mut out = Vec::new();
+    for row in rows {
+        let service = row.service.trim();
+        if service.is_empty() || !services.iter().any(|name| name == service) {
+            continue;
+        }
+        if out
+            .iter()
+            .any(|saved: &console::ServiceGuides| saved.service == service)
+        {
+            continue;
+        }
+        out.push(console::ServiceGuides {
+            service: service.to_string(),
+            shared: row.shared,
+            guides: if row.shared {
+                Vec::new()
+            } else {
+                trimmed_names(&row.guides)
+            },
+        });
+    }
+    out
 }

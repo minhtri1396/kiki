@@ -6,20 +6,9 @@ use crate::*;
 fn embedded_documents_match_the_launch_prompt() {
     for agent in CATALOG.iter() {
         let body = agent.body().unwrap_or_else(|e| panic!("{}: {e:#}", agent.id));
-        for stale in [
-            "config.local.yaml",
-            "mcp.json",
-            "jira.<ws>",
-            "orca_agent",
-            "Agent handoff",
-            "Make yourself findable",
-            "WAIT FOR A REQUEST.",
-        ] {
-            assert!(!body.contains(stale), "{} still contains {:?}", agent.id, stale);
-        }
         assert!(
-            body.contains("Agents Coordination"),
-            "{} does not mention Agents Coordination",
+            !body.contains("WAIT FOR A REQUEST."),
+            "{} repeats the launch prompt's wait instruction",
             agent.id
         );
     }

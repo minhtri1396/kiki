@@ -216,6 +216,48 @@ printf '%s\\n' {abs:?}\n"
 }
 
 #[test]
+fn obsidian_check_falls_back_when_the_named_vault_hangs() {
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path().join("kiki-vault-hang");
+    std::fs::create_dir_all(dir.join(".obsidian")).unwrap();
+    let abs = std::path::absolute(&dir).unwrap();
+    let abs = path_str(&abs);
+    let script = path_str(&dir.join("obsidian"));
+    let body =
+        format!("#!/bin/sh\ncase \"$1\" in\n  vault=*) exec sleep 30 ;;\n  *) printf '%s\\n' {abs:?} ;;\nesac\n");
+    {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o755)
+            .open(&script)
+            .unwrap();
+        f.write_all(body.as_bytes()).unwrap();
+    }
+    let mut manager = Manager::new();
+    manager.env.obsidian_call_timeout = Duration::from_millis(200);
+    let script_for_lookup = script.clone();
+    manager.env.look_path = Arc::new(move |name: &str| {
+        if name != "obsidian" {
+            return Err(anyhow!("command {name} was not found on PATH"));
+        }
+        Ok(script_for_lookup.clone())
+    });
+    let report = manager
+        .check_one(
+            &Ctx::background(),
+            &path_str(tmp.path()),
+            &[target("document", &abs, "obsidian")],
+            "document",
+        )
+        .unwrap();
+    let got = report.repos["document"].clone();
+    assert!(got.ready && got.summary.contains(&abs), "document = {got:?}");
+}
+
+#[test]
 fn start_runs_in_background_and_cancels() {
     let tmp = tempfile::tempdir().unwrap();
     let root = path_str(tmp.path());

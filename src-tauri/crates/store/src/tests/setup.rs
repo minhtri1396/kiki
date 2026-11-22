@@ -175,7 +175,7 @@ fn repo_files_keep_the_saved_index() {
     let repos = FsPath::new(&root).join(".kiki").join("repos");
     let backend = fs::read_to_string(repos.join("backend.yaml")).unwrap();
     assert!(
-        backend.contains("id: backend") && !backend.contains("kind:") && backend.contains(&format!("{root}/backend")),
+        backend.contains("id: backend") && !backend.contains("kind:") && !backend.contains("folder:"),
         "backend file:\n{backend}"
     );
     assert!(!backend.contains("index:"), "index was set before setup:\n{backend}");
@@ -312,7 +312,9 @@ fn save_repo_folder_keeps_the_path() {
     db.ensure_layout(&root).unwrap();
     let snap = db.load().unwrap();
     assert_eq!(snap.repo("backend").folder, custom);
-    assert_eq!(snap.repo("website").folder, format!("{root}/website"));
+    assert_eq!(snap.repo("website").folder, "");
+    assert!(!exists(FsPath::new(&root).join("website")));
+    assert!(!exists(FsPath::new(&root).join("docs")));
     let saved = fs::read_to_string(FsPath::new(&root).join(".kiki").join("kiki.yaml")).unwrap();
     assert!(saved.contains(&custom), "kiki.yaml:\n{saved}");
 }
@@ -435,16 +437,12 @@ fn setup_files_match_yaml_v3_layout() {
         "orchestrator: orca".to_string(),
         "repos:".to_string(),
         "    - kind: backend".to_string(),
-        format!("      folder: {root}/backend"),
         "      services:".to_string(),
         "        - api".to_string(),
         "        - worker".to_string(),
         "    - kind: website".to_string(),
-        format!("      folder: {root}/website"),
         "    - kind: mobile".to_string(),
-        format!("      folder: {root}/mobile"),
         "    - kind: document".to_string(),
-        format!("      folder: {root}/docs"),
         "team_folder:".to_string(),
         "    path: /tmp/team".to_string(),
         "    user: bob".to_string(),
@@ -455,9 +453,7 @@ fn setup_files_match_yaml_v3_layout() {
     let backend = fs::read_to_string(FsPath::new(&root).join(".kiki").join("repos").join("backend.yaml")).unwrap();
     assert_eq!(
         backend,
-        format!(
-            "# Repository backend. KIKI stores this in .kiki/repos. The index is what the launch prompt tells the model to query.\nid: backend\nname: Backend\nfolder: {root}/backend\nservices:\n    - api\n    - worker\n"
-        )
+        "# Repository backend. KIKI stores this in .kiki/repos. The index is what the launch prompt tells the model to query.\nid: backend\nname: Backend\nservices:\n    - api\n    - worker\n"
     );
 }
 
@@ -515,4 +511,40 @@ fn setup_file_quotes_paths_like_yaml_v3() {
         "setup =\n{text}"
     );
     assert_eq!(db.load().unwrap().repo("backend").folder, s(&folder));
+}
+
+#[test]
+fn guide_files_are_saved_for_the_repository_and_each_service() {
+    let (_dir, root, db) = open_root();
+    db.ensure_layout(&root).unwrap();
+    let mut snap = db.load().unwrap();
+    for repo in snap.repos.iter_mut() {
+        if repo.kind == "backend" {
+            repo.divided = true;
+            repo.services = vec!["api".into(), "web".into()];
+            repo.guides = vec!["RULES.md".into(), "DESIGN.md".into()];
+            repo.service_guides = vec![
+                console::ServiceGuides {
+                    service: "api".into(),
+                    shared: true,
+                    ..Default::default()
+                },
+                console::ServiceGuides {
+                    service: "web".into(),
+                    guides: vec!["WEB.md".into()],
+                    ..Default::default()
+                },
+            ];
+        }
+    }
+    db.save(&snap).unwrap();
+    let loaded = db.load().unwrap().repo("backend");
+    assert_eq!(loaded.guides, ["RULES.md".to_string(), "DESIGN.md".to_string()]);
+    assert!(loaded.service_guides[0].shared && loaded.service_guides[0].service == "api");
+    assert_eq!(loaded.service_guides[1].guides, ["WEB.md".to_string()]);
+    let text = fs::read_to_string(FsPath::new(&root).join(".kiki").join("repos").join("backend.yaml")).unwrap();
+    assert!(
+        text.contains("guides:\n    - RULES.md\n    - DESIGN.md\n") && text.contains("shared: true"),
+        "backend file:\n{text}"
+    );
 }

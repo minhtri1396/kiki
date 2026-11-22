@@ -47,7 +47,7 @@ impl IndexTool {
     pub(crate) fn command(self, folder: &str) -> String {
         match (self, folder.is_empty()) {
             (IndexTool::Obsidian, true) => "obsidian vault info=path".to_string(),
-            (IndexTool::Obsidian, false) => jobs::format_args(&toolchain::obsidian_status(folder)),
+            (IndexTool::Obsidian, false) => jobs::format_args(&toolchain::obsidian_check_args(folder)),
             (IndexTool::Codegraph, true) => "codegraph init <folder>".to_string(),
             (IndexTool::Codegraph, false) => jobs::format_args(&toolchain::codegraph_init(folder)),
         }

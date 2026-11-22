@@ -22,7 +22,7 @@ pub(super) fn open_vault(env: &dyn ObsidianEnv, cli: &str, folder: &str) -> Resu
         last: String::new(),
         relaunched: false,
     };
-    if vault_ready(cli, &folder).0 {
+    if vault_ready(env, cli, &folder).0 {
         return Ok(());
     }
     let deadline = Instant::now() + OPEN_TIMEOUT;
@@ -59,7 +59,7 @@ impl Attempt<'_> {
 
     /// Checks readiness; on failure remembers the status text.
     fn confirm(&mut self) -> bool {
-        let (ok, status) = vault_ready(self.cli, self.folder);
+        let (ok, status) = vault_ready(self.env, self.cli, self.folder);
         if !ok {
             self.note(&status);
         }
@@ -107,20 +107,28 @@ impl Attempt<'_> {
 
 /// Whether the CLI reports `folder`. A vault name is the folder's last segment, so `vault=<name>` can
 /// answer for a different vault that shares that name. The active vault is checked in that case.
-fn vault_ready(cli: &str, folder: &str) -> (bool, String) {
-    let named = format!("vault={}", vault_name(folder));
-    let (status, ok) = run_cli(cli, &[&named, "vault", "info=path"]);
-    if ok && status_matches(&status, folder) {
-        return (true, status);
+/// A shared name is not queried: the CLI does not return when more than one vault uses it.
+fn vault_ready(env: &dyn ObsidianEnv, cli: &str, folder: &str) -> (bool, String) {
+    if !super::registry::shared_vault_name(env, folder) {
+        let named = format!("vault={}", vault_name(folder));
+        let (status, ok) = run_cli(cli, &[&named, "vault", "info=path"]);
+        if ok && status_matches(&status, folder) {
+            return (true, status);
+        }
+        let (active, active_ok) = run_cli(cli, &["vault", "info=path"]);
+        if active_ok && status_matches(&active, folder) {
+            return (true, active);
+        }
+        if status.trim().is_empty() {
+            return (false, active);
+        }
+        return (false, status);
     }
     let (active, active_ok) = run_cli(cli, &["vault", "info=path"]);
     if active_ok && status_matches(&active, folder) {
-        return (true, active);
-    }
-    if status.trim().is_empty() {
-        (false, active)
+        (true, active)
     } else {
-        (false, status)
+        (false, active)
     }
 }
 

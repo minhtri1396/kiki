@@ -138,7 +138,7 @@ fn prompt_names_collaborators_by_id() {
             "### document — Obsidian",
             "Index file: /app/.kiki/repos/document.yaml",
             "obsidian vault=<name> search query=\"<words>\" limit=20",
-            "Read /app/docs/AGENTS.md before you search notes",
+            "No guide files are set for this repository. Do not invent one.",
         ],
     );
     assert!(
@@ -182,7 +182,8 @@ fn prompt_adds_codegraph_only_for_code_repos() {
             "Folder: /app/backend",
             "Index file: /app/.kiki/repos/backend.yaml",
             "Services: api",
-            "read /app/backend/AGENTS.md",
+            "No guide files are set for this repository. Do not invent one.",
+            "For service api, use this repository's guide files.",
             "codegraph explore -p /app/backend",
         ],
     );
@@ -350,18 +351,11 @@ fn prompt_says_when_a_repository_is_readonly() {
 }
 
 #[test]
-fn prompt_names_the_guide_file_of_each_repository() {
+fn prompt_names_the_guide_files_of_each_repository() {
     let agent = agentdef::Agent {
         id: "backend_runner".into(),
         title: "Backend Runner".into(),
-        repos: vec![
-            agentdef::Repo {
-                kind: "backend".into(),
-                guide: "RULES.md".into(),
-                ..Default::default()
-            },
-            repo_of("document"),
-        ],
+        repos: vec![repo_of("backend"), repo_of("document")],
         ..Default::default()
     };
     let snap = Snapshot {
@@ -370,13 +364,28 @@ fn prompt_names_the_guide_file_of_each_repository() {
             Repo {
                 kind: "backend".into(),
                 folder: "/app/backend".into(),
-                services: vec!["api".into()],
+                services: vec!["api".into(), "web".into()],
+                divided: true,
+                guides: vec!["RULES.md".into(), "DESIGN.md".into()],
+                service_guides: vec![
+                    crate::ServiceGuides {
+                        service: "api".into(),
+                        shared: true,
+                        ..Default::default()
+                    },
+                    crate::ServiceGuides {
+                        service: "web".into(),
+                        guides: vec!["WEB.md".into()],
+                        ..Default::default()
+                    },
+                ],
                 index: "codegraph".into(),
                 ..Default::default()
             },
             Repo {
                 kind: "document".into(),
                 folder: "/app/docs".into(),
+                guides: vec!["AGENTS.md".into()],
                 index: "obsidian".into(),
                 ..Default::default()
             },
@@ -387,17 +396,15 @@ fn prompt_names_the_guide_file_of_each_repository() {
     must_contain(
         &text,
         &[
-            "guide file: /app/backend/RULES.md (read it and follow it",
-            "guide file: /app/docs/AGENTS.md (read it and follow it",
-            "read /app/backend/RULES.md",
-            "/app/backend/<project root>/RULES.md",
-            "If RULES.md is missing",
+            "guide files:\n    - /app/backend/RULES.md\n    - /app/backend/DESIGN.md",
+            "Read these guide files and follow them whenever you work in this repository.",
+            "service api: use this repository's guide files.",
+            "service web guide files:\n    - /app/backend/WEB.md",
+            "follow the service files.",
+            "Before you read code, read /app/backend/RULES.md and /app/backend/DESIGN.md.",
+            "For service web, read /app/backend/WEB.md.",
             "Read /app/docs/AGENTS.md before you search notes",
         ],
-    );
-    assert!(
-        !text.contains("/app/backend/AGENTS.md"),
-        "backend still names AGENTS.md:\n{text}"
     );
 }
 

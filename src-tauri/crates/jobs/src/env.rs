@@ -18,6 +18,9 @@ pub(crate) struct Env {
     /// Obsidian's CLI answers `Command "vault" not found` while the app is still starting;
     /// the check waits this long and tries once more.
     pub(crate) obsidian_retry_delay: Duration,
+    /// One Obsidian CLI call. A shared vault name makes `vault=<name>` hang, so each call
+    /// keeps its own deadline and the next call can still run.
+    pub(crate) obsidian_call_timeout: Duration,
 }
 
 impl Default for Env {
@@ -25,6 +28,7 @@ impl Default for Env {
         Env {
             look_path: Arc::new(look_path),
             obsidian_retry_delay: Duration::from_millis(3000),
+            obsidian_call_timeout: Duration::from_secs(8),
         }
     }
 }

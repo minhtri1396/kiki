@@ -25,7 +25,7 @@
   },
   "bundle": {
     "active": true,
-    "targets": ["app", "dmg"],
+    "targets": ["app", "dmg", "nsis", "deb", "appimage"],
     "category": "DeveloperTool",
     "shortDescription": "Set up and run a team of AI agents",
     "icon": [

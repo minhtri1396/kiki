@@ -11,7 +11,7 @@ pub(super) fn write(b: &mut String, repos: &[agentdef::Repo], snap: &Snapshot) {
     if blocks.is_empty() {
         return;
     }
-    b.push_str("Repository indexes. For each repository this agent uses, read that repository's guide file, then use the index below. The index is the one saved for that repository. Do not set an index up yourself.\n\n");
+    b.push_str("Repository indexes. For each repository this agent uses, read that repository's guide files, then use the index below. A service uses its own guide files when they are set, and the repository guide files when it shares them. The index is the one saved for that repository. Do not set an index up yourself.\n\n");
     for block in &blocks {
         b.push_str(block);
         if !block.ends_with('\n') {
@@ -25,10 +25,9 @@ pub(super) fn write(b: &mut String, repos: &[agentdef::Repo], snap: &Snapshot) {
 fn index_block(item: &agentdef::Repo, snap: &Snapshot) -> Option<String> {
     let kind = item.kind.trim();
     let repo = snap.repo(kind);
-    let guide = agentdef::guide_file(&item.guide);
     match repo.index.as_str() {
-        "obsidian" => Some(obsidian_index(kind, &repo, &snap.root, &guide)),
-        "codegraph" => Some(codegraph_index(kind, &repo, &snap.root, &guide)),
+        "obsidian" => Some(obsidian_index(kind, &repo, &snap.root)),
+        "codegraph" => Some(codegraph_index(kind, &repo, &snap.root)),
         _ => None,
     }
 }
@@ -55,28 +54,36 @@ fn index_file_line(root: &str, kind: &str) -> String {
     )
 }
 
-fn obsidian_index(kind: &str, repo: &Repo, root: &str, guide: &str) -> String {
+fn obsidian_index(kind: &str, repo: &Repo, root: &str) -> String {
     let path = folder_path(&repo.folder);
-    let mut read =
-        format!("The folder is not set. Do not invent a path. Read this repository's {guide} once the folder is set.");
-    if path != NOT_SET {
-        read = format!("Read {path}/{guide} before you search notes in this repository.");
-    }
+    let read = if repo.guides.is_empty() {
+        "No guide files are set for this repository. Do not invent one.".to_string()
+    } else if path == NOT_SET {
+        format!(
+            "The folder is not set. Do not invent a path. Read {} once the folder is set.",
+            super::repos::guide_phrase(repo, &repo.guides)
+        )
+    } else {
+        format!(
+            "Read {} before you search notes in this repository.",
+            super::repos::guide_phrase(repo, &repo.guides)
+        )
+    };
     let index_file = index_file_line(root, kind);
     format!(
         r##"### {kind} — Obsidian
 
 Folder: {path}
 
-{index_file}{read} Follow that file for this repository. If it still tells you to use GitNexus, ignore that and follow this index.
+{index_file}{read} Follow the guide files for this repository when they are set. If a guide file still tells you to use GitNexus, ignore that and follow this index.
 
-The vault name is the last segment of the folder path, not the absolute path. Obsidian is set up when {path}/.obsidian exists and this command, run in the folder, prints the folder:
+The vault name is the last segment of the folder path, not the absolute path. Obsidian is set up when {path}/.obsidian exists and `obsidian vault info=path` prints this folder. When only one vault uses that name, pass it as the first parameter so the CLI reads this vault and not another open one:
 
 ```
 obsidian vault=<name> vault info=path
 ```
 
-vault=<name> is the first parameter. The vault is open in Obsidian. The CLI is the Obsidian CLI: Obsidian 1.12 or newer, with Settings → General → Command line interface enabled. The app must be running. The first command launches it if it is not.
+When more than one vault uses that name, do not pass vault=<name>. That command does not return. Run the commands below without it. The vault is open in Obsidian. The CLI is the Obsidian CLI: Obsidian 1.12 or newer, with Settings → General → Command line interface enabled. The app must be running. The first command launches it if it is not.
 
 Search and read. Do not list the folder. Use a path the task already names. In a document repository that is path=ui-system-design for the UI system, or the area folder for requirements.
 
@@ -95,7 +102,7 @@ If it is not set up, do not create the vault. Ask the user once: Read files (ope
     )
 }
 
-fn codegraph_index(kind: &str, repo: &Repo, root: &str, guide: &str) -> String {
+fn codegraph_index(kind: &str, repo: &Repo, root: &str) -> String {
     let path = folder_path(&repo.folder);
     let divided = repo.uses_services();
     let services = if repo.services.is_empty() {
@@ -108,24 +115,10 @@ fn codegraph_index(kind: &str, repo: &Repo, root: &str, guide: &str) -> String {
     } else {
         String::new()
     };
-    let mut read = if divided {
-        format!(
-            "The folder is not set. Do not invent a path. Read this repository's {guide}, and each service's {guide}, once the folder is set."
-        )
-    } else {
-        format!("The folder is not set. Do not invent a path. Read this repository's {guide} once the folder is set.")
-    };
-    if path != NOT_SET {
-        read = if divided {
-            format!(
-                "Before you read code, read {path}/{guide}. For each service this work touches, also read {path}/<project root>/{guide}."
-            )
-        } else {
-            format!("Before you read code, read {path}/{guide}.")
-        };
-    }
-    let service_rules = if divided {
-        " A service is an Nx project from the services list. Find its root in project.json (`npx nx show projects`, run in the folder). If the project root is \".\", that file is the folder file; read it once. The folder file covers the repository. The service file covers the files in that service. When they conflict inside a service, follow the service file."
+    let read = codegraph_read(repo, path == NOT_SET);
+    let service_notes = service_guide_notes(repo);
+    let missing = if listed_guide(repo) {
+        " If a listed guide file is missing, ask the user once and stop. Do not invent the structure or the rules."
     } else {
         ""
     };
@@ -135,7 +128,7 @@ fn codegraph_index(kind: &str, repo: &Repo, root: &str, guide: &str) -> String {
 
 Folder: {path}
 
-{index_file}{services_line}{read}{service_rules} If {guide} is missing, ask the user once and stop. Do not invent the structure or the rules.
+{index_file}{services_line}{read}{service_notes}{missing}
 
 CodeGraph is set up when {path}/.codegraph exists and `codegraph status {path}` runs without a "not initialized" error. Do not run `codegraph init` yourself, and do not install CodeGraph. If it is not set up, ask the user once: Read files (search the exact symbol or path and read only the files you need, and say this index was not used) or Wait for setup (stop until the user sets up CodeGraph on this folder in KIKI). Do not choose for the user.
 
@@ -152,7 +145,53 @@ codegraph sync {path}
 
 MCP: codegraph_explore with projectPath set to the folder, and the question in query. Run codegraph sync when codegraph status shows pending changes.
 
-Open a file only when the result marks it stale, when the graph does not cover it (schemas, generated code, fixtures, config, assets), or when {guide} tells you to. Do not read the whole repository. .codegraph/ is gitignored; leave it uncommitted.
+Open a file only when the result marks it stale, when the graph does not cover it (schemas, generated code, fixtures, config, assets), or when a guide file tells you to. Do not read the whole repository. .codegraph/ is gitignored; leave it uncommitted.
 "##
     )
+}
+
+fn listed_guide(repo: &Repo) -> bool {
+    if !repo.guides.is_empty() {
+        return true;
+    }
+    repo.service_guides
+        .iter()
+        .any(|row| !row.shared && row.guides.iter().any(|name| !name.trim().is_empty()))
+}
+
+fn codegraph_read(repo: &Repo, folder_missing: bool) -> String {
+    if repo.guides.is_empty() {
+        return "No guide files are set for this repository. Do not invent one.".to_string();
+    }
+    let listed = super::repos::guide_phrase(repo, &repo.guides);
+    if folder_missing {
+        format!("The folder is not set. Do not invent a path. Read {listed} once the folder is set.")
+    } else {
+        format!("Before you read code, read {listed}.")
+    }
+}
+
+fn service_guide_notes(repo: &Repo) -> String {
+    if !repo.uses_services() || repo.services.is_empty() {
+        return String::new();
+    }
+    let mut text = String::new();
+    for service in &repo.services {
+        text.push(' ');
+        match repo.service_guide_list(service) {
+            None => text.push_str(&format!("For service {service}, use this repository's guide files.")),
+            Some([]) => {
+                text.push_str(&format!(
+                    "For service {service}, no guide files are set. Do not invent one."
+                ));
+            }
+            Some(names) => {
+                let listed = super::repos::guide_phrase(repo, names);
+                text.push_str(&format!(
+                    "For service {service}, read {listed}. When those files conflict with the repository guide files inside {service}, follow the service files."
+                ));
+            }
+        }
+    }
+    text
 }

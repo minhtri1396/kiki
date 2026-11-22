@@ -1,7 +1,6 @@
 //! The "Repositories for this agent" section.
 
 use kiki_agentdef as agentdef;
-use kiki_util::path;
 
 use crate::snapshot::{Repo, Snapshot};
 
@@ -20,28 +19,32 @@ fn write_repo(b: &mut String, item: &agentdef::Repo, snap: &Snapshot) {
     }
     let repo = snap.repo(kind);
     w!(b, "- {}\n", kind);
-    write_folder_and_guide(b, &repo, &agentdef::guide_file(&item.guide));
+    write_folder(b, &repo);
+    write_guides(b, &repo);
     write_access(b, &repo, item.readonly);
     write_services(b, &repo);
     write_note(b, &item.description);
 }
 
-fn write_folder_and_guide(b: &mut String, repo: &Repo, guide: &str) {
+fn write_folder(b: &mut String, repo: &Repo) {
     if repo.folder.is_empty() {
         b.push_str("  folder: (not set)\n");
-        w!(
-            b,
-            "  guide file: {} (read it and follow it whenever you work in this repository)\n",
-            guide
-        );
     } else {
         w!(b, "  folder: {}\n", repo.folder);
-        w!(
-            b,
-            "  guide file: {} (read it and follow it whenever you work in this repository)\n",
-            path::join(&[&repo.folder, guide])
-        );
     }
+}
+
+fn write_guides(b: &mut String, repo: &Repo) {
+    if repo.guides.is_empty() {
+        b.push_str("  guide files: (none)\n");
+        b.push_str("  No guide files are set for this repository.\n");
+        return;
+    }
+    b.push_str("  guide files:\n");
+    for name in &repo.guides {
+        w!(b, "    - {}\n", repo.guide_location(name));
+    }
+    b.push_str("  Read these guide files and follow them whenever you work in this repository.\n");
 }
 
 /// The sparse checkout and readonly rules.
@@ -71,6 +74,43 @@ fn write_services(b: &mut String, repo: &Repo) {
     }
     w!(b, "  services: {}\n", repo.services.join(", "));
     b.push_str("  These are the Nx services this agent may use in this repository.\n");
+    for service in &repo.services {
+        write_service_guides(b, repo, service);
+    }
+}
+
+fn write_service_guides(b: &mut String, repo: &Repo, service: &str) {
+    match repo.service_guide_list(service) {
+        None => w!(b, "  service {service}: use this repository's guide files.\n"),
+        Some([]) => {
+            w!(b, "  service {service} guide files: (none)\n");
+            w!(b, "  No guide files are set for {service}.\n");
+        }
+        Some(names) => {
+            w!(b, "  service {service} guide files:\n");
+            for name in names {
+                w!(b, "    - {}\n", repo.guide_location(name));
+            }
+            w!(
+                b,
+                "  Read {service}'s guide files and follow them when you work in that service. When they conflict with the repository guide files inside {service}, follow the service files.\n"
+            );
+        }
+    }
+}
+
+/// Joins guide locations the way a sentence lists them.
+pub(super) fn guide_phrase(repo: &Repo, names: &[String]) -> String {
+    let paths: Vec<String> = names.iter().map(|name| repo.guide_location(name)).collect();
+    match paths.len() {
+        0 => String::new(),
+        1 => paths[0].clone(),
+        2 => format!("{} and {}", paths[0], paths[1]),
+        _ => {
+            let (last, rest) = paths.split_last().unwrap();
+            format!("{}, and {last}", rest.join(", "))
+        }
+    }
 }
 
 /// What the agent does in this repository, one indented line per line of the note.

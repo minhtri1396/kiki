@@ -12,7 +12,7 @@ You describe each agent once: its role, the repositories it may touch, the other
 | --- | --- |
 | **Agents** | One markdown file per agent, grouped by category. Each agent has its own AI tool (Cursor, Claude, Codex, or Gemini), model, and prompt. You can add an agent or delete one. Roles for requirement, backend, website, and mobile work are included. |
 | **Agent to agent** | **Agents Coordination** says which agents an agent works with. Each link has messages: when to send, what to send, what the other agent reports back, and how many back-and-forth loops are allowed. |
-| **Agent to repository** | Each agent is given the repositories it may open, a guide file to follow in each one (`AGENTS.md` by default), a note on what it does there, and an optional read-only flag. |
+| **Agent to repository** | Each agent is given the repositories it may open, a note on what it does there, and an optional read-only flag. Guide files are set on the repository, not on the agent. |
 | **MCP Servers** | Set up Atlassian once in Settings. Jira and Confluence can share one email and API token, or each can use its own. Turn Jira, Confluence, or both on for an agent, with a note on how that agent should use it. KIKI adds those servers to the agent's AI tool before a run. |
 | **Tools** | CLI tools turned on in Settings: GitHub CLI (chosen per agent) and RTK (applies to every agent). |
 | **Repositories** | Document, Backend, Website, and Mobile to start. Add, rename, or delete a repository. Clone one through Git, or point KIKI at an existing folder. A code repository can be an Nx monorepo, and you pick which projects the agents work on. Deleting a repository leaves its folder on disk. |
@@ -39,7 +39,7 @@ The editor has five tabs.
 
 ![Prompt](assets/screenshots/agent-prompt.png)
 
-**Repositories** turns on the folders this agent may open, then sets the guide file and what the agent does there.
+**Repositories** turns on the folders this agent may open, then sets what the agent does there. Guide files are set on the repository card.
 
 ![Agent repositories](assets/screenshots/agent-repositories.png)
 
@@ -143,19 +143,20 @@ Open Settings with the gear next to the title. Press **Save** to keep changes. *
 
 ### 2. Repositories
 
-Open the **Repositories** tab. The first run creates four repositories as folders next to the binary. **Add repository** creates another. Its name starts with a letter and uses letters, digits, spaces, hyphens, or underscores. The id comes from that name. Rename changes the displayed name and keeps the id. Delete removes the repository from KIKI. The folder on disk stays.
+Open the **Repositories** tab. The first run lists four repositories and leaves each folder empty until you choose one. **Add repository** creates another. Its name starts with a letter and uses letters, digits, spaces, hyphens, or underscores. The id comes from that name. Rename changes the displayed name and keeps the id. Delete removes the repository from KIKI. The folder on disk stays.
 
-| Folder | Id | Used by the included roles |
-| --- | --- | --- |
-| `backend/` | backend | Backend developer and reviewer |
-| `website/` | website | Website developer and reviewer |
-| `mobile/` | mobile | Mobile developer and reviewer |
-| `docs/` | document | Document writer, UI designer, and planner |
+| Id | Used by the included roles |
+| --- | --- |
+| backend | Backend developer and reviewer |
+| website | Website developer and reviewer |
+| mobile | Mobile developer and reviewer |
+| document | Document writer, UI designer, and planner |
 
 - **Browse** points a repository at another folder.
 - **Clone repository from git** shows when the folder is empty. Fill **Folder** to check out only that folder (plus files at the repository root). Commit, push, and pull then use that checkout.
 - A repository can be one project or an Nx monorepo. Turn on “This repository is divided into services” when it is split into Nx projects. KIKI finds those projects from each `project.json` `name`. The ones you select are what agents for that repository may use. Agents confirm a project with `npx nx show projects`.
-- **Save** writes the folder paths and the selected projects. Add, rename, and delete apply on their own.
+- **Guide files** are markdown file names for that repository, such as `AGENTS.md`. Add one field per file. When services are selected, each service can use those files or its own list. The launch prompt tells the agent which files to read.
+- **Save** writes the folder paths, the selected projects, and the guide files. Add, rename, and delete apply on their own.
 
 ### 3. Indexes
 
@@ -173,7 +174,7 @@ Open the **Agents** tab. Each card has an AI tool and a model. **New agent** add
 The editor tabs are:
 
 - **Prompt**: Role, Input, Output, Startup behavior, and Principles. KIKI joins them into the prompt. An input can be required, or it can have a default. **Preview** reads a field as markdown.
-- **Repositories**: turn a repository on, then set the guide file and what the agent does there. **Readonly** keeps that repository read-only for this agent.
+- **Repositories**: turn a repository on, then set what the agent does there. **Readonly** keeps that repository read-only for this agent. Guide files are set on the repository, in the Repositories tab.
 - **Agents Coordination**: turn on the agents this one works with, then add messages. A message has **Send when** (the condition) and **What to send** (the content). Both are required. A third field says what the other agent reports back. When it is empty, no report is requested. Once it has text, you can allow a back-and-forth exchange of up to 20 loops.
 - **Connections**: the MCP servers this agent may call, with a note on how to use each one, and the CLI tools it may run.
 - **Topology**: the map of what this agent may reach.
@@ -218,7 +219,7 @@ The **Topology** tab draws what each agent may reach. Select an agent to highlig
 
 ### Agent files
 
-Agents live in `.kiki/agents` next to the app, as `<category>/<id>.md`. The embedded roles in `src-tauri/crates/agents/` are copied there the first time the folder has no agent files. After that the files are yours: an update to an embedded role does not overwrite an agent you already have. To start again from the current embedded roles, move `.kiki/agents` away (keep a copy of agents you edited) and restart KIKI. The roles read their repositories, services, collaborators, MCP servers, and Jira board from the launch prompt, so they do not depend on any other config file. A file stores the id, name, description, whether the agent is on, AI tool, model, repositories (with guide file and note), `agents_coordination` (with `handoffs` as `when` and `send` pairs), MCP servers, tools, and the prompt. The prompt body is the sections Role, Input, Output, Startup behavior, and Principles.
+Agents live in `.kiki/agents` next to the app, as `<category>/<id>.md`. The embedded roles in `src-tauri/crates/agents/` are copied there the first time the folder has no agent files. After that the files are yours: an update to an embedded role does not overwrite an agent you already have. To start again from the current embedded roles, move `.kiki/agents` away (keep a copy of agents you edited) and restart KIKI. The roles read their repositories, services, collaborators, MCP servers, and Jira board from the launch prompt, so they do not depend on any other config file. A file stores the id, name, description, whether the agent is on, AI tool, model, repositories (with a note), `agents_coordination` (with `handoffs` as `when` and `send` pairs), MCP servers, tools, and the prompt. Guide files live on the repository, in `.kiki/repos`. The prompt body is the sections Role, Input, Output, Startup behavior, and Principles.
 
 | Group | Agents | Repository |
 | --- | --- | --- |
@@ -234,7 +235,7 @@ The writer turns a feature into `business_requirement.md` and `product_requireme
 The prompt sent to Orca is the single source of truth for an agent's setup. The agent documents do not hold paths, Jira values, or MCP file names of their own. The prompt contains:
 
 - The agent's id, the folder root, the Orca worktree, the setup file path, and the workspace id.
-- For each repository: its folder, the guide file to read and follow (`AGENTS.md` unless you change it), the Nx services when the repository is divided into them, the work note, and the index query instructions. A sparse checkout names the one folder that is checked out, and **Readonly** tells the agent not to change, commit, or push.
+- For each repository: its folder, the guide files set on that repository, the Nx services when the repository is divided into them, and each service's own guide files or a note that it uses the repository guide files. Then the work note and the index query instructions. A sparse checkout names the one folder that is checked out, and **Readonly** tells the agent not to change, commit, or push.
 - For each collaborator: its agent id and its messages (when to send, what to send, whether to ask for a report and what it must contain, and the loop limit when an exchange can go back and forth). The agent sends a message when its condition is met, not only when its work is done.
 - The MCP servers set on the agent. Jira names the board, and Confluence names the space and parent page.
 - The tools set on the agent.

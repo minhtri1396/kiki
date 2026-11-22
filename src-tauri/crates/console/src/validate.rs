@@ -7,6 +7,7 @@ use std::sync::LazyLock;
 use anyhow::{anyhow, Result};
 use regex::Regex;
 
+use kiki_agentdef as agentdef;
 use kiki_aitool::AiTool;
 use kiki_toolchain as toolchain;
 use kiki_util::path;
@@ -73,6 +74,48 @@ fn validate_repo(repo: &Repo, document: bool) -> Result<()> {
         }
         if !seen.insert(name) {
             return Err(anyhow!("service {:?} for {} is duplicated", name, repo.kind));
+        }
+    }
+    check_guides(&repo.kind, &repo.guides)?;
+    if !repo.uses_services() {
+        if !repo.service_guides.is_empty() {
+            return Err(anyhow!(
+                "{}: service guide files need the repository to be divided into services",
+                repo.kind
+            ));
+        }
+        return Ok(());
+    }
+    let mut seen_service: BTreeSet<&str> = BTreeSet::new();
+    for row in &repo.service_guides {
+        if !repo.services.iter().any(|name| name == &row.service) || !seen_service.insert(&row.service) {
+            return Err(anyhow!(
+                "{}: guide files for {:?} do not match a selected service",
+                repo.kind,
+                row.service
+            ));
+        }
+        if !row.shared {
+            check_guides(&format!("{} service {}", repo.kind, row.service), &row.guides)?;
+        }
+    }
+    Ok(())
+}
+
+fn check_guides(kind: &str, guides: &[String]) -> Result<()> {
+    let mut seen: BTreeSet<&str> = BTreeSet::new();
+    for name in guides {
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        if !agentdef::valid_guide(name) {
+            return Err(anyhow!(
+                "{kind}: guide file {name:?} must be a markdown file name such as AGENTS.md"
+            ));
+        }
+        if !seen.insert(name) {
+            return Err(anyhow!("{kind}: guide file {name:?} is duplicated"));
         }
     }
     Ok(())

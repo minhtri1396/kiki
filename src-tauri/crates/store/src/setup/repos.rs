@@ -10,7 +10,7 @@ use kiki_toolchain as toolchain;
 use kiki_util::path::{clean, dir, is_abs, join};
 use kiki_yaml::{Mapping, Value};
 
-use super::lenient::{get_bool, get_str, get_strings, read_map};
+use super::lenient::{get_bool, get_str, get_strings, read_map, rows};
 use super::{read_doc, write_doc, RepoDoc};
 use crate::fsutil;
 use crate::store::Store;
@@ -27,6 +27,8 @@ pub(crate) struct RepoFile {
     pub divided: Option<bool>,
     pub index: String,
     pub sparse: String,
+    pub guides: Vec<String>,
+    pub service_guides: Vec<console::ServiceGuides>,
 }
 
 /// Decodes one repository file: `id` falls back to the older `kind` key.
@@ -44,7 +46,43 @@ fn parse_repo_file(raw: &str) -> Result<RepoFile> {
         divided: get_bool(&map, "divided")?,
         index: get_str(&map, "index"),
         sparse: get_str(&map, "sparse"),
+        guides: guide_names(&get_strings(&map, "guides")?.unwrap_or_default()),
+        service_guides: read_service_guides(&map)?,
     })
+}
+
+fn guide_names(names: &[String]) -> Vec<String> {
+    let mut out = Vec::new();
+    for name in names {
+        let name = name.trim();
+        if name.is_empty() || out.iter().any(|saved| saved == name) {
+            continue;
+        }
+        out.push(name.to_string());
+    }
+    out
+}
+
+fn read_service_guides(map: &serde_yaml::Mapping) -> Result<Vec<console::ServiceGuides>> {
+    let mut out = Vec::new();
+    for row in rows(map, "service_guides", "serviceGuide")? {
+        let service = get_str(&row, "service").trim().to_string();
+        if service.is_empty() {
+            continue;
+        }
+        let shared = get_bool(&row, "shared")?.unwrap_or(false);
+        let guides = if shared {
+            Vec::new()
+        } else {
+            guide_names(&get_strings(&row, "guides")?.unwrap_or_default())
+        };
+        out.push(console::ServiceGuides {
+            service,
+            shared,
+            guides,
+        });
+    }
+    Ok(out)
 }
 
 impl Store {
@@ -204,6 +242,9 @@ pub(crate) fn repos_for_files(snap: &console::Snapshot) -> Vec<console::Repo> {
         if repo.kind == "document" && !repo.divided {
             repo.services = Vec::new();
         }
+        if !repo.uses_services() {
+            repo.service_guides.clear();
+        }
         clean_index(&mut repo);
         out.push(repo);
     }
@@ -215,6 +256,9 @@ pub(crate) fn repos_for_files(snap: &console::Snapshot) -> Vec<console::Repo> {
         }
         seen.insert(repo.kind.clone());
         let mut repo = repo.clone();
+        if !repo.uses_services() {
+            repo.service_guides.clear();
+        }
         clean_index(&mut repo);
         extras.push(repo);
     }
@@ -243,6 +287,11 @@ pub(crate) fn merge_repo_files(setup_path: &str, mut snap: console::Snapshot) ->
             if let Some(services) = &file.services {
                 repo.services = services.clone();
             }
+        }
+        repo.guides = file.guides.clone();
+        repo.service_guides = file.service_guides.clone();
+        if !repo.uses_services() {
+            repo.service_guides.clear();
         }
     }
     Ok(snap)
@@ -332,12 +381,16 @@ fn repo_file_text(repo: &console::Repo) -> String {
         ""
     };
     let sparse = console::sparse_path(&repo.sparse).unwrap_or_default();
+    let guides = guide_values(&repo.guides);
+    let service_guides = service_guide_values(repo);
     let entries = Mapping::new()
         .set("id", repo.kind.as_str())
         .set("name", repo.title())
         .set_unless_empty("folder", repo.folder.trim())
         .set_if(repo.divided, "divided", true)
         .set("services", Value::Seq(services.into_iter().map(Value::from).collect()))
+        .set_if(!guides.is_empty(), "guides", Value::Seq(guides))
+        .set_if(!service_guides.is_empty(), "service_guides", Value::Seq(service_guides))
         .set_unless_empty("index", index)
         .set_unless_empty("sparse", &sparse);
     let header = format!(
@@ -345,4 +398,35 @@ fn repo_file_text(repo: &console::Repo) -> String {
         repo.kind
     );
     format!("{header}{}", entries.emit())
+}
+
+fn guide_values(names: &[String]) -> Vec<Value> {
+    names
+        .iter()
+        .map(|name| name.trim())
+        .filter(|name| !name.is_empty())
+        .map(Value::from)
+        .collect()
+}
+
+fn service_guide_values(repo: &console::Repo) -> Vec<Value> {
+    if !repo.uses_services() {
+        return Vec::new();
+    }
+    repo.service_guides
+        .iter()
+        .filter(|row| !row.service.trim().is_empty())
+        .map(|row| {
+            let mut map = Mapping::new().set("service", row.service.trim());
+            if row.shared {
+                map = map.set("shared", true);
+            } else {
+                let guides = guide_values(&row.guides);
+                if !guides.is_empty() {
+                    map = map.set("guides", Value::Seq(guides));
+                }
+            }
+            map.into_value()
+        })
+        .collect()
 }
