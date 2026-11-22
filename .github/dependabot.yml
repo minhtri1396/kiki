@@ -2,6 +2,8 @@
 # - dependency-updates.yml: security audits at the same local time
 # - ci.yml: required checks on PRs
 # - dependabot-automerge.yml: squash auto-merge for patch/minor after CI passes
+# - trivy.yml: security scan on pull requests and main
+# - release.yml: tag builds (v*) with Trivy + GitHub Release assets
 
 version: 2
 

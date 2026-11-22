@@ -1,0 +1,54 @@
+# Filesystem security scan (vulnerabilities, secrets, misconfigurations).
+# Called from trivy.yml, release.yml, and workflow_dispatch.
+
+name: Trivy reusable
+
+on:
+  workflow_call:
+    inputs:
+      scan-ref:
+        description: Path to scan (repository root by default)
+        required: false
+        type: string
+        default: .
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  scan:
+    name: Trivy security scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Fail on HIGH/CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ inputs.scan-ref }}
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+          format: table
+
+      - name: Generate SARIF
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: ${{ inputs.scan-ref }}
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH,MEDIUM,LOW,UNKNOWN
+          ignore-unfixed: true
+          exit-code: 0
+          format: sarif
+          output: trivy-results.sarif
+
+      - name: Upload SARIF to GitHub Security
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-results.sarif
+          category: trivy

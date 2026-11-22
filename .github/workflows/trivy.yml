@@ -1,0 +1,17 @@
+# Trivy on every pull request and on merges to main.
+
+name: Trivy
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: trivy-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  scan:
+    uses: ./.github/workflows/trivy-reusable.yml

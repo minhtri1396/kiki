@@ -1,0 +1,195 @@
+# Build desktop releases for macOS, Windows, and Linux when a version tag is pushed (e.g. v0.1.0).
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  trivy:
+    uses: ./.github/workflows/trivy-reusable.yml
+
+  build:
+    name: Build (${{ matrix.platform }})
+    needs: trivy
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            runner: macos-latest
+          - platform: windows
+            runner: windows-latest
+          - platform: linux
+            runner: ubuntu-22.04
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Pre-build security scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,secret,misconfig
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: 1
+          format: table
+
+      - name: Install Linux system dependencies
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install Rust (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install npm dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Build release bundles
+        env:
+          KIKI_VERSION: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${KIKI_VERSION#v}"
+          npm run build -- --config "{\"version\":\"${version}\"}"
+
+      - name: Install Trivy CLI
+        uses: aquasecurity/setup-trivy@v0.2.1
+
+      - name: Scan and collect macOS artifacts
+        if: matrix.platform == 'macos'
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+
+          trivy rootfs --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 \
+            src-tauri/target/release/bundle/macos/KIKI.app
+
+          dmg="$(find src-tauri/target/release/bundle/dmg -name '*.dmg' -print | head -n1)"
+          if [ -z "$dmg" ]; then
+            echo "::error::No .dmg found"
+            exit 1
+          fi
+          trivy fs --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 "$dmg"
+
+          cp "$dmg" "release-assets/KIKI-${GITHUB_REF_NAME}-macos.dmg"
+          zip_path="release-assets/KIKI-${GITHUB_REF_NAME}-macos.zip"
+          ditto -c -k --sequesterRsrc --keepParent \
+            src-tauri/target/release/bundle/macos/KIKI.app "$zip_path"
+
+      - name: Scan and collect Windows artifacts
+        if: matrix.platform == 'windows'
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+
+          setup="$(find src-tauri/target/release/bundle/nsis -iname '*.exe' -print | head -n1)"
+          if [ -z "$setup" ]; then
+            setup="$(find src-tauri/target/release/bundle/msi -iname '*.msi' -print | head -n1)"
+          fi
+          if [ -z "$setup" ]; then
+            echo "::error::No Windows installer (.exe or .msi) found"
+            exit 1
+          fi
+
+          trivy fs --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 "$setup"
+
+          ext="${setup##*.}"
+          cp "$setup" "release-assets/KIKI-${GITHUB_REF_NAME}-windows.${ext}"
+
+      - name: Scan and collect Linux artifacts
+        if: matrix.platform == 'linux'
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+
+          deb="$(find src-tauri/target/release/bundle/deb -name '*.deb' -print | head -n1)"
+          appimage="$(find src-tauri/target/release/bundle/appimage -iname '*.AppImage' -print | head -n1)"
+
+          if [ -z "$deb" ] && [ -z "$appimage" ]; then
+            echo "::error::No .deb or .AppImage found"
+            exit 1
+          fi
+
+          if [ -n "$deb" ]; then
+            trivy fs --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 "$deb"
+            cp "$deb" "release-assets/KIKI-${GITHUB_REF_NAME}-linux.deb"
+          fi
+
+          if [ -n "$appimage" ]; then
+            trivy fs --scanners vuln --severity CRITICAL,HIGH --ignore-unfixed --exit-code 1 "$appimage"
+            cp "$appimage" "release-assets/KIKI-${GITHUB_REF_NAME}-linux.AppImage"
+          fi
+
+      - name: Upload release artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: release-assets/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: release-*
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: KIKI ${{ github.ref_name }}
+          prerelease: ${{ contains(github.ref_name, '-') }}
+          generate_release_notes: true
+          body: |
+            Desktop build for **${{ github.ref_name }}**.
+
+            ### Downloads
+            | Platform | File |
+            | --- | --- |
+            | macOS | `KIKI-${{ github.ref_name }}-macos.dmg` or `.zip` (`KIKI.app`) |
+            | Windows | `KIKI-${{ github.ref_name }}-windows.exe` (or `.msi`) |
+            | Linux | `KIKI-${{ github.ref_name }}-linux.deb` and/or `.AppImage` |
+
+            Built from commit ${{ github.sha }}.
+          files: dist/**/*
