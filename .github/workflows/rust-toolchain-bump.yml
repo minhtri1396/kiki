@@ -1,0 +1,105 @@
+# Checks for a newer stable Rust release and opens a PR updating rust-toolchain.toml
+# and workspace MSRV in src-tauri/Cargo.toml.
+
+name: Rust toolchain bump
+
+on:
+  schedule:
+    # 14:00 UTC = 21:00 GMT+7
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: rust-toolchain-bump
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bump:
+    name: Check and open PR
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve toolchain versions
+        id: versions
+        run: |
+          set -euo pipefail
+          current="$(sed -n 's/^channel = "\(.*\)"/\1/p' rust-toolchain.toml)"
+          if [ -z "$current" ]; then
+            echo "::error::Could not read channel from rust-toolchain.toml"
+            exit 1
+          fi
+          latest="$(
+            curl -fsSL https://static.rust-lang.org/dist/channel-rust-stable.toml \
+              | sed -n 's/^version = "\(.*\)"/\1/p' \
+              | head -n1
+          )"
+          if [ -z "$latest" ]; then
+            echo "::error::Could not resolve latest stable Rust version"
+            exit 1
+          fi
+          echo "current=$current" >> "$GITHUB_OUTPUT"
+          echo "latest=$latest" >> "$GITHUB_OUTPUT"
+          if [ "$current" = "$latest" ]; then
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "Already on stable $latest."
+          elif [ "$(printf '%s\n%s\n' "$current" "$latest" | sort -V | tail -n1)" = "$latest" ]; then
+            echo "bump=true" >> "$GITHUB_OUTPUT"
+            echo "Upgrade available: $current -> $latest"
+          else
+            echo "bump=false" >> "$GITHUB_OUTPUT"
+            echo "Pinned toolchain $current is newer than channel stable $latest; skipping."
+          fi
+
+      - name: Apply toolchain bump
+        if: steps.versions.outputs.bump == 'true'
+        run: |
+          set -euo pipefail
+          latest="${{ steps.versions.outputs.latest }}"
+          sed -i "s/^channel = \".*\"/channel = \"${latest}\"/" rust-toolchain.toml
+          sed -i "s/^rust-version = \".*\"/rust-version = \"${latest}\"/" src-tauri/Cargo.toml
+
+      - name: Verify on new toolchain
+        if: steps.versions.outputs.bump == 'true'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ steps.versions.outputs.latest }}
+          components: rustfmt, clippy
+
+      - name: Cache cargo
+        if: steps.versions.outputs.bump == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Cargo checks
+        if: steps.versions.outputs.bump == 'true'
+        working-directory: src-tauri
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo test --workspace
+
+      - name: Create pull request
+        if: steps.versions.outputs.bump == 'true'
+        uses: peter-evans/create-pull-request@v7
+        with:
+          commit-message: "chore(deps): bump Rust toolchain to ${{ steps.versions.outputs.latest }}"
+          title: "chore(deps): bump Rust toolchain to ${{ steps.versions.outputs.latest }}"
+          body: |
+            Bumps the pinned Rust toolchain and workspace `rust-version` to the current stable release.
+
+            - `rust-toolchain.toml`: `${{ steps.versions.outputs.current }}` → `${{ steps.versions.outputs.latest }}`
+            - `src-tauri/Cargo.toml` (`[workspace.package] rust-version`): same
+
+            Verified with `cargo fmt`, `cargo clippy`, and `cargo test` on the new toolchain.
+          branch: chore/rust-toolchain-${{ steps.versions.outputs.latest }}
+          delete-branch: true
+          labels: |
+            dependencies
+            rust

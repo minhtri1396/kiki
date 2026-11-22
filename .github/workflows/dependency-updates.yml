@@ -1,0 +1,88 @@
+# Daily dependency maintenance at 21:00 GMT+7 (Asia/Ho_Chi_Minh).
+#
+# Version and security update PRs are opened by GitHub Dependabot (see
+# .github/dependabot.yml). This workflow runs on the same schedule to audit
+# the lockfiles on the default branch and surface issues Dependabot has not
+# yet turned into a PR.
+
+name: Dependency updates
+
+on:
+  schedule:
+    # 14:00 UTC = 21:00 GMT+7
+    - cron: "0 14 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: dependency-updates
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  security-audit:
+    name: Security audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust (rust-toolchain.toml)
+        uses: dtolnay/rust-toolchain@master
+        with:
+          components: rustfmt, clippy
+
+      - name: Install cargo-audit
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-audit
+
+      - name: npm audit
+        run: npm ci --ignore-scripts && npm audit --audit-level=high
+
+      - name: cargo audit
+        working-directory: src-tauri
+        run: cargo audit
+
+  dependabot-status:
+    name: Dependabot status
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: read
+    steps:
+      - name: Summarize open Dependabot PRs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "## Open Dependabot pull requests" >> "$GITHUB_STEP_SUMMARY"
+          prs="$(gh pr list --search "author:app/dependabot is:open" --json number,title,url --limit 50 || true)"
+          if [ -z "$prs" ] || [ "$prs" = "[]" ]; then
+            echo "No open Dependabot PRs." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$prs" | jq -r '.[] | "- [#\(.number)](\(.url)) \(.title)"' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Summarize open security alerts (dependency graph)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "## Open Dependabot security alerts" >> "$GITHUB_STEP_SUMMARY"
+          alerts="$(gh api "repos/${GITHUB_REPOSITORY}/dependabot/alerts?state=open&per_page=50" 2>/dev/null || echo '[]')"
+          count="$(echo "$alerts" | jq 'length')"
+          if [ "$count" -eq 0 ]; then
+            echo "No open Dependabot security alerts." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "$count open alert(s) (showing up to 50):" >> "$GITHUB_STEP_SUMMARY"
+            echo "$alerts" | jq -r '.[] | "- [\(.security_advisory.summary)](\(.html_url)) (\(.dependency.package.name))"' >> "$GITHUB_STEP_SUMMARY"
+          fi

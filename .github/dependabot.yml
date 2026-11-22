@@ -1,0 +1,67 @@
+# Dependabot opens PRs for version and security updates on this schedule.
+# - dependency-updates.yml: security audits at the same local time
+# - ci.yml: required checks on PRs
+# - dependabot-automerge.yml: squash auto-merge for patch/minor after CI passes
+
+version: 2
+
+updates:
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: daily
+      time: "21:00"
+      timezone: Asia/Ho_Chi_Minh
+    open-pull-requests-limit: 10
+    rebase-strategy: auto
+    commit-message:
+      prefix: deps
+      prefix-development: deps
+      include: scope
+    labels:
+      - dependencies
+      - rust
+    groups:
+      rust-dependencies:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      rust-major:
+        patterns:
+          - "*"
+        update-types:
+          - major
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: daily
+      time: "21:00"
+      timezone: Asia/Ho_Chi_Minh
+    open-pull-requests-limit: 5
+    versioning-strategy: increase
+    rebase-strategy: auto
+    commit-message:
+      prefix: deps
+      prefix-development: deps
+      include: scope
+    labels:
+      - dependencies
+      - javascript
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: daily
+      time: "21:00"
+      timezone: Asia/Ho_Chi_Minh
+    open-pull-requests-limit: 5
+    rebase-strategy: auto
+    commit-message:
+      prefix: deps
+      include: scope
+    labels:
+      - dependencies
+      - github-actions
